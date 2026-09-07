@@ -2,9 +2,27 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 
 namespace hebichess {
 namespace {
+
+TranspositionTable& transposition_table() {
+  static TranspositionTable table(64);
+  return table;
+}
+
+int score_to_tt(int score, int ply) noexcept {
+  if (score > MATE_SCORE - 1000) return score + ply;
+  if (score < -MATE_SCORE + 1000) return score - ply;
+  return score;
+}
+
+int score_from_tt(int score, int ply) noexcept {
+  if (score > MATE_SCORE - 1000) return score - ply;
+  if (score < -MATE_SCORE + 1000) return score + ply;
+  return score;
+}
 
 struct SearchContext {
   std::uint64_t& nodes;
@@ -12,6 +30,8 @@ struct SearchContext {
   bool has_deadline{false};
   std::chrono::steady_clock::time_point deadline{};
   bool stopped{false};
+  TranspositionTable* tt{nullptr};
+  SearchResult* result{nullptr};
 
   bool should_stop() {
     if (stopped) return true;
@@ -165,6 +185,32 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
                  SearchContext& context) {
   if (context.should_stop()) return 0;
   if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context);
+  const int original_alpha = alpha;
+  const int original_beta = beta;
+  std::optional<Move> tt_move;
+  if (context.tt != nullptr && context.result != nullptr) {
+    ++context.result->tt_probes;
+    const TTEntry* entry = context.tt->probe(board.zobrist_key());
+    if (entry != nullptr) {
+      ++context.result->tt_hits;
+      tt_move = entry->best_move;
+      if (entry->depth >= depth) {
+        const int score = score_from_tt(entry->score, ply);
+        if (entry->bound == TTBound::Exact ||
+            (entry->bound == TTBound::Lower && score >= beta) ||
+            (entry->bound == TTBound::Upper && score <= alpha)) {
+          ++context.result->tt_cutoffs;
+          return score;
+        }
+        if (entry->bound == TTBound::Lower) alpha = std::max(alpha, score);
+        if (entry->bound == TTBound::Upper) beta = std::min(beta, score);
+        if (alpha >= beta) {
+          ++context.result->tt_cutoffs;
+          return score;
+        }
+      }
+    }
+  }
   ++context.nodes;
   std::vector<Move> moves = generate_legal_moves(board);
   if (moves.empty()) {
@@ -172,19 +218,32 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     return king.is_valid() && board.is_square_attacked(king, opposite(board.side_to_move()))
                ? -MATE_SCORE + ply : 0;
   }
-  std::sort(moves.begin(), moves.end(), [&board](const Move& a, const Move& b) {
+  int best = -MATE_SCORE;
+  std::optional<Move> best_move;
+  std::sort(moves.begin(), moves.end(), [&board, &tt_move](const Move& a, const Move& b) {
+    const bool a_is_tt = tt_move.has_value() && a == *tt_move;
+    const bool b_is_tt = tt_move.has_value() && b == *tt_move;
+    if (a_is_tt != b_is_tt) return a_is_tt;
     return move_order(board, a) > move_order(board, b);
   });
-  int best = -MATE_SCORE;
   for (const Move& move : moves) {
     const UndoState undo = board.make_move(move);
     const int score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1,
                                     context);
     board.unmake_move(move, undo);
     if (context.stopped) return 0;
-    best = std::max(best, score);
+    if (score > best) {
+      best = score;
+      best_move = move;
+    }
     alpha = std::max(alpha, score);
     if (alpha >= beta) break;
+  }
+  if (context.tt != nullptr && context.result != nullptr) {
+    const TTBound bound = best <= original_alpha ? TTBound::Upper
+                         : best >= original_beta ? TTBound::Lower : TTBound::Exact;
+    context.tt->store(board.zobrist_key(), depth, score_to_tt(best, ply), bound,
+                      best_move);
   }
   return best;
 }
@@ -214,17 +273,20 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   SearchResult result;
   if (limits.max_depth < 1) return result;
   Board root = position;
+  TranspositionTable& tt = transposition_table();
   std::vector<Move> legal = generate_legal_moves(root);
   if (legal.empty()) {
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
-                          limits.deadline};
+                          limits.deadline, false,
+                          limits.use_tt ? &tt : nullptr, &result};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
   result.best_move = legal.front();
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
-                          limits.deadline};
+                          limits.deadline, false,
+                          limits.use_tt ? &tt : nullptr, &result};
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
     for (const Move& move : legal) {
@@ -264,5 +326,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   }
   return result;
 }
+
+void clear_transposition_table() noexcept { transposition_table().clear(); }
 
 }  // namespace hebichess

@@ -43,6 +43,7 @@ int main() {
       std::cout << "readyok" << std::endl;
     } else if (command == "ucinewgame") {
       board = Board::initial();
+      clear_transposition_table();
     } else if (command == "position") {
       std::string kind;
       input >> kind;
@@ -97,6 +98,9 @@ int main() {
         limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);
       }
       const SearchResult result = search(board, limits, print_info);
+      std::cout << "info string tt probes " << result.tt_probes
+                << " hits " << result.tt_hits << " cutoffs "
+                << result.tt_cutoffs << std::endl;
       std::cout << "bestmove " << move_to_uci(result.best_move) << std::endl;
     } else if (command == "quit") {
       break;

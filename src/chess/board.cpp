@@ -1,5 +1,7 @@
 #include "chess/board.hpp"
 
+#include "chess/zobrist.hpp"
+
 #include <charconv>
 #include <sstream>
 #include <string_view>
@@ -182,6 +184,8 @@ Board::Board() noexcept {
     set_piece(Square::from_file_rank(file, 1), white(PieceType::Pawn));
     set_piece(Square::from_file_rank(file, 6), black(PieceType::Pawn));
   }
+  castling_rights_ = {true, true, true, true};
+  zobrist_key_ = compute_zobrist(*this);
 }
 
 Board Board::initial() noexcept {
@@ -237,28 +241,41 @@ Square Board::find_king(Color color) const noexcept {
 UndoState Board::make_move(const Move& move) noexcept {
   UndoState undo{piece_at(move.to), move.to, castling_rights_,
                   en_passant_target_, halfmove_clock_, fullmove_number_,
-                  side_to_move_};
+                  side_to_move_, zobrist_key_};
   const Piece moving_piece = piece_at(move.from);
   const Color moving_color = moving_piece.color;
+
+  zobrist_key_ ^= castling_zobrist(castling_rights_);
+  zobrist_key_ ^= en_passant_zobrist(en_passant_target_);
+  if (side_to_move_ == Color::Black) zobrist_key_ ^= side_zobrist();
+  zobrist_key_ ^= piece_zobrist(moving_piece, move.from);
 
   if (move.flag == MoveFlag::EnPassant) {
     undo.captured_square = Square::from_file_rank(move.to.file(), move.from.rank());
     undo.captured_piece = piece_at(undo.captured_square);
+    zobrist_key_ ^= piece_zobrist(undo.captured_piece, undo.captured_square);
     set_piece(undo.captured_square, {});
+  } else {
+    zobrist_key_ ^= piece_zobrist(undo.captured_piece, move.to);
   }
   set_piece(move.from, {});
   Piece placed = moving_piece;
   if (move.is_promotion()) placed.type = move.promotion;
   set_piece(move.to, placed);
+  zobrist_key_ ^= piece_zobrist(placed, move.to);
 
   if (move.flag == MoveFlag::CastleKingSide) {
     const Square rook_from = Square::from_file_rank(7, move.from.rank());
     const Square rook_to = Square::from_file_rank(5, move.from.rank());
+    const Piece rook = piece_at(rook_from);
+    zobrist_key_ ^= piece_zobrist(rook, rook_from) ^ piece_zobrist(rook, rook_to);
     set_piece(rook_to, piece_at(rook_from));
     set_piece(rook_from, {});
   } else if (move.flag == MoveFlag::CastleQueenSide) {
     const Square rook_from = Square::from_file_rank(0, move.from.rank());
     const Square rook_to = Square::from_file_rank(3, move.from.rank());
+    const Piece rook = piece_at(rook_from);
+    zobrist_key_ ^= piece_zobrist(rook, rook_from) ^ piece_zobrist(rook, rook_to);
     set_piece(rook_to, piece_at(rook_from));
     set_piece(rook_from, {});
   }
@@ -290,6 +307,9 @@ UndoState Board::make_move(const Move& move) noexcept {
                        : halfmove_clock_ + 1;
   if (moving_color == Color::Black) ++fullmove_number_;
   side_to_move_ = opposite(side_to_move_);
+  zobrist_key_ ^= castling_zobrist(castling_rights_);
+  zobrist_key_ ^= en_passant_zobrist(en_passant_target_);
+  if (side_to_move_ == Color::Black) zobrist_key_ ^= side_zobrist();
   return undo;
 }
 
@@ -320,6 +340,24 @@ void Board::unmake_move(const Move& move, const UndoState& undo) noexcept {
   } else {
     set_piece(undo.captured_square, undo.captured_piece);
   }
+  zobrist_key_ = undo.previous_zobrist_key;
+}
+
+void Board::set_side_to_move(Color color) noexcept {
+  if (side_to_move_ != color) {
+    zobrist_key_ ^= side_zobrist();
+    side_to_move_ = color;
+  }
+}
+
+void Board::set_castling_rights(CastlingRights rights) noexcept {
+  zobrist_key_ ^= castling_zobrist(castling_rights_) ^ castling_zobrist(rights);
+  castling_rights_ = rights;
+}
+
+void Board::set_en_passant_target(Square square) noexcept {
+  zobrist_key_ ^= en_passant_zobrist(en_passant_target_) ^ en_passant_zobrist(square);
+  en_passant_target_ = square;
 }
 
 UndoState make_move(Board& board, const Move& move) noexcept {
@@ -371,6 +409,7 @@ std::optional<Board> Board::from_fen(const std::string& fen) {
       board.fullmove_number_ == 0) {
     return std::nullopt;
   }
+  board.zobrist_key_ = compute_zobrist(board);
   return board;
 }
 

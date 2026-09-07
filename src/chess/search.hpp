@@ -7,6 +7,7 @@
 
 #include "chess/eval.hpp"
 #include "chess/movegen.hpp"
+#include "chess/tt.hpp"
 
 namespace hebichess {
 
@@ -24,6 +25,9 @@ struct SearchResult {
   int score{0};
   std::uint64_t nodes{0};
   std::uint64_t qnodes{0};
+  std::uint64_t tt_probes{0};
+  std::uint64_t tt_hits{0};
+  std::uint64_t tt_cutoffs{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -31,6 +35,7 @@ struct SearchLimits {
   int max_depth{1};
   bool has_deadline{false};
   std::chrono::steady_clock::time_point deadline{};
+  bool use_tt{true};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,
@@ -46,5 +51,6 @@ int quiescence(Board& board, int alpha, int beta, int ply);
 SearchResult search(const Board& board, int max_depth);
 SearchResult search(const Board& board, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration = {});
+void clear_transposition_table() noexcept;
 
 }  // namespace hebichess

@@ -11,6 +11,8 @@
 
 namespace hebichess {
 
+using ZobristKey = std::uint64_t;
+
 struct CastlingRights {
   bool white_king_side{false};
   bool white_queen_side{false};
@@ -28,6 +30,7 @@ struct UndoState {
   std::uint32_t halfmove_clock{0};
   std::uint32_t fullmove_number{1};
   Color side_to_move{Color::White};
+  ZobristKey previous_zobrist_key{0};
 };
 
 class Board {
@@ -63,23 +66,15 @@ class Board {
   }
 
   constexpr Color side_to_move() const noexcept { return side_to_move_; }
-  constexpr void set_side_to_move(Color color) noexcept {
-    side_to_move_ = color;
-  }
+  void set_side_to_move(Color color) noexcept;
 
-  constexpr CastlingRights castling_rights() const noexcept {
-    return castling_rights_;
-  }
-  constexpr void set_castling_rights(CastlingRights rights) noexcept {
-    castling_rights_ = rights;
-  }
+  constexpr CastlingRights castling_rights() const noexcept { return castling_rights_; }
+  void set_castling_rights(CastlingRights rights) noexcept;
 
-  constexpr Square en_passant_target() const noexcept {
-    return en_passant_target_;
-  }
-  constexpr void set_en_passant_target(Square square) noexcept {
-    en_passant_target_ = square;
-  }
+  constexpr Square en_passant_target() const noexcept { return en_passant_target_; }
+  void set_en_passant_target(Square square) noexcept;
+
+  constexpr ZobristKey zobrist_key() const noexcept { return zobrist_key_; }
 
   constexpr std::uint32_t halfmove_clock() const noexcept {
     return halfmove_clock_;
@@ -102,9 +97,11 @@ class Board {
   Square en_passant_target_{};
   std::uint32_t halfmove_clock_{0};
   std::uint32_t fullmove_number_{1};
+  ZobristKey zobrist_key_{0};
 };
 
 UndoState make_move(Board& board, const Move& move) noexcept;
 void unmake_move(Board& board, const Move& move, const UndoState& undo) noexcept;
+ZobristKey compute_zobrist(const Board& board) noexcept;
 
 }  // namespace hebichess
