@@ -34,6 +34,10 @@ struct SearchResult {
   std::uint64_t killer_cutoffs{0};
   std::uint64_t killer_uses{0};
   std::uint64_t history_cutoffs{0};
+  std::uint64_t null_attempts{0};
+  std::uint64_t null_cutoffs{0};
+  std::uint64_t lmr_attempts{0};
+  std::uint64_t lmr_researches{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -44,6 +48,8 @@ struct SearchLimits {
   bool use_tt{true};
   bool use_see_pruning{true};
   bool use_killer_history{true};
+  bool use_null_move{true};
+  bool use_lmr{true};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,

@@ -79,6 +79,8 @@ struct SearchContext {
   SearchResult* result{nullptr};
   bool use_see_pruning{true};
   SearchHeuristics* heuristics{nullptr};
+  bool use_null_move{false};
+  bool use_lmr{false};
 
   bool should_stop() {
     if (stopped) return true;
@@ -145,6 +147,17 @@ bool is_tactical_move(const Move& move) noexcept {
   return move.flag == MoveFlag::Capture || move.flag == MoveFlag::EnPassant ||
          move.flag == MoveFlag::Promotion ||
          move.flag == MoveFlag::PromotionCapture;
+}
+
+bool has_non_pawn_material(const Board& board, Color side) noexcept {
+  for (const Piece& piece : board.squares()) {
+    if (piece.color == side &&
+        (piece.type == PieceType::Knight || piece.type == PieceType::Bishop ||
+         piece.type == PieceType::Rook || piece.type == PieceType::Queen)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 int quiescence_move_order(Board& board, const Move& move, SearchResult* result) noexcept {
@@ -273,7 +286,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 }
 
 int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
-                 SearchContext& context) {
+                 SearchContext& context, bool was_null_move = false) {
   if (context.should_stop()) return 0;
   if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context);
   const int original_alpha = alpha;
@@ -303,6 +316,23 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     }
   }
   ++context.nodes;
+  const Square king = board.find_king(board.side_to_move());
+  const bool in_check = king.is_valid() &&
+                        board.is_square_attacked(king, opposite(board.side_to_move()));
+  if (context.use_null_move && depth >= 3 && ply > 0 && !was_null_move &&
+      !in_check && has_non_pawn_material(board, board.side_to_move())) {
+    if (context.result != nullptr) ++context.result->null_attempts;
+    const int reduction = depth <= 5 ? 2 : 3;
+    const NullUndoState undo = board.make_null_move();
+    const int score = -negamax_impl(board, depth - 1 - reduction,
+                                    -beta, -beta + 1, ply + 1, context, true);
+    board.unmake_null_move(undo);
+    if (context.stopped) return 0;
+    if (score >= beta) {
+      if (context.result != nullptr) ++context.result->null_cutoffs;
+      return score;
+    }
+  }
   std::vector<Move> moves = generate_legal_moves(board);
   if (moves.empty()) {
     const Square king = board.find_king(board.side_to_move());
@@ -318,10 +348,28 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       return move_order(board, a, context.result, context.heuristics, ply) >
              move_order(board, b, context.result, context.heuristics, ply);
   });
-  for (const Move& move : moves) {
+  for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
+    const Move& move = moves[move_index];
+    const bool killer_move = context.heuristics != nullptr && ply >= 0 &&
+        ply < MAX_SEARCH_PLY && (move == context.heuristics->killers[ply][0] ||
+                                 move == context.heuristics->killers[ply][1]);
+    const bool high_history = context.heuristics != nullptr &&
+        context.heuristics->history_score(board.side_to_move(), move) >= 1000;
+    const bool lmr_candidate = context.use_lmr && depth >= 3 && move_index >= 4 &&
+        !in_check && is_quiet_move(move) && !killer_move && !high_history &&
+        !gives_check(board, move);
     const UndoState undo = board.make_move(move);
-    const int score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1,
-                                    context);
+    int score = 0;
+    if (lmr_candidate) {
+      if (context.result != nullptr) ++context.result->lmr_attempts;
+      score = -negamax_impl(board, depth - 2, -beta, -alpha, ply + 1, context);
+      if (!context.stopped && score >= alpha) {
+        if (context.result != nullptr) ++context.result->lmr_researches;
+        score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1, context);
+      }
+    } else {
+      score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1, context);
+    }
     board.unmake_move(move, undo);
     if (context.stopped) return 0;
     if (score > best) {
@@ -385,7 +433,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.deadline, false,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
-                          limits.use_killer_history ? &search_heuristics() : nullptr};
+                          limits.use_killer_history ? &search_heuristics() : nullptr,
+                          limits.use_null_move, limits.use_lmr};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
@@ -395,7 +444,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.deadline, false,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
-                          limits.use_killer_history ? &search_heuristics() : nullptr};
+                          limits.use_killer_history ? &search_heuristics() : nullptr,
+                          limits.use_null_move, limits.use_lmr};
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
     for (const Move& move : legal) {

@@ -111,6 +111,54 @@ void test_quiescence_and_special_tactics() {
   }
 }
 
+void test_pruning_flags_and_tactics() {
+  Board start = Board::initial();
+  SearchLimits baseline;
+  baseline.max_depth = 4;
+  baseline.use_tt = false;
+  baseline.use_null_move = false;
+  baseline.use_lmr = false;
+  SearchLimits optimized = baseline;
+  optimized.use_null_move = true;
+  optimized.use_lmr = true;
+  const std::string fen = start.to_fen();
+  const ZobristKey key = start.zobrist_key();
+  const SearchResult off = search(start, baseline);
+  const SearchResult on = search(start, optimized);
+  assert(start.to_fen() == fen);
+  assert(start.zobrist_key() == key);
+  assert(on.lmr_attempts > 0);
+  assert(on.null_attempts > 0);
+
+  const Board king_pawn = Board::from_fen(
+      "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").value();
+  SearchLimits zugzwang = optimized;
+  const SearchResult zugzwang_result = search(king_pawn, zugzwang);
+  assert(zugzwang_result.null_attempts == 0);
+
+  const Board mate = Board::from_fen(
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1").value();
+  const SearchResult mate_result = search(mate, optimized);
+  assert(mate_result.score > MATE_SCORE - 10);
+  const char* tactical_fens[] = {
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1", // mate in 1
+      "7k/8/6Q1/6K1/8/8/8/8 w - - 0 1", // mate threat
+      "3rk3/8/8/8/8/8/3p4/3QK3 w - - 0 1", // hanging queen
+      "4k3/8/8/8/3p4/8/3P4/4K3 w - - 0 1", // forced recapture
+      "6k1/5ppp/8/8/8/2B5/5PPP/6K1 w - - 0 1", // checking sacrifice candidate
+      "4k3/P7/8/8/8/8/8/4K3 w - - 0 1", // promotion tactic
+  };
+  for (const char* tactical_fen : tactical_fens) {
+    const Board tactical = Board::from_fen(tactical_fen).value();
+    SearchLimits tactical_limits = optimized;
+    tactical_limits.max_depth = 3;
+    const SearchResult tactical_result = search(tactical, tactical_limits);
+    assert(!generate_legal_moves(tactical).empty());
+    assert(tactical_result.best_move.from.is_valid());
+  }
+  (void)off;
+}
+
 }  // namespace
 
 int main() {
@@ -118,4 +166,5 @@ int main() {
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();
   test_quiescence_and_special_tactics();
+  test_pruning_flags_and_tactics();
 }

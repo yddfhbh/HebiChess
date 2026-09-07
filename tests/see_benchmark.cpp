@@ -1,5 +1,7 @@
 #include <chrono>
 #include <iostream>
+#include <string>
+#include <tuple>
 
 #include "chess/search.hpp"
 #include "chess/uci.hpp"
@@ -8,12 +10,12 @@ using namespace hebichess;
 
 namespace {
 
-void run(const Board& position, const char* label, bool pruning, bool heuristics) {
+void run(const Board& position, const char* label, bool null_move, bool lmr) {
   SearchLimits limits;
-  limits.max_depth = 3;
-  limits.use_tt = false;
-  limits.use_see_pruning = pruning;
-  limits.use_killer_history = heuristics;
+  limits.max_depth = 4;
+  limits.use_tt = true;
+  limits.use_null_move = null_move;
+  limits.use_lmr = lmr;
   const auto started = std::chrono::steady_clock::now();
   const SearchResult result = search(position, limits);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -25,16 +27,21 @@ void run(const Board& position, const char* label, bool pruning, bool heuristics
             << " killer_cutoffs " << result.killer_cutoffs
             << " killer_uses " << result.killer_uses
             << " history_cutoffs " << result.history_cutoffs
+            << " null_attempts " << result.null_attempts
+            << " null_cutoffs " << result.null_cutoffs
+            << " lmr_attempts " << result.lmr_attempts
+            << " lmr_researches " << result.lmr_researches
             << " elapsed_ms " << elapsed << '\n';
 }
 
-void run_timed(const Board& position, const char* label, bool heuristics) {
+void run_timed(const Board& position, const char* label, bool null_move, bool lmr) {
   SearchLimits limits;
   limits.max_depth = 64;
   limits.has_deadline = true;
   limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
   limits.use_tt = false;
-  limits.use_killer_history = heuristics;
+  limits.use_null_move = null_move;
+  limits.use_lmr = lmr;
   int completed_depth = 0;
   const auto started = std::chrono::steady_clock::now();
   const SearchResult result = search(position, limits,
@@ -53,22 +60,28 @@ void run_timed(const Board& position, const char* label, bool heuristics) {
 
 int main() {
   const Board startpos = Board::initial();
-  const Board position = Board::from_fen(
+  const Board quiet = Board::from_fen(
       "r2q1rk1/ppp1bppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1").value();
-  run(startpos, "start_off", true, false);
+  const Board tactical = Board::from_fen(
+      "r1bq1rk1/ppp2ppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1").value();
+  const std::pair<const char*, const Board*> positions[] = {
+      {"start", &startpos}, {"quiet", &quiet}, {"tactical", &tactical}};
+  for (const auto& [name, position] : positions) {
+    for (const auto& [null_move, lmr, suffix] : {
+             std::tuple<bool, bool, const char*>{false, false, "A"},
+             std::tuple<bool, bool, const char*>{true, false, "B"},
+             std::tuple<bool, bool, const char*>{false, true, "C"},
+             std::tuple<bool, bool, const char*>{true, true, "D"}}) {
+      clear_transposition_table();
+      clear_search_heuristics();
+      const std::string label = std::string(name) + "_" + suffix;
+      run(*position, label.c_str(), null_move, lmr);
+    }
+  }
   clear_transposition_table();
   clear_search_heuristics();
-  run(startpos, "start_on", true, true);
+  run_timed(startpos, "timed_A", false, false);
   clear_transposition_table();
   clear_search_heuristics();
-  run(position, "quiet_off", true, false);
-  clear_transposition_table();
-  clear_search_heuristics();
-  run(position, "quiet_on", true, true);
-  clear_transposition_table();
-  clear_search_heuristics();
-  run_timed(startpos, "timed_off", false);
-  clear_transposition_table();
-  clear_search_heuristics();
-  run_timed(startpos, "timed_on", true);
+  run_timed(startpos, "timed_D", true, true);
 }

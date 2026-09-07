@@ -313,6 +313,26 @@ UndoState Board::make_move(const Move& move) noexcept {
   return undo;
 }
 
+NullUndoState Board::make_null_move() noexcept {
+  NullUndoState undo{en_passant_target_, halfmove_clock_, fullmove_number_,
+                     side_to_move_, zobrist_key_};
+  zobrist_key_ ^= en_passant_zobrist(en_passant_target_);
+  en_passant_target_ = {};
+  ++halfmove_clock_;
+  if (side_to_move_ == Color::Black) ++fullmove_number_;
+  side_to_move_ = opposite(side_to_move_);
+  zobrist_key_ ^= side_zobrist();
+  return undo;
+}
+
+void Board::unmake_null_move(const NullUndoState& undo) noexcept {
+  en_passant_target_ = undo.en_passant_target;
+  halfmove_clock_ = undo.halfmove_clock;
+  fullmove_number_ = undo.fullmove_number;
+  side_to_move_ = undo.side_to_move;
+  zobrist_key_ = undo.previous_zobrist_key;
+}
+
 void Board::unmake_move(const Move& move, const UndoState& undo) noexcept {
   side_to_move_ = undo.side_to_move;
   castling_rights_ = undo.castling_rights;

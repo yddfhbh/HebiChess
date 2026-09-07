@@ -33,6 +33,14 @@ struct UndoState {
   ZobristKey previous_zobrist_key{0};
 };
 
+struct NullUndoState {
+  Square en_passant_target{};
+  std::uint32_t halfmove_clock{0};
+  std::uint32_t fullmove_number{1};
+  Color side_to_move{Color::White};
+  ZobristKey previous_zobrist_key{0};
+};
+
 class Board {
  public:
   Board() noexcept;
@@ -47,6 +55,8 @@ class Board {
   Square find_king(Color color) const noexcept;
   UndoState make_move(const Move& move) noexcept;
   void unmake_move(const Move& move, const UndoState& undo) noexcept;
+  NullUndoState make_null_move() noexcept;
+  void unmake_null_move(const NullUndoState& undo) noexcept;
 
   constexpr const Piece& piece_at(Square square) const noexcept {
     return squares_[square.index()];

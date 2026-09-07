@@ -47,6 +47,19 @@ void test_special_moves() {
   for (const char* fen : fens) assert_integrity(board(fen));
 }
 
+void test_null_move_integrity() {
+  Board position = board("r3k2r/8/8/3pP3/8/8/8/R3K2R b KQkq e3 17 42");
+  const std::string fen = position.to_fen();
+  const ZobristKey key = position.zobrist_key();
+  const NullUndoState undo = position.make_null_move();
+  assert(position.side_to_move() == Color::White);
+  assert(!position.en_passant_target().is_valid());
+  assert(position.zobrist_key() == compute_zobrist(position));
+  position.unmake_null_move(undo);
+  assert(position.zobrist_key() == key);
+  assert(position.to_fen() == fen);
+}
+
 void test_tt_consistency() {
   const Board position = board("r2q1rk1/ppp1bppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1");
   SearchLimits off;
@@ -81,5 +94,6 @@ void test_tt_consistency() {
 int main() {
   test_position_identity();
   test_special_moves();
+  test_null_move_integrity();
   test_tt_consistency();
 }

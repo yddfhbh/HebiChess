@@ -105,7 +105,11 @@ int main() {
                 << " see_prunes " << result.see_prunes
                 << " killer_cutoffs " << result.killer_cutoffs
                 << " killer_uses " << result.killer_uses
-                << " history_cutoffs " << result.history_cutoffs << std::endl;
+                << " history_cutoffs " << result.history_cutoffs
+                << " null_attempts " << result.null_attempts
+                << " null_cutoffs " << result.null_cutoffs
+                << " lmr_attempts " << result.lmr_attempts
+                << " lmr_researches " << result.lmr_researches << std::endl;
       std::cout << "bestmove " << move_to_uci(result.best_move) << std::endl;
     } else if (command == "quit") {
       break;
