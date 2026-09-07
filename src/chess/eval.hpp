@@ -19,6 +19,7 @@ struct EvalBreakdown {
   int space{0};
   int threats{0};
   int initiative{0};
+  int development{0};
   int total{0};
 };
 
@@ -36,6 +37,7 @@ int evaluate_king_attack(const Board& board, Color perspective) noexcept;
 int evaluate_space(const Board& board, Color perspective) noexcept;
 int evaluate_threats(const Board& board, Color perspective) noexcept;
 int evaluate_initiative(const Board& board, Color perspective) noexcept;
+int evaluate_development(const Board& board, Color perspective) noexcept;
 int evaluate_attack_pressure(const Board& board, Color perspective) noexcept;
 
 EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept;

@@ -18,6 +18,18 @@ bool has_move(const SearchResult& result, Square from, Square to) {
   return result.best_move.from == from && result.best_move.to == to;
 }
 
+void play(Board& board, const char* uci) {
+  const auto legal = generate_legal_moves(board);
+  for (const Move& move : legal) {
+    if (move.from == sq(uci[0], uci[1] - '0') &&
+        move.to == sq(uci[2], uci[3] - '0')) {
+      board.make_move(move);
+      return;
+    }
+  }
+  assert(false && "test move must be legal");
+}
+
 void test_evaluation() {
   const auto equal = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").value();
   assert(evaluate_material(equal, Color::White) == 0);
@@ -46,6 +58,63 @@ void test_evaluation() {
   assert(game_phase(Board::initial()) > game_phase(passed));
   const auto attack = Board::from_fen("4k3/3Q4/4N3/8/8/8/8/4K3 w - - 0 1").value();
   assert(evaluate_king_attack(attack, Color::White) > 0);
+}
+
+void test_opening_development_and_breakdown() {
+  Board opening = Board::initial();
+  play(opening, "e2e4");
+  play(opening, "d7d5");
+  play(opening, "d2d4");
+  play(opening, "d5e4");
+  play(opening, "b1c3");
+  assert(opening.side_to_move() == Color::Black);
+
+  const auto candidate = [&](const char* uci) {
+    Board after = opening;
+    play(after, uci);
+    return evaluate_breakdown(after, Color::Black);
+  };
+  const EvalBreakdown nf6 = candidate("g8f6");
+  const EvalBreakdown nc6 = candidate("b8c6");
+  const EvalBreakdown a6 = candidate("a7a6");
+  const EvalBreakdown h6 = candidate("h7h6");
+  const EvalBreakdown g5 = candidate("g7g5");
+  std::cout << "opening black candidates (total/development/space/attack):\n"
+            << "  Nf6 " << nf6.total << '/' << nf6.development << '/' << nf6.space << '/' << nf6.king_attack << '\n'
+            << "  Nc6 " << nc6.total << '/' << nc6.development << '/' << nc6.space << '/' << nc6.king_attack << '\n'
+            << "  a6  " << a6.total << '/' << a6.development << '/' << a6.space << '/' << a6.king_attack << '\n'
+            << "  h6  " << h6.total << '/' << h6.development << '/' << h6.space << '/' << h6.king_attack << '\n'
+            << "  g5  " << g5.total << '/' << g5.development << '/' << g5.space << '/' << g5.king_attack << '\n';
+  assert(nf6.development > a6.development);
+  assert(nc6.development > h6.development);
+
+  const SearchResult result = search(opening, 2);
+  std::cout << "opening best="
+            << static_cast<char>('a' + result.best_move.from.file())
+            << (result.best_move.from.rank() + 1)
+            << static_cast<char>('a' + result.best_move.to.file())
+            << (result.best_move.to.rank() + 1) << '\n';
+  for (const RootMoveInfo& info : result.root_moves) {
+    std::cout << "  root " << static_cast<char>('a' + info.move.from.file())
+              << (info.move.from.rank() + 1)
+              << static_cast<char>('a' + info.move.to.file())
+              << (info.move.to.rank() + 1) << " score=" << info.search_score
+              << " style=" << info.style_score << '\n';
+  }
+
+  Board replay = Board::initial();
+  for (const char* move : {"e2e4", "d7d5", "d2d4", "d5e4", "b1c3", "a7a6",
+                           "c1f4", "a6a5", "f2f3", "a5a4", "f3e4", "h7h6",
+                           "g1f3", "h6h5", "f4e3", "h5h4"}) {
+    play(replay, move);
+  }
+  const EvalBreakdown repeated_flank = evaluate_breakdown(replay, Color::Black);
+  std::cout << "replayed flank line: total=" << repeated_flank.total
+            << " pawns=" << repeated_flank.pawns
+            << " development=" << repeated_flank.development
+            << " space=" << repeated_flank.space << '\n';
+  assert(repeated_flank.development < 0);
+  assert(repeated_flank.pawns < 0);
 }
 
 void test_search_and_terminal_positions() {
@@ -229,6 +298,7 @@ void test_pvs_and_aspiration_equivalence() {
 
 int main() {
   test_evaluation();
+  test_opening_development_and_breakdown();
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();
   test_quiescence_and_special_tactics();

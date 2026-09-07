@@ -208,6 +208,19 @@ int evaluate_move_style(const Board& before, const Move& move,
   style += std::max(0, after_eval.king_attack - before_eval.king_attack);
   style += std::max(0, after_eval.space - before_eval.space) / 2;
   style += std::max(0, after_eval.passed_pawns - before_eval.passed_pawns) / 2;
+  style += std::max(0, after_eval.development - before_eval.development);
+  const Piece moving = before.piece_at(move.from);
+  const bool opening = game_phase(before) >= 18;
+  const bool quiet_flank_pawn = opening && is_quiet_move(move) &&
+                                moving.type == PieceType::Pawn &&
+                                (move.from.file() == 0 || move.from.file() == 7);
+  if (quiet_flank_pawn) style -= 6;
+  if (opening && is_quiet_move(move) && moving.type == PieceType::Pawn &&
+      (move.from.file() == 5 || move.from.file() == 6) &&
+      before.find_king(mover).is_valid() && before.find_king(mover).file() >= 4 &&
+      after_eval.king_safety < before_eval.king_safety) {
+    style -= 4;
+  }
   if (is_sacrifice_candidate(before, move, after)) style += check ? 12 : 5;
   return style;
 }
