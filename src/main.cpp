@@ -44,6 +44,7 @@ int main() {
     } else if (command == "ucinewgame") {
       board = Board::initial();
       clear_transposition_table();
+      clear_search_heuristics();
     } else if (command == "position") {
       std::string kind;
       input >> kind;
@@ -101,7 +102,10 @@ int main() {
       std::cout << "info string tt probes " << result.tt_probes
                 << " hits " << result.tt_hits << " cutoffs "
                 << result.tt_cutoffs << " see_calls " << result.see_calls
-                << " see_prunes " << result.see_prunes << std::endl;
+                << " see_prunes " << result.see_prunes
+                << " killer_cutoffs " << result.killer_cutoffs
+                << " killer_uses " << result.killer_uses
+                << " history_cutoffs " << result.history_cutoffs << std::endl;
       std::cout << "bestmove " << move_to_uci(result.best_move) << std::endl;
     } else if (command == "quit") {
       break;

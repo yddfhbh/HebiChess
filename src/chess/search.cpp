@@ -1,6 +1,7 @@
 #include "chess/search.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 
@@ -12,6 +13,48 @@ namespace {
 TranspositionTable& transposition_table() {
   static TranspositionTable table(64);
   return table;
+}
+
+constexpr int MAX_SEARCH_PLY = 128;
+constexpr int MAX_HISTORY = 32768;
+
+struct SearchHeuristics {
+  std::array<std::array<Move, 2>, MAX_SEARCH_PLY> killers{};
+  std::array<std::array<std::array<int, Square::kSquareCount>,
+                         Square::kSquareCount>, 2> history{};
+
+  void clear() noexcept {
+    killers = {};
+    history = {};
+  }
+
+  int history_score(Color side, const Move& move) const noexcept {
+    return history[static_cast<int>(side)][move.from.index()][move.to.index()];
+  }
+
+  void update_history(Color side, const Move& move, int depth) noexcept {
+    if (move.from.is_valid() && move.to.is_valid()) {
+      int& score = history[static_cast<int>(side)][move.from.index()][move.to.index()];
+      score = std::min(MAX_HISTORY, score + std::max(1, depth * depth));
+      if (score == MAX_HISTORY) {
+        for (auto& color : history)
+          for (auto& from : color)
+            for (int& value : from) value /= 2;
+      }
+    }
+  }
+
+  void store_killer(const Move& move, int ply) noexcept {
+    if (ply < 0 || ply >= MAX_SEARCH_PLY) return;
+    if (killers[ply][0] == move) return;
+    killers[ply][1] = killers[ply][0];
+    killers[ply][0] = move;
+  }
+};
+
+SearchHeuristics& search_heuristics() {
+  static SearchHeuristics heuristics;
+  return heuristics;
 }
 
 int score_to_tt(int score, int ply) noexcept {
@@ -35,6 +78,7 @@ struct SearchContext {
   TranspositionTable* tt{nullptr};
   SearchResult* result{nullptr};
   bool use_see_pruning{true};
+  SearchHeuristics* heuristics{nullptr};
 
   bool should_stop() {
     if (stopped) return true;
@@ -66,13 +110,30 @@ int move_see(const Board& board, const Move& move, SearchResult* result) noexcep
   return static_exchange_eval(board, move);
 }
 
-int move_order(Board& board, const Move& move, SearchResult* result = nullptr) noexcept {
+bool is_quiet_move(const Move& move) noexcept {
+  return !is_capture(move) && !move.is_promotion();
+}
+
+int move_order(Board& board, const Move& move, SearchResult* result = nullptr,
+               SearchHeuristics* heuristics = nullptr, int ply = 0) noexcept {
   const int see = move_see(board, move, result);
   const bool capture = is_capture(move);
   int score = 0;
   const Piece victim = board.piece_at(move.to);
   if (capture && see >= 0) score += 4000000 + see * 10;
   else if (move.is_promotion()) score += 3000000 + see * 10;
+  else if (is_quiet_move(move) && heuristics != nullptr &&
+           ply >= 0 && ply < MAX_SEARCH_PLY) {
+    if (move == heuristics->killers[ply][0]) {
+      score += 2500000;
+      if (result != nullptr) ++result->killer_uses;
+    } else if (move == heuristics->killers[ply][1]) {
+      score += 2400000;
+      if (result != nullptr) ++result->killer_uses;
+    } else if (heuristics->history_score(board.side_to_move(), move) > 0) {
+      score += 2200000 + heuristics->history_score(board.side_to_move(), move);
+    } else if (gives_check(board, move)) score += 2000000;
+  }
   else if (gives_check(board, move)) score += 2000000;
   else if (capture) score += 1000000 + see * 10;
   if (move.flag == MoveFlag::EnPassant) score += 10 * piece_value(PieceType::Pawn);
@@ -161,8 +222,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   if (in_check) {
     if (legal.empty()) return -MATE_SCORE + ply;
     std::vector<Move> evasions = legal;
-    std::sort(evasions.begin(), evasions.end(), [&board, &context](const Move& a, const Move& b) {
-      return move_order(board, a, context.result) > move_order(board, b, context.result);
+    std::sort(evasions.begin(), evasions.end(), [&board, &context, ply](const Move& a, const Move& b) {
+      return move_order(board, a, context.result, context.heuristics, ply) >
+             move_order(board, b, context.result, context.heuristics, ply);
     });
     int best = -MATE_SCORE;
     for (const Move& move : evasions) {
@@ -249,11 +311,12 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   }
   int best = -MATE_SCORE;
   std::optional<Move> best_move;
-  std::sort(moves.begin(), moves.end(), [&board, &tt_move, &context](const Move& a, const Move& b) {
+  std::sort(moves.begin(), moves.end(), [&board, &tt_move, &context, ply](const Move& a, const Move& b) {
     const bool a_is_tt = tt_move.has_value() && a == *tt_move;
     const bool b_is_tt = tt_move.has_value() && b == *tt_move;
     if (a_is_tt != b_is_tt) return a_is_tt;
-      return move_order(board, a, context.result) > move_order(board, b, context.result);
+      return move_order(board, a, context.result, context.heuristics, ply) >
+             move_order(board, b, context.result, context.heuristics, ply);
   });
   for (const Move& move : moves) {
     const UndoState undo = board.make_move(move);
@@ -266,7 +329,20 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       best_move = move;
     }
     alpha = std::max(alpha, score);
-    if (alpha >= beta) break;
+    if (alpha >= beta) {
+      if (context.heuristics != nullptr && is_quiet_move(move)) {
+        const bool was_killer = ply >= 0 && ply < MAX_SEARCH_PLY &&
+            (context.heuristics->killers[ply][0] == move ||
+             context.heuristics->killers[ply][1] == move);
+        context.heuristics->store_killer(move, ply);
+        context.heuristics->update_history(board.side_to_move(), move, depth);
+        if (context.result != nullptr) {
+          ++context.result->history_cutoffs;
+          if (was_killer) ++context.result->killer_cutoffs;
+        }
+      }
+      break;
+    }
   }
   if (context.tt != nullptr && context.result != nullptr) {
     const TTBound bound = best <= original_alpha ? TTBound::Upper
@@ -308,7 +384,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                           limits.deadline, false,
                           limits.use_tt ? &tt : nullptr, &result,
-                          limits.use_see_pruning};
+                          limits.use_see_pruning,
+                          limits.use_killer_history ? &search_heuristics() : nullptr};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
@@ -317,7 +394,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                           limits.deadline, false,
                           limits.use_tt ? &tt : nullptr, &result,
-                          limits.use_see_pruning};
+                          limits.use_see_pruning,
+                          limits.use_killer_history ? &search_heuristics() : nullptr};
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
     for (const Move& move : legal) {
@@ -360,5 +438,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
 }
 
 void clear_transposition_table() noexcept { transposition_table().clear(); }
+
+void clear_search_heuristics() noexcept { search_heuristics().clear(); }
 
 }  // namespace hebichess

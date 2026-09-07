@@ -31,6 +31,9 @@ struct SearchResult {
   std::uint64_t tt_cutoffs{0};
   std::uint64_t see_calls{0};
   std::uint64_t see_prunes{0};
+  std::uint64_t killer_cutoffs{0};
+  std::uint64_t killer_uses{0};
+  std::uint64_t history_cutoffs{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -40,6 +43,7 @@ struct SearchLimits {
   std::chrono::steady_clock::time_point deadline{};
   bool use_tt{true};
   bool use_see_pruning{true};
+  bool use_killer_history{true};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,
@@ -56,5 +60,6 @@ SearchResult search(const Board& board, int max_depth);
 SearchResult search(const Board& board, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration = {});
 void clear_transposition_table() noexcept;
+void clear_search_heuristics() noexcept;
 
 }  // namespace hebichess
