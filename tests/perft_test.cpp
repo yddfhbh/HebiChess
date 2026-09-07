@@ -19,6 +19,7 @@ void test_start_position() {
   assert(perft(board, 2) == 400);
   assert(perft(board, 3) == 8902);
   assert(perft(board, 4) == 197281);
+  assert(perft(board, 5) == 4865609);
 }
 
 void test_standard_positions() {

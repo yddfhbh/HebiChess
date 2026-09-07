@@ -42,8 +42,24 @@ void test_search_and_terminal_positions() {
     if (info.move == mate_result.best_move) std::cout << " style=" << info.style_score;
   std::cout << '\n';
   std::cout << "nodes";
-  for (int depth = 1; depth <= 4; ++depth) std::cout << " d" << depth << "=" << search(mate, depth).nodes;
+  for (int depth = 1; depth <= 4; ++depth) {
+    const SearchResult depth_result = search(mate, depth);
+    std::cout << " d" << depth << "=" << depth_result.nodes
+              << "/q" << depth_result.qnodes;
+  }
   std::cout << '\n';
+
+  const auto hanging_queen = Board::from_fen(
+      "3rk3/8/8/8/8/8/3p4/3QK3 w - - 0 1").value();
+  const SearchResult hanging_result = search(hanging_queen, 1);
+  assert(!has_move(hanging_result, sq('d', 1), sq('d', 2)));
+  std::cout << "hanging best="
+            << static_cast<char>('a' + hanging_result.best_move.from.file())
+            << (hanging_result.best_move.from.rank() + 1)
+            << static_cast<char>('a' + hanging_result.best_move.to.file())
+            << (hanging_result.best_move.to.rank() + 1)
+            << " score=" << hanging_result.score
+            << " qnodes=" << hanging_result.qnodes << '\n';
 
   const auto stalemate = Board::from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1").value();
   assert(search(stalemate, 1).score == 0);
@@ -64,10 +80,42 @@ void test_style_and_safety_metadata() {
   assert(AGGRESSION_TOLERANCE_CP == 35);
 }
 
+void test_quiescence_and_special_tactics() {
+  {
+    Board board = Board::initial();
+    const std::string before = board.to_fen();
+    const SearchResult result = search(board, 1);
+    assert(result.qnodes > 0);
+    assert(result.qnodes <= result.nodes);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "4k3/P7/8/8/8/8/8/4K3 w - - 0 1").value();
+    const std::string before = board.to_fen();
+    const int score = quiescence(board, -MATE_SCORE, MATE_SCORE, 0);
+    assert(score > 500);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1").value();
+    const std::string before = board.to_fen();
+    quiescence(board, -MATE_SCORE, MATE_SCORE, 0);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "7k/6Q1/7K/8/8/8/8/8 b - - 0 1").value();
+    assert(quiescence(board, -MATE_SCORE, MATE_SCORE, 0) == -MATE_SCORE);
+  }
+}
+
 }  // namespace
 
 int main() {
   test_evaluation();
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();
+  test_quiescence_and_special_tactics();
 }

@@ -21,6 +21,7 @@ struct SearchResult {
   Move best_move{};
   int score{0};
   std::uint64_t nodes{0};
+  std::uint64_t qnodes{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -30,6 +31,7 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
                             const Board& after) noexcept;
 int negamax(Board& board, int depth, int alpha, int beta, int ply,
             std::uint64_t& nodes);
+int quiescence(Board& board, int alpha, int beta, int ply);
 SearchResult search(const Board& board, int max_depth);
 
 }  // namespace hebichess
