@@ -17,6 +17,7 @@ TranspositionTable& transposition_table() {
 
 constexpr int MAX_SEARCH_PLY = 128;
 constexpr int MAX_HISTORY = 32768;
+constexpr int ASPIRATION_INITIAL_WINDOW_CP = 35;
 
 struct SearchHeuristics {
   std::array<std::array<Move, 2>, MAX_SEARCH_PLY> killers{};
@@ -81,6 +82,7 @@ struct SearchContext {
   SearchHeuristics* heuristics{nullptr};
   bool use_null_move{false};
   bool use_lmr{false};
+  bool use_pvs{false};
 
   bool should_stop() {
     if (stopped) return true;
@@ -358,17 +360,35 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     const bool lmr_candidate = context.use_lmr && depth >= 3 && move_index >= 4 &&
         !in_check && is_quiet_move(move) && !killer_move && !high_history &&
         !gives_check(board, move);
+    const bool pvs_candidate = context.use_pvs && move_index > 0;
     const UndoState undo = board.make_move(move);
     int score = 0;
+    const auto search_child = [&](int child_depth, bool zero_window) {
+      if (zero_window && context.result != nullptr)
+        ++context.result->pvs_zero_window_searches;
+      if (zero_window)
+        return -negamax_impl(board, child_depth, -alpha - 1, -alpha,
+                             ply + 1, context);
+      return -negamax_impl(board, child_depth, -beta, -alpha, ply + 1,
+                           context);
+    };
     if (lmr_candidate) {
       if (context.result != nullptr) ++context.result->lmr_attempts;
-      score = -negamax_impl(board, depth - 2, -beta, -alpha, ply + 1, context);
+      score = search_child(depth - 2, pvs_candidate);
       if (!context.stopped && score >= alpha) {
         if (context.result != nullptr) ++context.result->lmr_researches;
-        score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1, context);
+        score = search_child(depth - 1, pvs_candidate);
+        if (!context.stopped && pvs_candidate && score > alpha && score < beta) {
+          if (context.result != nullptr) ++context.result->pvs_researches;
+          score = search_child(depth - 1, false);
+        }
       }
     } else {
-      score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1, context);
+      score = search_child(depth - 1, pvs_candidate);
+      if (!context.stopped && pvs_candidate && score > alpha && score < beta) {
+        if (context.result != nullptr) ++context.result->pvs_researches;
+        score = search_child(depth - 1, false);
+      }
     }
     board.unmake_move(move, undo);
     if (context.stopped) return 0;
@@ -434,35 +454,88 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
-                          limits.use_null_move, limits.use_lmr};
+                          limits.use_null_move, limits.use_lmr, limits.use_pvs};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
   result.best_move = legal.front();
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
-    SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
-                          limits.deadline, false,
-                          limits.use_tt ? &tt : nullptr, &result,
-                          limits.use_see_pruning,
-                          limits.use_killer_history ? &search_heuristics() : nullptr,
-                          limits.use_null_move, limits.use_lmr};
+    const int previous_score = result.score;
+    const bool mate_score = previous_score > MATE_SCORE - 1000 ||
+                            previous_score < -MATE_SCORE + 1000;
+    const bool use_aspiration = limits.use_aspiration && depth > 1 && !mate_score;
+    int window = ASPIRATION_INITIAL_WINDOW_CP;
+    int alpha = use_aspiration ? std::max(-MATE_SCORE, previous_score - window)
+                                : -MATE_SCORE;
+    int beta = use_aspiration ? std::min(MATE_SCORE, previous_score + window)
+                              : MATE_SCORE;
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
-    for (const Move& move : legal) {
-      if (context.should_stop()) break;
-      const UndoState undo = root.make_move(move);
-      const int score = -negamax_impl(root, depth - 1, -MATE_SCORE, MATE_SCORE,
-                                      1, context);
-      Board child = root;
-      root.unmake_move(move, undo);
-      if (context.stopped) break;
-      child.make_move(move);
-      current.push_back({move, score, evaluate_move_style(position, move, child),
-                         is_sacrifice_candidate(position, move, child),
-                         move_see(position, move, &result)});
-      best_score = std::max(best_score, score);
+    bool completed = false;
+    bool stopped_iteration = false;
+    while (!completed) {
+      SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
+                            limits.deadline, false,
+                            limits.use_tt ? &tt : nullptr, &result,
+                            limits.use_see_pruning,
+                            limits.use_killer_history ? &search_heuristics() : nullptr,
+                            limits.use_null_move, limits.use_lmr, limits.use_pvs};
+      current.clear();
+      best_score = -MATE_SCORE;
+      for (std::size_t move_index = 0; move_index < legal.size(); ++move_index) {
+        const Move& move = legal[move_index];
+        if (context.should_stop()) break;
+        const UndoState undo = root.make_move(move);
+        int score = 0;
+        const bool zero_window = limits.use_pvs && move_index > 0;
+        if (zero_window) {
+          ++result.pvs_zero_window_searches;
+          score = -negamax_impl(root, depth - 1, -alpha - 1, -alpha, 1, context);
+          if (!context.stopped && score > alpha && score < beta) {
+            ++result.pvs_researches;
+            score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+          }
+        } else {
+          score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+        }
+        Board child = root;
+        root.unmake_move(move, undo);
+        if (context.stopped) break;
+        child.make_move(move);
+        current.push_back({move, score, evaluate_move_style(position, move, child),
+                           is_sacrifice_candidate(position, move, child),
+                           move_see(position, move, &result)});
+        best_score = std::max(best_score, score);
+        alpha = std::max(alpha, score);
+      }
+      if (context.stopped || current.size() != legal.size()) {
+        stopped_iteration = true;
+        break;
+      }
+      const bool fail_high = use_aspiration && best_score >= beta;
+      // Root alpha is updated while searching, so retain the original window
+      // edge for reliable aspiration classification.
+      const bool outside_low = use_aspiration && best_score <=
+                               (previous_score - window);
+      const bool outside_high = use_aspiration && best_score >= beta;
+      if (outside_low || outside_high) {
+        if (outside_low) ++result.aspiration_fail_lows;
+        if (outside_high) ++result.aspiration_fail_highs;
+        ++result.aspiration_retries;
+        if (window >= MATE_SCORE) {
+          alpha = -MATE_SCORE;
+          beta = MATE_SCORE;
+          completed = true;
+        } else {
+          window = std::min(MATE_SCORE, window * 2);
+          alpha = std::max(-MATE_SCORE, previous_score - window);
+          beta = std::min(MATE_SCORE, previous_score + window);
+        }
+        continue;
+      }
+      completed = true;
     }
-    if (context.stopped || current.size() != legal.size()) break;
+    if (stopped_iteration || current.size() != legal.size()) break;
     const bool mate_found = best_score > MATE_SCORE - 1000 || best_score < -MATE_SCORE + 1000;
     auto chosen = current.begin();
     for (auto candidate = std::next(current.begin()); candidate != current.end(); ++candidate) {

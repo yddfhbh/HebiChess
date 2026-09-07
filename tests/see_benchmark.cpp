@@ -10,12 +10,12 @@ using namespace hebichess;
 
 namespace {
 
-void run(const Board& position, const char* label, bool null_move, bool lmr) {
+void run(const Board& position, const char* label, bool pvs, bool aspiration) {
   SearchLimits limits;
   limits.max_depth = 4;
   limits.use_tt = true;
-  limits.use_null_move = null_move;
-  limits.use_lmr = lmr;
+  limits.use_pvs = pvs;
+  limits.use_aspiration = aspiration;
   const auto started = std::chrono::steady_clock::now();
   const SearchResult result = search(position, limits);
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -31,17 +31,22 @@ void run(const Board& position, const char* label, bool null_move, bool lmr) {
             << " null_cutoffs " << result.null_cutoffs
             << " lmr_attempts " << result.lmr_attempts
             << " lmr_researches " << result.lmr_researches
+            << " pvs_zero_window_searches " << result.pvs_zero_window_searches
+            << " pvs_researches " << result.pvs_researches
+            << " aspiration_retries " << result.aspiration_retries
+            << " aspiration_fail_highs " << result.aspiration_fail_highs
+            << " aspiration_fail_lows " << result.aspiration_fail_lows
             << " elapsed_ms " << elapsed << '\n';
 }
 
-void run_timed(const Board& position, const char* label, bool null_move, bool lmr) {
+void run_timed(const Board& position, const char* label, bool pvs, bool aspiration) {
   SearchLimits limits;
   limits.max_depth = 64;
   limits.has_deadline = true;
   limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
   limits.use_tt = false;
-  limits.use_null_move = null_move;
-  limits.use_lmr = lmr;
+  limits.use_pvs = pvs;
+  limits.use_aspiration = aspiration;
   int completed_depth = 0;
   const auto started = std::chrono::steady_clock::now();
   const SearchResult result = search(position, limits,
@@ -53,6 +58,12 @@ void run_timed(const Board& position, const char* label, bool null_move, bool lm
   std::cout << label << " depth " << completed_depth
             << " bestmove " << move_to_uci(result.best_move)
             << " score " << result.score << " nodes " << result.nodes
+            << " qnodes " << result.qnodes
+            << " pvs_zero_window_searches " << result.pvs_zero_window_searches
+            << " pvs_researches " << result.pvs_researches
+            << " aspiration_retries " << result.aspiration_retries
+            << " aspiration_fail_highs " << result.aspiration_fail_highs
+            << " aspiration_fail_lows " << result.aspiration_fail_lows
             << " elapsed_ms " << elapsed << '\n';
 }
 
@@ -67,7 +78,7 @@ int main() {
   const std::pair<const char*, const Board*> positions[] = {
       {"start", &startpos}, {"quiet", &quiet}, {"tactical", &tactical}};
   for (const auto& [name, position] : positions) {
-    for (const auto& [null_move, lmr, suffix] : {
+    for (const auto& [pvs, aspiration, suffix] : {
              std::tuple<bool, bool, const char*>{false, false, "A"},
              std::tuple<bool, bool, const char*>{true, false, "B"},
              std::tuple<bool, bool, const char*>{false, true, "C"},
@@ -75,7 +86,7 @@ int main() {
       clear_transposition_table();
       clear_search_heuristics();
       const std::string label = std::string(name) + "_" + suffix;
-      run(*position, label.c_str(), null_move, lmr);
+      run(*position, label.c_str(), pvs, aspiration);
     }
   }
   clear_transposition_table();

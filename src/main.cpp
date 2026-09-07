@@ -109,7 +109,12 @@ int main() {
                 << " null_attempts " << result.null_attempts
                 << " null_cutoffs " << result.null_cutoffs
                 << " lmr_attempts " << result.lmr_attempts
-                << " lmr_researches " << result.lmr_researches << std::endl;
+                << " lmr_researches " << result.lmr_researches
+                << " pvs_zero_window_searches " << result.pvs_zero_window_searches
+                << " pvs_researches " << result.pvs_researches
+                << " aspiration_retries " << result.aspiration_retries
+                << " aspiration_fail_highs " << result.aspiration_fail_highs
+                << " aspiration_fail_lows " << result.aspiration_fail_lows << std::endl;
       std::cout << "bestmove " << move_to_uci(result.best_move) << std::endl;
     } else if (command == "quit") {
       break;

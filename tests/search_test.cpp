@@ -159,6 +159,54 @@ void test_pruning_flags_and_tactics() {
   (void)off;
 }
 
+void test_pvs_and_aspiration_equivalence() {
+  const char* fens[] = {
+      "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "r2q1rk1/ppp1bppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1",
+      "r1bq1rk1/ppp2ppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1",
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1",
+  };
+  for (const char* fen : fens) {
+    const Board board = Board::from_fen(fen).value();
+    const std::string before = board.to_fen();
+    const ZobristKey key = board.zobrist_key();
+    SearchLimits alpha_beta;
+    alpha_beta.max_depth = 4;
+    alpha_beta.use_pvs = false;
+    alpha_beta.use_aspiration = false;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult ab = search(board, alpha_beta);
+
+    SearchLimits pvs = alpha_beta;
+    pvs.use_pvs = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult pvs_result = search(board, pvs);
+    assert(pvs_result.best_move == ab.best_move);
+    assert(pvs_result.score == ab.score);
+    assert(pvs_result.pvs_zero_window_searches > 0);
+
+    SearchLimits aspiration = alpha_beta;
+    aspiration.use_aspiration = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult aspiration_result = search(board, aspiration);
+    assert(aspiration_result.best_move == ab.best_move);
+    assert(aspiration_result.score == ab.score);
+
+    SearchLimits both = pvs;
+    both.use_aspiration = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult both_result = search(board, both);
+    assert(both_result.best_move == ab.best_move);
+    assert(both_result.score == ab.score);
+    assert(board.to_fen() == before);
+    assert(board.zobrist_key() == key);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -167,4 +215,5 @@ int main() {
   test_style_and_safety_metadata();
   test_quiescence_and_special_tactics();
   test_pruning_flags_and_tactics();
+  test_pvs_and_aspiration_equivalence();
 }
