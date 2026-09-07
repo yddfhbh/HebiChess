@@ -1,6 +1,9 @@
 #include <iostream>
 
+#include "chess/board.hpp"
+
 int main() {
-  std::cout << "HebiChess" << std::endl;
+  const hebichess::Board board;
+  std::cout << "HebiChess (" << board.squares().size() << " squares)\n";
   return 0;
 }

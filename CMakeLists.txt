@@ -7,7 +7,39 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(HebiChess
   src/main.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
 )
+
+target_include_directories(HebiChess PRIVATE src)
+
+add_executable(HebiChessTypesTest
+  tests/chess_types_test.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
+)
+target_include_directories(HebiChessTypesTest PRIVATE src)
+
+add_executable(HebiChessMovegenTest
+  tests/movegen_test.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
+)
+target_include_directories(HebiChessMovegenTest PRIVATE src)
+
+add_executable(HebiChessPerftTest
+  tests/perft_test.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
+)
+target_include_directories(HebiChessPerftTest PRIVATE src)
 
 enable_testing()
 add_test(NAME smoke COMMAND HebiChess)
+add_test(NAME chess_types COMMAND HebiChessTypesTest)
+add_test(NAME chess_movegen COMMAND HebiChessMovegenTest)
+add_test(NAME chess_perft COMMAND HebiChessPerftTest)
