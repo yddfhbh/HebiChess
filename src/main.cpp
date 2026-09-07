@@ -6,6 +6,7 @@
 #include <string>
 
 #include "chess/search.hpp"
+#include "chess/eval.hpp"
 #include "chess/uci.hpp"
 
 namespace {
@@ -72,6 +73,18 @@ int main() {
         }
       }
       if (valid) board = next;
+    } else if (command == "eval") {
+      const EvalBreakdown e = evaluate_breakdown(board, board.side_to_move());
+      std::cout << "material " << e.material << "\npst " << e.pst
+                << "\nmobility " << e.mobility << "\npawns " << e.pawns
+                << "\npassed_pawns " << e.passed_pawns
+                << "\nbishop_pair " << e.bishop_pair
+                << "\nrook_activity " << e.rook_activity
+                << "\nking_safety " << e.king_safety
+                << "\nking_attack " << e.king_attack
+                << "\nspace " << e.space << "\nthreats " << e.threats
+                << "\ninitiative " << e.initiative
+                << "\ntotal " << e.total << std::endl;
     } else if (command == "go") {
       SearchLimits limits;
       limits.max_depth = 64;

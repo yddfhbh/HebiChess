@@ -28,6 +28,24 @@ void test_evaluation() {
   Board black_to_move = queen_up;
   black_to_move.set_side_to_move(Color::Black);
   assert(evaluate(black_to_move) < -800);
+
+  const auto bishops = Board::from_fen("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").value();
+  const auto one_bishop = Board::from_fen("4k3/8/8/8/8/8/2B5/4K3 w - - 0 1").value();
+  assert(evaluate_breakdown(bishops, Color::White).bishop_pair >
+         evaluate_breakdown(one_bishop, Color::White).bishop_pair);
+  const auto isolated = Board::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1").value();
+  const auto connected = Board::from_fen("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1").value();
+  assert(evaluate_pawn_structure(isolated, Color::White) <
+         evaluate_pawn_structure(connected, Color::White));
+  const auto passed = Board::from_fen("4k3/8/8/4P3/8/8/8/4K3 w - - 0 1").value();
+  const auto advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").value();
+  assert(evaluate_passed_pawns(advanced, Color::White) > evaluate_passed_pawns(passed, Color::White));
+  const auto open_rook = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1").value();
+  const auto blocked_rook = Board::from_fen("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1").value();
+  assert(evaluate_rooks(open_rook, Color::White) > evaluate_rooks(blocked_rook, Color::White));
+  assert(game_phase(Board::initial()) > game_phase(passed));
+  const auto attack = Board::from_fen("4k3/3Q4/4N3/8/8/8/8/4K3 w - - 0 1").value();
+  assert(evaluate_king_attack(attack, Color::White) > 0);
 }
 
 void test_search_and_terminal_positions() {

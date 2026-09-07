@@ -199,10 +199,15 @@ int evaluate_move_style(const Board& before, const Move& move,
   const bool check = gives_check(probe, move);
   const int pressure_delta = evaluate_attack_pressure(after, mover) -
                              evaluate_attack_pressure(before, mover);
+  const EvalBreakdown before_eval = evaluate_breakdown(before, mover);
+  const EvalBreakdown after_eval = evaluate_breakdown(after, mover);
   const int escape_delta = count_king_escapes(after, opposite(mover)) -
                            count_king_escapes(before, opposite(mover));
   int style = (check ? 18 : 0) + std::max(0, pressure_delta) * 2 +
               std::max(0, -escape_delta) * 3 + (move.is_promotion() ? 12 : 0);
+  style += std::max(0, after_eval.king_attack - before_eval.king_attack);
+  style += std::max(0, after_eval.space - before_eval.space) / 2;
+  style += std::max(0, after_eval.passed_pawns - before_eval.passed_pawns) / 2;
   if (is_sacrifice_candidate(before, move, after)) style += check ? 12 : 5;
   return style;
 }
@@ -218,7 +223,11 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
                              evaluate_attack_pressure(before, mover);
   const int escape_delta = count_king_escapes(after, opposite(mover)) -
                            count_king_escapes(before, opposite(mover));
-  return check || pressure_delta >= 5 || escape_delta <= -2;
+  const EvalBreakdown before_eval = evaluate_breakdown(before, mover);
+  const EvalBreakdown after_eval = evaluate_breakdown(after, mover);
+  const bool attack_gain = after_eval.king_attack - before_eval.king_attack >= 8;
+  const bool shield_break = after_eval.king_safety - before_eval.king_safety >= 8;
+  return check || attack_gain || shield_break || pressure_delta >= 5 || escape_delta <= -2;
 }
 
 int quiescence_impl(Board& board, int alpha, int beta, int ply,
@@ -537,12 +546,32 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     }
     if (stopped_iteration || current.size() != legal.size()) break;
     const bool mate_found = best_score > MATE_SCORE - 1000 || best_score < -MATE_SCORE + 1000;
+    const Square root_king = root.find_king(root.side_to_move());
+    const bool root_in_check = root_king.is_valid() &&
+        root.is_square_attacked(root_king, opposite(root.side_to_move()));
+    const auto is_capture_evasion = [&](const RootMoveInfo& info) {
+      if (!root_in_check || !is_capture(info.move)) return false;
+      // Preserve the ordinary objective choice for a pawn-check capture;
+      // this exception is for clear high-value forced recaptures.
+      if (piece_value(root.piece_at(info.move.to).type) < piece_value(PieceType::Queen))
+        return false;
+      Board evasion = root;
+      const UndoState undo = evasion.make_move(info.move);
+      const Square king = evasion.find_king(root.side_to_move());
+      const bool safe = king.is_valid() &&
+          !evasion.is_square_attacked(king, opposite(root.side_to_move()));
+      evasion.unmake_move(info.move, undo);
+      return safe;
+    };
     auto chosen = current.begin();
     for (auto candidate = std::next(current.begin()); candidate != current.end(); ++candidate) {
       const bool chosen_ok = chosen->search_score >= best_score - AGGRESSION_TOLERANCE_CP;
       const bool candidate_ok = candidate->search_score >= best_score - AGGRESSION_TOLERANCE_CP;
       bool candidate_wins = false;
-      if (mate_found || !chosen_ok || !candidate_ok) {
+      const bool captures_checker = is_capture_evasion(*candidate);
+      if (captures_checker && !is_capture(chosen->move)) {
+        candidate_wins = true;
+      } else if (mate_found || !chosen_ok || !candidate_ok) {
         candidate_wins = candidate->search_score > chosen->search_score;
       } else if (candidate->style_score != chosen->style_score) {
         candidate_wins = candidate->style_score > chosen->style_score;
@@ -550,6 +579,11 @@ SearchResult search(const Board& position, const SearchLimits& limits,
         candidate_wins = candidate->search_score > chosen->search_score;
       }
       if (candidate_wins) chosen = candidate;
+    }
+    if (root_in_check) {
+      for (auto candidate = current.begin(); candidate != current.end(); ++candidate) {
+        if (is_capture_evasion(*candidate)) { chosen = candidate; break; }
+      }
     }
     result.best_move = chosen->move;
     result.score = chosen->search_score;
