@@ -4,6 +4,8 @@
 #include <chrono>
 #include <optional>
 
+#include "chess/see.hpp"
+
 namespace hebichess {
 namespace {
 
@@ -32,6 +34,7 @@ struct SearchContext {
   bool stopped{false};
   TranspositionTable* tt{nullptr};
   SearchResult* result{nullptr};
+  bool use_see_pruning{true};
 
   bool should_stop() {
     if (stopped) return true;
@@ -52,12 +55,28 @@ bool gives_check(Board& board, const Move& move) noexcept {
   return check;
 }
 
-int move_order(Board& board, const Move& move) noexcept {
-  int score = move.is_promotion() ? 100000 : 0;
+bool is_capture(const Move& move) noexcept {
+  return move.flag == MoveFlag::Capture || move.flag == MoveFlag::EnPassant ||
+         move.flag == MoveFlag::PromotionCapture;
+}
+
+int move_see(const Board& board, const Move& move, SearchResult* result) noexcept {
+  if (!is_capture(move) && !move.is_promotion()) return 0;
+  if (result != nullptr) ++result->see_calls;
+  return static_exchange_eval(board, move);
+}
+
+int move_order(Board& board, const Move& move, SearchResult* result = nullptr) noexcept {
+  const int see = move_see(board, move, result);
+  const bool capture = is_capture(move);
+  int score = 0;
   const Piece victim = board.piece_at(move.to);
-  if (move.flag == MoveFlag::EnPassant) score += 1000 + piece_value(PieceType::Pawn);
-  else if (!victim.is_empty()) score += 1000 + 10 * piece_value(victim.type) - piece_value(board.piece_at(move.from).type);
-  if (gives_check(board, move)) score += 500;
+  if (capture && see >= 0) score += 4000000 + see * 10;
+  else if (move.is_promotion()) score += 3000000 + see * 10;
+  else if (gives_check(board, move)) score += 2000000;
+  else if (capture) score += 1000000 + see * 10;
+  if (move.flag == MoveFlag::EnPassant) score += 10 * piece_value(PieceType::Pawn);
+  else if (!victim.is_empty()) score += 10 * piece_value(victim.type) - piece_value(board.piece_at(move.from).type);
   return score;
 }
 
@@ -67,13 +86,14 @@ bool is_tactical_move(const Move& move) noexcept {
          move.flag == MoveFlag::PromotionCapture;
 }
 
-int quiescence_move_order(const Board& board, const Move& move) noexcept {
-  const bool promotion_capture = move.flag == MoveFlag::PromotionCapture;
-  const bool capture = move.flag == MoveFlag::Capture || promotion_capture;
+int quiescence_move_order(Board& board, const Move& move, SearchResult* result) noexcept {
+  const bool capture = is_capture(move);
   const bool promotion = move.is_promotion();
   const bool en_passant = move.flag == MoveFlag::EnPassant;
-  int score = promotion_capture ? 300000 : capture ? 200000 :
-              promotion ? 100000 : en_passant ? 50000 : 0;
+  const int see = move_see(board, move, result);
+  int score = capture && see >= 0 ? 4000000 + see * 10 :
+              promotion ? 3000000 + see * 10 :
+              capture ? 1000000 + see * 10 : en_passant ? 50000 : 0;
   if (capture) {
     const Piece victim = en_passant
         ? Piece{PieceType::Pawn, opposite(board.side_to_move())}
@@ -141,8 +161,8 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   if (in_check) {
     if (legal.empty()) return -MATE_SCORE + ply;
     std::vector<Move> evasions = legal;
-    std::sort(evasions.begin(), evasions.end(), [&board](const Move& a, const Move& b) {
-      return move_order(board, a) > move_order(board, b);
+    std::sort(evasions.begin(), evasions.end(), [&board, &context](const Move& a, const Move& b) {
+      return move_order(board, a, context.result) > move_order(board, b, context.result);
     });
     int best = -MATE_SCORE;
     for (const Move& move : evasions) {
@@ -166,10 +186,19 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   std::vector<Move> tactical;
   for (const Move& move : legal)
     if (is_tactical_move(move)) tactical.push_back(move);
-  std::sort(tactical.begin(), tactical.end(), [&board](const Move& a, const Move& b) {
-    return quiescence_move_order(board, a) > quiescence_move_order(board, b);
+  std::sort(tactical.begin(), tactical.end(), [&board, &context](const Move& a, const Move& b) {
+      return quiescence_move_order(board, a, context.result) >
+             quiescence_move_order(board, b, context.result);
   });
   for (const Move& move : tactical) {
+    const bool promotion = move.is_promotion();
+    const bool capture = is_capture(move);
+    const bool check = gives_check(board, move);
+    const int see = move_see(board, move, context.result);
+    if (context.use_see_pruning && capture && see < -100 && !check && !promotion) {
+      if (context.result != nullptr) ++context.result->see_prunes;
+      continue;
+    }
     const UndoState undo = board.make_move(move);
     const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                        context);
@@ -220,11 +249,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   }
   int best = -MATE_SCORE;
   std::optional<Move> best_move;
-  std::sort(moves.begin(), moves.end(), [&board, &tt_move](const Move& a, const Move& b) {
+  std::sort(moves.begin(), moves.end(), [&board, &tt_move, &context](const Move& a, const Move& b) {
     const bool a_is_tt = tt_move.has_value() && a == *tt_move;
     const bool b_is_tt = tt_move.has_value() && b == *tt_move;
     if (a_is_tt != b_is_tt) return a_is_tt;
-    return move_order(board, a) > move_order(board, b);
+      return move_order(board, a, context.result) > move_order(board, b, context.result);
   });
   for (const Move& move : moves) {
     const UndoState undo = board.make_move(move);
@@ -278,7 +307,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   if (legal.empty()) {
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                           limits.deadline, false,
-                          limits.use_tt ? &tt : nullptr, &result};
+                          limits.use_tt ? &tt : nullptr, &result,
+                          limits.use_see_pruning};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
@@ -286,7 +316,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                           limits.deadline, false,
-                          limits.use_tt ? &tt : nullptr, &result};
+                          limits.use_tt ? &tt : nullptr, &result,
+                          limits.use_see_pruning};
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
     for (const Move& move : legal) {
@@ -299,7 +330,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       if (context.stopped) break;
       child.make_move(move);
       current.push_back({move, score, evaluate_move_style(position, move, child),
-                         is_sacrifice_candidate(position, move, child)});
+                         is_sacrifice_candidate(position, move, child),
+                         move_see(position, move, &result)});
       best_score = std::max(best_score, score);
     }
     if (context.stopped || current.size() != legal.size()) break;

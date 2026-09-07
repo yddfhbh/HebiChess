@@ -18,6 +18,7 @@ struct RootMoveInfo {
   int search_score{0};
   int style_score{0};
   bool sacrifice_candidate{false};
+  int see_score{0};
 };
 
 struct SearchResult {
@@ -28,6 +29,8 @@ struct SearchResult {
   std::uint64_t tt_probes{0};
   std::uint64_t tt_hits{0};
   std::uint64_t tt_cutoffs{0};
+  std::uint64_t see_calls{0};
+  std::uint64_t see_prunes{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -36,6 +39,7 @@ struct SearchLimits {
   bool has_deadline{false};
   std::chrono::steady_clock::time_point deadline{};
   bool use_tt{true};
+  bool use_see_pruning{true};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,

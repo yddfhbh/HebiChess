@@ -15,6 +15,7 @@ add_executable(HebiChess
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 
 target_include_directories(HebiChess PRIVATE src)
@@ -29,6 +30,7 @@ add_executable(HebiChessTypesTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessTypesTest PRIVATE src)
 
@@ -42,6 +44,7 @@ add_executable(HebiChessMovegenTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessMovegenTest PRIVATE src)
 
@@ -55,6 +58,7 @@ add_executable(HebiChessPerftTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessPerftTest PRIVATE src)
 
@@ -68,6 +72,7 @@ add_executable(HebiChessSearchTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessSearchTest PRIVATE src)
 
@@ -81,6 +86,7 @@ add_executable(HebiChessUciTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessUciTest PRIVATE src)
 
@@ -94,8 +100,37 @@ add_executable(HebiChessZobristTtTest
   src/chess/uci.cpp
   src/chess/zobrist.cpp
   src/chess/tt.cpp
+  src/chess/see.cpp
 )
 target_include_directories(HebiChessZobristTtTest PRIVATE src)
+
+add_executable(HebiChessSeeTest
+  tests/see_test.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
+  src/chess/eval.cpp
+  src/chess/search.cpp
+  src/chess/uci.cpp
+  src/chess/zobrist.cpp
+  src/chess/tt.cpp
+  src/chess/see.cpp
+)
+target_include_directories(HebiChessSeeTest PRIVATE src)
+
+add_executable(HebiChessSeeBenchmark
+  tests/see_benchmark.cpp
+  src/chess/board.cpp
+  src/chess/movegen.cpp
+  src/chess/perft.cpp
+  src/chess/eval.cpp
+  src/chess/search.cpp
+  src/chess/uci.cpp
+  src/chess/zobrist.cpp
+  src/chess/tt.cpp
+  src/chess/see.cpp
+)
+target_include_directories(HebiChessSeeBenchmark PRIVATE src)
 
 enable_testing()
 add_test(NAME smoke COMMAND HebiChess)
@@ -105,3 +140,4 @@ add_test(NAME chess_perft COMMAND HebiChessPerftTest)
 add_test(NAME chess_search COMMAND HebiChessSearchTest)
 add_test(NAME chess_uci COMMAND HebiChessUciTest)
 add_test(NAME chess_zobrist_tt COMMAND HebiChessZobristTtTest)
+add_test(NAME chess_see COMMAND HebiChessSeeTest)
