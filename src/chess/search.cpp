@@ -1,9 +1,27 @@
 #include "chess/search.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 namespace hebichess {
 namespace {
+
+struct SearchContext {
+  std::uint64_t& nodes;
+  std::uint64_t& qnodes;
+  bool has_deadline{false};
+  std::chrono::steady_clock::time_point deadline{};
+  bool stopped{false};
+
+  bool should_stop() {
+    if (stopped) return true;
+    if ((nodes & 1023U) != 0) return false;
+    if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
+      stopped = true;
+    }
+    return stopped;
+  }
+};
 
 bool gives_check(Board& board, const Move& move) noexcept {
   const Color mover = board.side_to_move();
@@ -88,7 +106,10 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
 }
 
 int quiescence_impl(Board& board, int alpha, int beta, int ply,
-                    std::uint64_t& nodes, std::uint64_t& qnodes) {
+                    SearchContext& context) {
+  if (context.should_stop()) return 0;
+  auto& nodes = context.nodes;
+  auto& qnodes = context.qnodes;
   ++nodes;
   ++qnodes;
   const Color side = board.side_to_move();
@@ -107,8 +128,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     for (const Move& move : evasions) {
       const UndoState undo = board.make_move(move);
       const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
-                                         nodes, qnodes);
+                                         context);
       board.unmake_move(move, undo);
+      if (context.stopped) return 0;
       best = std::max(best, score);
       alpha = std::max(alpha, score);
       if (alpha >= beta) break;
@@ -130,8 +152,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   for (const Move& move : tactical) {
     const UndoState undo = board.make_move(move);
     const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
-                                       nodes, qnodes);
+                                       context);
     board.unmake_move(move, undo);
+    if (context.stopped) return 0;
     alpha = std::max(alpha, score);
     if (alpha >= beta) break;
   }
@@ -139,9 +162,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 }
 
 int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
-                 std::uint64_t& nodes, std::uint64_t& qnodes) {
-  if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, nodes, qnodes);
-  ++nodes;
+                 SearchContext& context) {
+  if (context.should_stop()) return 0;
+  if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context);
+  ++context.nodes;
   std::vector<Move> moves = generate_legal_moves(board);
   if (moves.empty()) {
     const Square king = board.find_king(board.side_to_move());
@@ -155,8 +179,9 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   for (const Move& move : moves) {
     const UndoState undo = board.make_move(move);
     const int score = -negamax_impl(board, depth - 1, -beta, -alpha, ply + 1,
-                                    nodes, qnodes);
+                                    context);
     board.unmake_move(move, undo);
+    if (context.stopped) return 0;
     best = std::max(best, score);
     alpha = std::max(alpha, score);
     if (alpha >= beta) break;
@@ -167,37 +192,55 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
 int negamax(Board& board, int depth, int alpha, int beta, int ply,
             std::uint64_t& nodes) {
   std::uint64_t qnodes = 0;
-  return negamax_impl(board, depth, alpha, beta, ply, nodes, qnodes);
+  SearchContext context{nodes, qnodes};
+  return negamax_impl(board, depth, alpha, beta, ply, context);
 }
 
 int quiescence(Board& board, int alpha, int beta, int ply) {
   std::uint64_t nodes = 0;
   std::uint64_t qnodes = 0;
-  return quiescence_impl(board, alpha, beta, ply, nodes, qnodes);
+  SearchContext context{nodes, qnodes};
+  return quiescence_impl(board, alpha, beta, ply, context);
 }
 
 SearchResult search(const Board& position, int max_depth) {
+  SearchLimits limits;
+  limits.max_depth = max_depth;
+  return search(position, limits);
+}
+
+SearchResult search(const Board& position, const SearchLimits& limits,
+                    const SearchInfoCallback& on_iteration) {
   SearchResult result;
-  if (max_depth < 1) return result;
+  if (limits.max_depth < 1) return result;
   Board root = position;
   std::vector<Move> legal = generate_legal_moves(root);
   if (legal.empty()) {
-    result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0,
-                                result.nodes, result.qnodes);
+    SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
+                          limits.deadline};
+    result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
-  for (int depth = 1; depth <= max_depth; ++depth) {
+  result.best_move = legal.front();
+  for (int depth = 1; depth <= limits.max_depth; ++depth) {
+    SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
+                          limits.deadline};
     std::vector<RootMoveInfo> current;
     int best_score = -MATE_SCORE;
     for (const Move& move : legal) {
+      if (context.should_stop()) break;
+      const UndoState undo = root.make_move(move);
+      const int score = -negamax_impl(root, depth - 1, -MATE_SCORE, MATE_SCORE,
+                                      1, context);
       Board child = root;
+      root.unmake_move(move, undo);
+      if (context.stopped) break;
       child.make_move(move);
-      const int score = -negamax_impl(child, depth - 1, -MATE_SCORE, MATE_SCORE,
-                                      1, result.nodes, result.qnodes);
-      current.push_back({move, score, evaluate_move_style(root, move, child),
-                         is_sacrifice_candidate(root, move, child)});
+      current.push_back({move, score, evaluate_move_style(position, move, child),
+                         is_sacrifice_candidate(position, move, child)});
       best_score = std::max(best_score, score);
     }
+    if (context.stopped || current.size() != legal.size()) break;
     const bool mate_found = best_score > MATE_SCORE - 1000 || best_score < -MATE_SCORE + 1000;
     auto chosen = current.begin();
     for (auto candidate = std::next(current.begin()); candidate != current.end(); ++candidate) {
@@ -216,6 +259,7 @@ SearchResult search(const Board& position, int max_depth) {
     result.best_move = chosen->move;
     result.score = chosen->search_score;
     result.root_moves = std::move(current);
+    if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
     legal = generate_legal_moves(root);
   }
   return result;
