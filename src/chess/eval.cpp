@@ -6,69 +6,448 @@
 
 namespace hebichess {
 namespace {
-Square at(int f, int r) noexcept { return Square::from_file_rank(static_cast<std::uint8_t>(f), static_cast<std::uint8_t>(r)); }
-int signed_score(int w, int b, Color p) noexcept { return p == Color::White ? w - b : b - w; }
-bool occupied_by(const Board& b, int f, int r, Color c) noexcept { Square s = at(f, r); return s.is_valid() && b.piece_at(s).color == c && !b.piece_at(s).is_empty(); }
 
-bool attacks(const Board& b, Square from, Square to) noexcept {
-  const Piece p = b.piece_at(from); const int df = int(to.file()) - int(from.file()); const int dr = int(to.rank()) - int(from.rank());
-  if (p.type == PieceType::Pawn) return dr == (p.color == Color::White ? 1 : -1) && std::abs(df) == 1;
-  if (p.type == PieceType::Knight) return df * df + dr * dr == 5;
-  if (p.type == PieceType::King) return std::max(std::abs(df), std::abs(dr)) == 1;
-  const bool diag = std::abs(df) == std::abs(dr) && df != 0; const bool line = (df == 0) != (dr == 0);
-  if ((p.type == PieceType::Bishop && !diag) || (p.type == PieceType::Rook && !line) || (p.type == PieceType::Queen && !diag && !line)) return false;
-  const int sf = (df > 0) - (df < 0), sr = (dr > 0) - (dr < 0);
-  for (int f = from.file() + sf, r = from.rank() + sr; f != to.file() || r != to.rank(); f += sf, r += sr) if (!b.piece_at(at(f, r)).is_empty()) return false;
-  return true;
+using Bitboard = std::uint64_t;
+
+Square at(int file, int rank) noexcept {
+  if (file < 0 || file >= 8 || rank < 0 || rank >= 8) return {};
+  return Square::from_file_rank(static_cast<std::uint8_t>(file),
+                                static_cast<std::uint8_t>(rank));
 }
-bool attacked(const Board& b, Square s, Color c) noexcept { return b.is_square_attacked(s, c); }
-int pst(PieceType t, int f, int r, Color c, int phase) noexcept {
-  if (c == Color::Black) r = 7 - r;
-  const int center = 6 - std::abs(2 * f - 7) - std::abs(2 * r - 7);
-  switch (t) {
-    case PieceType::Pawn: return (r * r * 2) + (f >= 2 && f <= 5 ? 5 : 0) - (r <= 1 && (f == 0 || f == 7) ? 3 : 0);
-    case PieceType::Knight: return center * 3 - (f == 0 || f == 7 ? 12 : 0) - (r == 0 || r == 7 ? 4 : 0);
+
+int signed_score(int white, int black, Color perspective) noexcept {
+  return perspective == Color::White ? white - black : black - white;
+}
+
+bool occupied_by(const Board& board, int file, int rank, Color color) noexcept {
+  const Square square = at(file, rank);
+  return square.is_valid() && board.piece_at(square).color == color &&
+         !board.piece_at(square).is_empty();
+}
+
+int pst(PieceType type, int file, int rank, Color color, int phase) noexcept {
+  if (color == Color::Black) rank = 7 - rank;
+  const int center = 6 - std::abs(2 * file - 7) - std::abs(2 * rank - 7);
+  switch (type) {
+    case PieceType::Pawn:
+      return rank * rank * 2 + (file >= 2 && file <= 5 ? 5 : 0) -
+             (rank <= 1 && (file == 0 || file == 7) ? 3 : 0);
+    case PieceType::Knight:
+      return center * 3 - (file == 0 || file == 7 ? 12 : 0) -
+             (rank == 0 || rank == 7 ? 4 : 0);
     case PieceType::Bishop: return center * 2;
-    case PieceType::Rook: return (r == 6 ? 18 : 0) + (f == 0 || f == 7 ? 0 : 2);
-    case PieceType::Queen: return center - (r < 2 ? 4 : 0);
+    case PieceType::Rook: return (rank == 6 ? 18 : 0) +
+                                  (file == 0 || file == 7 ? 0 : 2);
+    case PieceType::Queen: return center - (rank < 2 ? 4 : 0);
     case PieceType::King: return phase < 10 ? center * 2 : -center;
     default: return 0;
   }
 }
-int count_type(const Board& b, Color c, PieceType t) { int n = 0; for (Piece p : b.squares()) if (p.color == c && p.type == t) ++n; return n; }
-int mobility_for(const Board& b, Color c) noexcept {
-  int total = 0; constexpr int dirs[8][2]={{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
-  constexpr int knight_dirs[8][2]={{1,2},{2,1},{2,-1},{1,-2},{-1,-2},{-2,-1},{-2,1},{-1,2}};
-  for (std::uint8_t i=0;i<64;++i) { Square s=Square::from_index(i); Piece p=b.piece_at(s); if(p.color!=c||p.is_empty()) continue;
-    if(p.type==PieceType::Knight) { for(const auto& d:knight_dirs) { Square t=at(s.file()+d[0],s.rank()+d[1]); if(t.is_valid()&&(b.piece_at(t).is_empty()||b.piece_at(t).color!=c)) ++total; } }
-    else if(p.type==PieceType::Bishop||p.type==PieceType::Rook||p.type==PieceType::Queen) { int begin=p.type==PieceType::Bishop?4:0,end=p.type==PieceType::Rook?4:8; for(int k=begin;k<end;++k) for(int f=s.file()+dirs[k][0],r=s.rank()+dirs[k][1];at(f,r).is_valid();f+=dirs[k][0],r+=dirs[k][1]) { Piece q=b.piece_at(at(f,r)); if(q.is_empty()) ++total; else {if(q.color!=c) ++total;break;} } }
-  } return total;
-}
-int pressure_for(const Board& b, Color c) noexcept {
-  Square k=b.find_king(opposite(c)); if(!k.is_valid()) return 0; int attackers=0, units=0; constexpr int w[]={0,2,6,5,7,10,3};
-  for(std::uint8_t i=0;i<64;++i){Square s=Square::from_index(i);Piece p=b.piece_at(s);if(p.color!=c||p.is_empty())continue;bool hit=false;for(int df=-1;df<=1;++df)for(int dr=-1;dr<=1;++dr){Square z=at(k.file()+df,k.rank()+dr);if(z.is_valid()&&attacks(b,s,z)){hit=true;break;}}if(hit){++attackers;units+=w[int(p.type)];}}
-  const int mult = attackers <= 1 ? 1 : attackers == 2 ? 12 : attackers == 3 ? 16 : 20;
-  return units * mult / 10 + (attackers >= 2 ? attackers * 3 : 0);
-}
-int shield(const Board& b, Color c) noexcept { Square k=b.find_king(c); if(!k.is_valid())return -40; int score=0; int dir=c==Color::White?1:-1; for(int f=std::max(0,int(k.file())-1);f<=std::min(7,int(k.file())+1);++f){int r=int(k.rank())+dir; if(occupied_by(b,f,r,c))score+=8; else if(occupied_by(b,f,r+dir,c))score+=3; else score-=10;} return score; }
-int open_lines(const Board& b, Color c) noexcept { Square k=b.find_king(c); if(!k.is_valid())return -20; int score=0; for(int f=0;f<8;++f){bool own=false,enemy=false;for(int r=0;r<8;++r){Piece p=b.piece_at(at(f,r));if(p.type==PieceType::Pawn){if(p.color==c)own=true;else enemy=true;}}if(!own){if(!enemy)score-=4; for(int r=0;r<8;++r){Piece p=b.piece_at(at(f,r));if(p.color!=c&&(p.type==PieceType::Rook||p.type==PieceType::Queen)&&std::abs(r-int(k.rank()))<8)score-=6;}}} return score; }
-} // namespace
 
-int piece_value(PieceType t) noexcept { switch(t){case PieceType::Pawn:return 100;case PieceType::Knight:return 320;case PieceType::Bishop:return 330;case PieceType::Rook:return 500;case PieceType::Queen:return 900;default:return 0;} }
-int game_phase(const Board& b) noexcept { int p=0; for(Piece x:b.squares()) p += x.type==PieceType::Queen?4:x.type==PieceType::Rook?2:(x.type==PieceType::Bishop||x.type==PieceType::Knight); return std::min(24,p); }
-int evaluate_material(const Board& b, Color p) noexcept {int w=0,bl=0;for(Piece x:b.squares())(x.color==Color::White?w:bl)+=piece_value(x.type);return signed_score(w,bl,p);}
-int evaluate_piece_square(const Board& b, Color p) noexcept {int w=0,bl=0,ph=game_phase(b);for(std::uint8_t i=0;i<64;++i){Square s=Square::from_index(i);Piece x=b.piece_at(s);if(!x.is_empty())(x.color==Color::White?w:bl)+=pst(x.type,s.file(),s.rank(),x.color,ph);}return signed_score(w,bl,p);}
-int evaluate_piece_activity(const Board& b, Color p) noexcept { return evaluate_piece_square(b,p); }
-int evaluate_mobility(const Board& b, Color p) noexcept {return signed_score(mobility_for(b,Color::White)*2,mobility_for(b,Color::Black)*2,p);}
-int evaluate_pawn_structure(const Board& b, Color p) noexcept {int score[2]={};for(int ci=0;ci<2;++ci){Color c=ci?Color::Black:Color::White;for(int f=0;f<8;++f){int n=0;for(int r=0;r<8;++r)n+=occupied_by(b,f,r,c)&&b.piece_at(at(f,r)).type==PieceType::Pawn;if(n>1)score[ci]-=(n-1)*10;if(n){bool left=false,right=false;for(int r=0;r<8;++r){left|=occupied_by(b,f-1,r,c)&&b.piece_at(at(f-1,r)).type==PieceType::Pawn;right|=occupied_by(b,f+1,r,c)&&b.piece_at(at(f+1,r)).type==PieceType::Pawn;}if(!left&&!right)score[ci]-=12;}}}for(int i=0;i<64;++i){Square s=Square::from_index(i);Piece x=b.piece_at(s);if(x.type==PieceType::Pawn){for(int df:{-1,1}){Square q=at(s.file()+df,s.rank());if(q.is_valid()&&b.piece_at(q)==Piece{PieceType::Pawn,x.color})score[x.color==Color::White?0:1]+=4;}}}return signed_score(score[0],score[1],p);}
-int evaluate_passed_pawns(const Board& b, Color p) noexcept {int score[2]={};for(int i=0;i<64;++i){Square s=Square::from_index(i);Piece x=b.piece_at(s);if(x.type!=PieceType::Pawn)continue;Color e=opposite(x.color);bool passed=true;int dir=x.color==Color::White?1:-1;for(int f=std::max(0,int(s.file())-1);f<=std::min(7,int(s.file())+1);++f)for(int r=int(s.rank())+dir;r>=0&&r<8;r+=dir)if(occupied_by(b,f,r,e)&&b.piece_at(at(f,r)).type==PieceType::Pawn)passed=false;if(passed){int rank=x.color==Color::White?s.rank():7-s.rank();score[x.color==Color::White?0:1]+=rank*rank+rank*3;}}return signed_score(score[0],score[1],p);}
-int evaluate_rooks(const Board& b, Color p) noexcept {int score[2]={};for(int ci=0;ci<2;++ci){Color c=ci?Color::Black:Color::White;for(int i=0;i<64;++i){Square s=Square::from_index(i);Piece x=b.piece_at(s);if(x.color!=c||x.type!=PieceType::Rook)continue;int f=s.file();bool own=false,enemy=false;for(int r=0;r<8;++r){Piece q=b.piece_at(at(f,r));if(q.type==PieceType::Pawn)(q.color==c?own:enemy)=true;}score[ci]+=own?0:enemy?10:18;if((c==Color::White?s.rank():7-s.rank())==6)score[ci]+=14;}}return signed_score(score[0],score[1],p);}
-int evaluate_king_safety(const Board& b, Color p) noexcept {int w=shield(b,Color::White)+open_lines(b,Color::White),bl=shield(b,Color::Black)+open_lines(b,Color::Black);int ph=game_phase(b);return signed_score(w*std::max(5,ph)/24,bl*std::max(5,ph)/24,p);}
-int evaluate_king_attack(const Board& b, Color p) noexcept {return signed_score(pressure_for(b,Color::White),pressure_for(b,Color::Black),p);}
-int evaluate_attack_pressure(const Board& b, Color p) noexcept {return evaluate_king_attack(b,p);}
-int evaluate_space(const Board& b, Color p) noexcept {int s[2]={};for(int i=0;i<64;++i){Square q=Square::from_index(i);for(int ci=0;ci<2;++ci){Color c=ci?Color::Black:Color::White;if(attacked(b,q,c)&&((c==Color::White&&q.rank()>=4)||(c==Color::Black&&q.rank()<=3)))s[ci]+= (q.file()>=2&&q.file()<=5?2:1);}}return signed_score(s[0],s[1],p);}
-int evaluate_threats(const Board& b, Color p) noexcept {int s[2]={};for(int i=0;i<64;++i){Square q=Square::from_index(i);Piece x=b.piece_at(q);if(x.is_empty()||x.type==PieceType::Pawn||x.type==PieceType::King)continue;if(attacked(b,q,opposite(x.color))&&!attacked(b,q,x.color))s[x.color==Color::White?1:0]+=piece_value(x.type)/40;}return signed_score(s[0],s[1],p);}
-int evaluate_initiative(const Board& b, Color p) noexcept {int w= b.side_to_move()==Color::White?10:-10;return p==Color::White?w:-w;}
-EvalBreakdown evaluate_breakdown(const Board& b, Color p) noexcept {EvalBreakdown e;e.material=evaluate_material(b,p);e.pst=evaluate_piece_square(b,p);e.mobility=evaluate_mobility(b,p);e.pawns=evaluate_pawn_structure(b,p);e.passed_pawns=evaluate_passed_pawns(b,p);e.bishop_pair=signed_score(count_type(b,Color::White,PieceType::Bishop)>=2?30:0,count_type(b,Color::Black,PieceType::Bishop)>=2?30:0,p);e.rook_activity=evaluate_rooks(b,p);e.king_safety=evaluate_king_safety(b,p);e.king_attack=evaluate_king_attack(b,p);e.space=evaluate_space(b,p);e.threats=evaluate_threats(b,p);e.initiative=evaluate_initiative(b,p);e.total=e.material+e.pst+e.mobility+e.pawns+e.passed_pawns+e.bishop_pair+e.rook_activity+e.king_safety+e.king_attack+e.space+e.threats+e.initiative;return e;}
-int evaluate(const Board& b) noexcept {return evaluate_breakdown(b,b.side_to_move()).total;}
-} // namespace hebichess
+struct EvalContext {
+  static constexpr int kColors = 2;
+  static constexpr int kTypes = 7;
+  static constexpr int kMaxPieces = 16;
+
+  const Board& board;
+  std::array<std::array<Square, kMaxPieces>, kColors> pieces{};
+  std::array<int, kColors> piece_count{};
+  int type_count[kColors][kTypes]{};
+  int pawn_count[kColors][8]{};
+  std::uint8_t pawn_rank_files[kColors][8]{};
+  Bitboard pawn_mask[kColors]{};
+  Bitboard attacks[kColors]{};
+  Bitboard king_zone[kColors]{};
+  Square kings[kColors]{};
+  int material[kColors]{};
+  int pst_score[kColors]{};
+  int phase{0};
+
+  explicit EvalContext(const Board& position) noexcept : board(position) {
+    for (std::uint8_t index = 0; index < Square::kSquareCount; ++index) {
+      const Square square = Square::from_index(index);
+      const Piece piece = board.piece_at(square);
+      if (piece.is_empty()) continue;
+      const int color = piece.color == Color::White ? 0 : 1;
+      pieces[color][piece_count[color]++] = square;
+      ++type_count[color][static_cast<int>(piece.type)];
+      material[color] += piece_value(piece.type);
+      pst_score[color] += pst(piece.type, square.file(), square.rank(),
+                              piece.color, phase);
+      if (piece.type == PieceType::King) kings[color] = square;
+      if (piece.type == PieceType::Pawn) {
+        ++pawn_count[color][square.file()];
+        pawn_rank_files[color][square.rank()] |=
+            static_cast<std::uint8_t>(1u << square.file());
+        pawn_mask[color] |= Bitboard{1} << square.index();
+      }
+    }
+    phase = std::min(24, type_count[0][static_cast<int>(PieceType::Queen)] * 4 +
+                             type_count[1][static_cast<int>(PieceType::Queen)] * 4 +
+                             type_count[0][static_cast<int>(PieceType::Rook)] * 2 +
+                             type_count[1][static_cast<int>(PieceType::Rook)] * 2 +
+                             type_count[0][static_cast<int>(PieceType::Bishop)] +
+                             type_count[1][static_cast<int>(PieceType::Bishop)] +
+                             type_count[0][static_cast<int>(PieceType::Knight)] +
+                             type_count[1][static_cast<int>(PieceType::Knight)]);
+    // PST depends on phase, so calculate it after the single board scan.
+    pst_score[0] = 0;
+    pst_score[1] = 0;
+    for (int color = 0; color < kColors; ++color) {
+      for (int i = 0; i < piece_count[color]; ++i) {
+        const Square square = pieces[color][i];
+        const Piece piece = board.piece_at(square);
+        pst_score[color] += pst(piece.type, square.file(), square.rank(),
+                                piece.color, phase);
+      }
+    }
+    for (int color = 0; color < kColors; ++color) {
+      for (int i = 0; i < piece_count[color]; ++i) {
+        attacks[color] |= attack_mask_for(pieces[color][i], color);
+      }
+      if (kings[color].is_valid()) {
+        const int file = kings[color].file();
+        const int rank = kings[color].rank();
+        for (int df = -1; df <= 1; ++df) {
+          for (int dr = -1; dr <= 1; ++dr) {
+            const Square square = at(file + df, rank + dr);
+            if (square.is_valid()) king_zone[color] |= Bitboard{1} << square.index();
+          }
+        }
+      }
+    }
+  }
+
+  Bitboard attack_mask_for(Square from, int color) const noexcept {
+    const Piece piece = board.piece_at(from);
+    const int file = from.file();
+    const int rank = from.rank();
+    Bitboard result = 0;
+    auto mark = [&](int target_file, int target_rank) {
+      const Square target = at(target_file, target_rank);
+      if (target.is_valid()) result |= Bitboard{1} << target.index();
+    };
+    if (piece.type == PieceType::Pawn) {
+      const int direction = color == 0 ? 1 : -1;
+      mark(file - 1, rank + direction);
+      mark(file + 1, rank + direction);
+      return result;
+    }
+    if (piece.type == PieceType::Knight || piece.type == PieceType::King) {
+      static constexpr int knight_steps[8][2] = {
+          {1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}};
+      static constexpr int king_steps[8][2] = {
+          {-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+      const auto& steps = piece.type == PieceType::Knight ? knight_steps : king_steps;
+      const int count = 8;
+      for (int i = 0; i < count; ++i) mark(file + steps[i][0], rank + steps[i][1]);
+      return result;
+    }
+    static constexpr int directions[8][2] = {
+        {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+    const int first = piece.type == PieceType::Bishop ? 4 : 0;
+    const int last = piece.type == PieceType::Rook ? 4 : 8;
+    for (int direction = first; direction < last; ++direction) {
+      for (int f = file + directions[direction][0], r = rank + directions[direction][1];;
+           f += directions[direction][0], r += directions[direction][1]) {
+        const Square target = at(f, r);
+        if (!target.is_valid()) break;
+        result |= Bitboard{1} << target.index();
+        if (!board.piece_at(target).is_empty()) break;
+      }
+    }
+    return result;
+  }
+
+  int mobility(int color) const noexcept {
+    int total = 0;
+    static constexpr int directions[8][2] = {
+        {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+    static constexpr int knight_steps[8][2] = {
+        {1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}};
+    for (int i = 0; i < piece_count[color]; ++i) {
+      const Square from = pieces[color][i];
+      const Piece piece = board.piece_at(from);
+      if (piece.type == PieceType::Knight) {
+        for (const auto& step : knight_steps) {
+          const Square target = at(from.file() + step[0], from.rank() + step[1]);
+          if (target.is_valid() && (board.piece_at(target).is_empty() ||
+                                    board.piece_at(target).color != piece.color)) ++total;
+        }
+      } else if (piece.type == PieceType::Bishop || piece.type == PieceType::Rook ||
+                 piece.type == PieceType::Queen) {
+        const int first = piece.type == PieceType::Bishop ? 4 : 0;
+        const int last = piece.type == PieceType::Rook ? 4 : 8;
+        for (int direction = first; direction < last; ++direction) {
+          for (int f = from.file() + directions[direction][0],
+                   r = from.rank() + directions[direction][1];;
+               f += directions[direction][0], r += directions[direction][1]) {
+            const Square target = at(f, r);
+            if (!target.is_valid()) break;
+            const Piece occupant = board.piece_at(target);
+            if (occupant.is_empty()) ++total;
+            else {
+              if (occupant.color != piece.color) ++total;
+              break;
+            }
+          }
+        }
+      }
+    }
+    return total;
+  }
+
+  int pawns(Color perspective) const noexcept {
+    int score[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      for (int file = 0; file < 8; ++file) {
+        const int count = pawn_count[color][file];
+        if (count > 1) score[color] -= (count - 1) * 10;
+        const bool has_left = file > 0 && pawn_count[color][file - 1] != 0;
+        const bool has_right = file < 7 && pawn_count[color][file + 1] != 0;
+        if (count && !has_left && !has_right) score[color] -= 12;
+      }
+    }
+    for (int color = 0; color < kColors; ++color) {
+      for (int rank = 0; rank < 8; ++rank) {
+        const std::uint8_t files = pawn_rank_files[color][rank];
+        score[color] += static_cast<int>(__builtin_popcount(
+            static_cast<unsigned int>(files & (files << 1)))) * 8;
+      }
+    }
+    return signed_score(score[0], score[1], perspective);
+  }
+
+  int passed(Color perspective) const noexcept {
+    int score[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      for (int i = 0; i < piece_count[color]; ++i) {
+        const Square pawn = pieces[color][i];
+        if (board.piece_at(pawn).type != PieceType::Pawn) continue;
+        const int direction = color == 0 ? 1 : -1;
+        bool is_passed = true;
+        for (int file = std::max(0, int(pawn.file()) - 1);
+             file <= std::min(7, int(pawn.file()) + 1); ++file) {
+          for (int rank = int(pawn.rank()) + direction; rank >= 0 && rank < 8;
+               rank += direction) {
+            if (pawn_mask[1 - color] &
+                (Bitboard{1} << (rank * 8 + file))) is_passed = false;
+          }
+        }
+        if (is_passed) {
+          const int relative_rank = color == 0 ? pawn.rank() : 7 - pawn.rank();
+          score[color] += relative_rank * relative_rank + relative_rank * 3;
+        }
+      }
+    }
+    return signed_score(score[0], score[1], perspective);
+  }
+
+  int rooks(Color perspective) const noexcept {
+    int score[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      for (int i = 0; i < piece_count[color]; ++i) {
+        const Square rook = pieces[color][i];
+        if (board.piece_at(rook).type != PieceType::Rook) continue;
+        const int file = rook.file();
+        score[color] += pawn_count[color][file] ? 0 :
+                        pawn_count[1 - color][file] ? 10 : 18;
+        if ((color == 0 ? rook.rank() : 7 - rook.rank()) == 6) score[color] += 14;
+      }
+    }
+    return signed_score(score[0], score[1], perspective);
+  }
+
+  int shield(Color color) const noexcept {
+    const Square king = kings[color == Color::White ? 0 : 1];
+    if (!king.is_valid()) return -40;
+    int score = 0;
+    const int direction = color == Color::White ? 1 : -1;
+    for (int file = std::max(0, int(king.file()) - 1);
+         file <= std::min(7, int(king.file()) + 1); ++file) {
+      if (occupied_by(board, file, int(king.rank()) + direction, color)) score += 8;
+      else if (occupied_by(board, file, int(king.rank()) + 2 * direction, color)) score += 3;
+      else score -= 10;
+    }
+    return score;
+  }
+
+  int open_lines(Color color) const noexcept {
+    const Square king = kings[color == Color::White ? 0 : 1];
+    if (!king.is_valid()) return -20;
+    int score = 0;
+    const int ci = color == Color::White ? 0 : 1;
+    for (int file = 0; file < 8; ++file) {
+      if (pawn_count[ci][file] != 0) continue;
+      if (pawn_count[1 - ci][file] == 0) score -= 4;
+      for (int i = 0; i < piece_count[1 - ci]; ++i) {
+        const Square square = pieces[1 - ci][i];
+        const Piece piece = board.piece_at(square);
+        if (square.file() == file && (piece.type == PieceType::Rook ||
+                                      piece.type == PieceType::Queen)) score -= 6;
+      }
+    }
+    return score;
+  }
+
+  int king_safety(Color perspective) const noexcept {
+    const int white = shield(Color::White) + open_lines(Color::White);
+    const int black = shield(Color::Black) + open_lines(Color::Black);
+    const int scale = std::max(5, phase);
+    return signed_score(white * scale / 24, black * scale / 24, perspective);
+  }
+
+  int king_attack(Color perspective) const noexcept {
+    constexpr int weights[] = {0, 2, 6, 5, 7, 10, 3};
+    int values[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      int attackers = 0;
+      for (int i = 0; i < piece_count[color]; ++i) {
+        const Square square = pieces[color][i];
+        if (attacks[color] & king_zone[1 - color] &
+            attack_mask_for(square, color)) {
+          ++attackers;
+          values[color] += weights[static_cast<int>(board.piece_at(square).type)];
+        }
+      }
+      const int multiplier = attackers <= 1 ? 1 : attackers == 2 ? 12 : attackers == 3 ? 16 : 20;
+      values[color] = values[color] * multiplier / 10 + (attackers >= 2 ? attackers * 3 : 0);
+    }
+    return signed_score(values[0], values[1], perspective);
+  }
+
+  int space(Color perspective) const noexcept {
+    int score[kColors]{};
+    for (int square = 0; square < 64; ++square) {
+      const int file = square % 8;
+      const int rank = square / 8;
+      if ((attacks[0] & (Bitboard{1} << square)) && rank >= 4)
+        score[0] += file >= 2 && file <= 5 ? 2 : 1;
+      if ((attacks[1] & (Bitboard{1} << square)) && rank <= 3)
+        score[1] += file >= 2 && file <= 5 ? 2 : 1;
+    }
+    return signed_score(score[0], score[1], perspective);
+  }
+
+  int threats(Color perspective) const noexcept {
+    int score[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      for (int i = 0; i < piece_count[color]; ++i) {
+        const Square square = pieces[color][i];
+        const Piece piece = board.piece_at(square);
+        if (piece.type == PieceType::Pawn || piece.type == PieceType::King) continue;
+        const Bitboard target = Bitboard{1} << square.index();
+        if ((attacks[1 - color] & target) && !(attacks[color] & target))
+          score[1 - color] += piece_value(piece.type) / 40;
+      }
+    }
+    return signed_score(score[0], score[1], perspective);
+  }
+
+  EvalBreakdown breakdown(Color perspective) const noexcept {
+    EvalBreakdown result;
+    result.material = signed_score(material[0], material[1], perspective);
+    result.pst = signed_score(pst_score[0], pst_score[1], perspective);
+    result.mobility = signed_score(mobility(0) * 2, mobility(1) * 2, perspective);
+    result.pawns = pawns(perspective);
+    result.passed_pawns = passed(perspective);
+    result.bishop_pair = signed_score(type_count[0][static_cast<int>(PieceType::Bishop)] >= 2 ? 30 : 0,
+                                      type_count[1][static_cast<int>(PieceType::Bishop)] >= 2 ? 30 : 0,
+                                      perspective);
+    result.rook_activity = rooks(perspective);
+    result.king_safety = king_safety(perspective);
+    result.king_attack = king_attack(perspective);
+    result.space = space(perspective);
+    result.threats = threats(perspective);
+    result.initiative = perspective == Color::White
+                            ? (board.side_to_move() == Color::White ? 10 : -10)
+                            : (board.side_to_move() == Color::White ? -10 : 10);
+    result.total = result.material + result.pst + result.mobility + result.pawns +
+                   result.passed_pawns + result.bishop_pair + result.rook_activity +
+                   result.king_safety + result.king_attack + result.space +
+                   result.threats + result.initiative;
+    return result;
+  }
+};
+
+}  // namespace
+
+int piece_value(PieceType type) noexcept {
+  switch (type) {
+    case PieceType::Pawn: return 100;
+    case PieceType::Knight: return 320;
+    case PieceType::Bishop: return 330;
+    case PieceType::Rook: return 500;
+    case PieceType::Queen: return 900;
+    default: return 0;
+  }
+}
+
+int game_phase(const Board& board) noexcept { return EvalContext(board).phase; }
+
+int evaluate_material(const Board& board, Color perspective) noexcept {
+  const EvalContext context(board);
+  return signed_score(context.material[0], context.material[1], perspective);
+}
+
+int evaluate_piece_square(const Board& board, Color perspective) noexcept {
+  const EvalContext context(board);
+  return signed_score(context.pst_score[0], context.pst_score[1], perspective);
+}
+
+int evaluate_piece_activity(const Board& board, Color perspective) noexcept {
+  return evaluate_piece_square(board, perspective);
+}
+
+int evaluate_mobility(const Board& board, Color perspective) noexcept {
+  const EvalContext context(board);
+  return signed_score(context.mobility(0) * 2, context.mobility(1) * 2, perspective);
+}
+
+int evaluate_pawn_structure(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).pawns(perspective);
+}
+
+int evaluate_passed_pawns(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).passed(perspective);
+}
+
+int evaluate_rooks(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).rooks(perspective);
+}
+
+int evaluate_king_safety(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).king_safety(perspective);
+}
+
+int evaluate_king_attack(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).king_attack(perspective);
+}
+
+int evaluate_attack_pressure(const Board& board, Color perspective) noexcept {
+  return evaluate_king_attack(board, perspective);
+}
+
+int evaluate_space(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).space(perspective);
+}
+
+int evaluate_threats(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).threats(perspective);
+}
+
+int evaluate_initiative(const Board& board, Color perspective) noexcept {
+  return perspective == Color::White
+             ? (board.side_to_move() == Color::White ? 10 : -10)
+             : (board.side_to_move() == Color::White ? -10 : 10);
+}
+
+EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept {
+  return EvalContext(board).breakdown(perspective);
+}
+
+int evaluate(const Board& board) noexcept {
+  return evaluate_breakdown(board, board.side_to_move()).total;
+}
+
+}  // namespace hebichess
