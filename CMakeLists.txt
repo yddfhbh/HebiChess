@@ -133,7 +133,13 @@ add_executable(HebiChessSeeBenchmark
 target_include_directories(HebiChessSeeBenchmark PRIVATE src)
 
 enable_testing()
-add_test(NAME smoke COMMAND HebiChess)
+add_test(
+  NAME smoke
+  COMMAND ${CMAKE_COMMAND}
+    "-DENGINE=$<TARGET_FILE:HebiChess>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.in"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/smoke.cmake"
+)
 add_test(NAME chess_types COMMAND HebiChessTypesTest)
 add_test(NAME chess_movegen COMMAND HebiChessMovegenTest)
 add_test(NAME chess_perft COMMAND HebiChessPerftTest)
