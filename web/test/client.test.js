@@ -34,7 +34,9 @@ test('premove, history navigation and spectator controls are client guarded', ()
 });
 
 test('game-over modal and resign confirmation are present', () => {
-  assert.match(html, /id="modal"/);
+  assert.match(html, /id="modal" class="modal" hidden/);
+  assert.match(html, /id="promotion-modal" class="modal" hidden/);
+  assert.match(css, /\.modal\[hidden\]\s*\{[^}]*display\s*:\s*none/);
   assert.match(app, /function showGameOver/);
   assert.match(app, /정말 기권하시겠습니까/);
 });
