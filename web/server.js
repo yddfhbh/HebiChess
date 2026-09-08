@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
 
 const root = __dirname;
+const PUBLIC_ROOT = path.join(root, 'public') + path.sep;
 const PORT = Number(process.env.PORT || 3400);
 const ENGINE = path.resolve(root, process.env.HEBICHESS_BINARY || '../build/HebiChess');
 const DEPTH = Number(process.env.DEFAULT_SEARCH_DEPTH || 7);
