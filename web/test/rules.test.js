@@ -34,9 +34,12 @@ test('castling destinations are ordinary king moves, never promotion variants', 
   assert.ok(!blackLegal.some(m => m.from === 'e8' && m.to === 'c8' && m.promotion));
 });
 
-test('frontend gates prompt on legal promotion variants, not destination rank', () => {
+test('frontend gates live promotion on legal variants and premove promotion on a pawn', () => {
   const app = fs.readFileSync('public/app.js', 'utf8');
-  assert.match(app, /const choices=\(S\.legalMoves\|\|\[\]\)/);
+  assert.match(app, /function promotionVariants/);
+  assert.match(app, /\(S\.legalMoves\|\|\[\]\)\.filter/);
+  assert.match(app, /function isPremovePromotion/);
   assert.match(app, /function chooseDestination\(pos\)/);
   assert.doesNotMatch(app, /if\(r===0\|\|r===7\)/);
+  assert.doesNotMatch(app, /prompt\(/);
 });

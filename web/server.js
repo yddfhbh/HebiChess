@@ -124,7 +124,7 @@ function apply(move) {
   game.halfmove = piece.toLowerCase() === 'p' || captured !== '.' || move.enPassant ? 0 : game.halfmove + 1;
   game.turn = side === 'w' ? 'b' : 'w'; game.moves.push(uci(move)); game.san.push(san); game.lastMove = uci(move);
   const key = positionKey(game.board, game.turn, game.castles, game.ep); game.positionHistory.push(key); game.repetitions[key] = (game.repetitions[key] || 0) + 1;
-  game.history.push({uci: uci(move), san, board: copy(game.board), turn: game.turn, lastMove: game.lastMove});
+  game.history.push({uci: uci(move), san, board: copy(game.board), turn: game.turn, lastMove: game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null});
 }
 function legal(value) {
   const promotion = value[4] ? value[4].toLowerCase() : null;
@@ -150,7 +150,7 @@ function drawReason() {
 }
 function currentState(sessionId) {
   if (!game) return {active:false, role:'spectator', isPlayer:false, result:null, termination:null};
-  return {active:true, role:sessionId === game.playerSessionId ? 'player' : 'spectator', isPlayer:sessionId === game.playerSessionId, playerColor:game.playerColor, board:game.board, currentFen:`${boardFen(game.board)} ${game.turn} ${game.castles} ${game.ep} ${game.halfmove} ${Math.floor(game.moves.length / 2) + 1}`, moves:game.moves, san:game.san, history:game.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove})), turn:game.turn, engineThinking:game.engineThinking, result:game.result, termination:game.termination, lastMove:game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null, depth:game.depth, evaluation:game.evaluation, capturedPieces:capturedPieces(), legalMoves:pseudo(game.board, game.turn, game.castles, game.ep).map(uci), startedAt:game.startedAt};
+  return {active:true, role:sessionId === game.playerSessionId ? 'player' : 'spectator', isPlayer:sessionId === game.playerSessionId, playerColor:game.playerColor, board:game.board, currentFen:`${boardFen(game.board)} ${game.turn} ${game.castles} ${game.ep} ${game.halfmove} ${Math.floor(game.moves.length / 2) + 1}`, moves:game.moves, san:game.san, history:game.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove, checkSquare:item.checkSquare || null})), turn:game.turn, engineThinking:game.engineThinking, result:game.result, termination:game.termination, lastMove:game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null, depth:game.depth, evaluation:game.evaluation, nodes:game.nodes || 0, capturedPieces:capturedPieces(), legalMoves:pseudo(game.board, game.turn, game.castles, game.ep).map(uci), startedAt:game.startedAt};
 }
 function findKing(board, side) { for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return [row, col]; return [0, 0]; }
 function emit(type, data = null) { for (const [response, sessionId] of clients) { const payload = data || currentState(sessionId); response.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } }
@@ -172,7 +172,7 @@ function engineGo() {
   game.engineThinking = true; emit('engineThinking');
   if (!engine) {
     engine = spawn(ENGINE, [], {stdio:['pipe','pipe','pipe']});
-    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
+    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
     engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
   }
   setTimeout(() => { if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo depth ${DEPTH}\n`); }, 150);
@@ -181,7 +181,7 @@ function start(session, colorChoice) {
   if (game) return false;
   const playerColor = colorChoice === 'random' ? (Math.random() < .5 ? 'w' : 'b') : colorChoice === 'black' ? 'b' : 'w';
   const board = boardStart(), key = positionKey(board, 'w', 'KQkq', '-');
-  game = {active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:false, result:null, termination:null, lastMove:null, depth:0, evaluation:0, startedAt:new Date().toISOString(), repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null}]};
+  game = {active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:false, result:null, termination:null, lastMove:null, depth:0, evaluation:0, nodes:0, startedAt:new Date().toISOString(), repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null, checkSquare:null}]};
   emit('state'); if (playerColor === 'b') engineGo(); return true;
 }
 function body(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', data => text += data); req.on('end', () => { try { resolve(JSON.parse(text || '{}')); } catch { reject(new Error('invalid json')); } }); }); }

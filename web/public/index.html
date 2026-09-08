@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>HebiChess</title><link rel="stylesheet" href="/public/style.css?v=20260908">
+  <title>HebiChess</title><link rel="stylesheet" href="/public/style.css?v=20260908b">
 </head>
 <body>
 <main>
@@ -11,9 +11,9 @@
   <section id="game" hidden>
     <div class="game-grid">
       <div class="board-column">
-        <div class="player-card opponent"><div class="avatar">♞</div><div><strong>HebiChess</strong><small id="engine-color">Black · Engine</small></div><span id="engine-turn" class="turn-dot"></span><div id="engine-captured" class="captured"></div></div>
-        <div class="board-wrap"><div id="eval-bar" aria-hidden="true"><span></span></div><div id="board" aria-label="chess board"></div></div>
-        <div class="player-card user"><div class="avatar">♙</div><div><strong>You</strong><small id="user-color">White · Player</small></div><span id="user-turn" class="turn-dot"></span><div id="user-captured" class="captured"></div></div>
+        <div id="top-card" class="player-card opponent"></div>
+        <div class="board-wrap"><div id="eval-bar" aria-hidden="true"><span></span></div><div class="board-area"><div id="ranks" class="edge-coordinates ranks"></div><div id="board" aria-label="chess board"></div><div id="files" class="edge-coordinates files"></div></div></div>
+        <div id="bottom-card" class="player-card user"></div>
       </div>
       <aside class="panel">
         <div class="status"><span id="status">대국 준비 중</span><span id="metrics"></span></div>
@@ -23,12 +23,13 @@
         <div id="new-move" class="new-move" hidden>새 수가 도착했습니다 <button id="latest-small">현재 위치</button></div>
         <div class="controls"><button id="first" title="처음">|&lt;</button><button id="prev" title="이전">&lt;</button><button id="next" title="다음">&gt;</button><button id="latest" title="현재 위치">현재 위치</button></div>
         <div class="controls"><button id="flip">보드 뒤집기</button><button id="cancel-premove" hidden>프리무브 취소</button></div>
-        <div class="actions"><button id="resign" class="danger">기권</button><button id="draw-offer" disabled title="HebiChess 대국에서는 사용할 수 없습니다">무승부 제안</button><button id="pgn">PGN 복사</button></div>
+        <div class="actions"><button id="resign" class="danger">기권</button><button id="pgn">PGN 복사</button></div>
       </aside>
     </div>
   </section>
   <div id="toast" role="status"></div>
 </main>
 <div id="modal" class="modal" hidden><div class="modal-card"><button id="modal-close" class="modal-x">×</button><h2 id="modal-title"></h2><p id="modal-message"></p><div class="modal-actions"><button id="modal-pgn">PGN 복사</button><button id="modal-new">새 게임</button></div></div></div>
-<script src="/public/app.js?v=20260908"></script>
+<div id="promotion-modal" class="modal" hidden><div class="modal-card promotion-card"><h2>프로모션 선택</h2><div id="promotion-choices" class="promotion-choices"></div><button id="promotion-cancel" class="promotion-cancel">취소</button></div></div>
+<script src="/public/app.js?v=20260908b"></script>
 </body></html>
