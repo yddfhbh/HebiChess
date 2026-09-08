@@ -36,7 +36,7 @@ test('castling destinations are ordinary king moves, never promotion variants', 
 
 test('frontend gates prompt on legal promotion variants, not destination rank', () => {
   const app = fs.readFileSync('public/app.js', 'utf8');
-  assert.match(app, /function promotionChoices\(from,to\)/);
-  assert.match(app, /const choices=promotionChoices\(selected,pos\)/);
+  assert.match(app, /const choices=\(S\.legalMoves\|\|\[\]\)/);
+  assert.match(app, /function chooseDestination\(pos\)/);
   assert.doesNotMatch(app, /if\(r===0\|\|r===7\)/);
 });

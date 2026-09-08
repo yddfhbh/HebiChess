@@ -2,54 +2,199 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
+const {spawn} = require('node:child_process');
 
 const root = __dirname;
 const PORT = Number(process.env.PORT || 3400);
 const ENGINE = path.resolve(root, process.env.HEBICHESS_BINARY || '../build/HebiChess');
 const DEPTH = Number(process.env.DEFAULT_SEARCH_DEPTH || 7);
-const GRACE = Number(process.env.GAME_DISCONNECT_GRACE_MS || 60000);
 const DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
 const PRODUCTION = process.env.NODE_ENV === 'production';
-const PUBLIC_ROOT = path.resolve(root, 'public');
 const clients = new Map();
-let game = null, engine = null, serial = Promise.resolve(), disconnectTimer = null;
+let game = null, engine = null, serial = Promise.resolve();
 
 const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript'};
-function id(){ return crypto.randomUUID(); }
-function cookie(req,res){ const m=(req.headers.cookie||'').match(/hebichess_session=([^;]+)/); if(m)return m[1]; const v=id(); res.setHeader('Set-Cookie',`hebichess_session=${v}; Path=/; HttpOnly; SameSite=Lax${PRODUCTION?'; Secure':''}`); return v; }
-function boardStart(){ return ['rnbqkbnr','pppppppp','........','........','........','........','PPPPPPPP','RNBQKBNR'].map(r=>r.split('')); }
-function clone(b){return b.map(r=>r.slice())}
-function inside(r,c){return r>=0&&r<8&&c>=0&&c<8}
-function color(p){return p==='.'?null:(p===p.toUpperCase()?'w':'b')}
-function sq(r,c){return 'abcdefgh'[c]+(8-r)}
-function parse(s){if(!/^[a-h][1-8]$/.test(s))return null;return [8-Number(s[1]),s.charCodeAt(0)-97]}
-function attacks(b,r,c,by){
-  for(let y=0;y<8;y++)for(let x=0;x<8;x++){let p=b[y][x];if(color(p)!==by)continue;let dr=r-y,dc=c-x,a=Math.abs(dr),d=Math.abs(dc),t=p.toLowerCase();
-    if(t==='p'&&dr===(by==='w'?-1:1)&&d===1)return true;if(t==='n'&&((a===2&&d===1)||(a===1&&d===2)))return true;if(t==='k'&&a<=1&&d<=1)return true;
-    if((t==='b'||t==='q')&&a===d&&a>0 || (t==='r'||t==='q')&&((a===0)^(d===0))&&a+d>0){let sy=Math.sign(dr),sx=Math.sign(dc),yy=y+sy,xx=x+sx,ok=true;while(yy!==r||xx!==c){if(b[yy][xx]!=='.')ok=false;yy+=sy;xx+=sx}if(ok)return true;}
-  }return false;
+const copy = board => board.map(row => row.slice());
+const id = () => crypto.randomUUID();
+function cookie(req, res) {
+  const match = (req.headers.cookie || '').match(/hebichess_session=([^;]+)/);
+  if (match) return match[1];
+  const value = id();
+  res.setHeader('Set-Cookie', `hebichess_session=${value}; Path=/; HttpOnly; SameSite=Lax${PRODUCTION ? '; Secure' : ''}`);
+  return value;
 }
-function inCheck(b,side){for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]===(side==='w'?'K':'k'))return attacks(b,r,c,side==='w'?'b':'w');return true}
-function pseudo(b,side,castles,ep){const out=[];for(let r=0;r<8;r++)for(let c=0;c<8;c++){let p=b[r][c],t=p.toLowerCase();if(color(p)!==side)continue;const add=(rr,cc,prom)=>{if(!inside(rr,cc)||color(b[rr][cc])===side)return;out.push({from:sq(r,c),to:sq(rr,cc),promotion:prom||null})};
-  const pawnAdd=(rr,cc)=>{if(rr===0||rr===7)for(const x of ['q','r','b','n'])add(rr,cc,x);else add(rr,cc)};
-  if(t==='p'){let d=side==='w'?-1:1;if(inside(r+d,c)&&b[r+d][c]==='.') {pawnAdd(r+d,c);if((side==='w'?r===6:r===1)&&b[r+2*d][c]==='.')add(r+2*d,c)}for(let x of [c-1,c+1])if(inside(r+d,x)&&(color(b[r+d][x])===({w:'b',b:'w'}[side])||sq(r+d,x)===ep))pawnAdd(r+d,x);}
-  else if(t==='n'){for(const [a,d] of [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]])add(r+a,c+d)}
-  else if(t==='k'){for(let a=-1;a<=1;a++)for(let d=-1;d<=1;d++)if(a||d)add(r+a,c+d);if(side==='w'&&r===7&&c===4){if(castles.includes('K')&&b[7][5]==='.'&&b[7][6]==='.'&&!inCheck(b,side)&&!attacks(b,7,5,'b')&&!attacks(b,7,6,'b'))out.push({from:'e1',to:'g1',castle:'K'});if(castles.includes('Q')&&b[7][1]==='.'&&b[7][2]==='.'&&b[7][3]==='.'&&!inCheck(b,side)&&!attacks(b,7,3,'b')&&!attacks(b,7,2,'b'))out.push({from:'e1',to:'c1',castle:'Q'})}if(side==='b'&&r===0&&c===4){if(castles.includes('k')&&b[0][5]==='.'&&b[0][6]==='.'&&!inCheck(b,side)&&!attacks(b,0,5,'w')&&!attacks(b,0,6,'w'))out.push({from:'e8',to:'g8',castle:'k'});if(castles.includes('q')&&b[0][1]==='.'&&b[0][2]==='.'&&b[0][3]==='.'&&!inCheck(b,side)&&!attacks(b,0,3,'w')&&!attacks(b,0,2,'w'))out.push({from:'e8',to:'c8',castle:'q'});}}
-  else {const dirs=t==='b'?[[1,1],[1,-1],[-1,1],[-1,-1]]:t==='r'?[[1,0],[-1,0],[0,1],[0,-1]]:[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];for(const [a,d] of dirs){let yy=r+a,xx=c+d;while(inside(yy,xx)){if(b[yy][xx]==='.')out.push({from:sq(r,c),to:sq(yy,xx),promotion:null});else{if(color(b[yy][xx])!==side)out.push({from:sq(r,c),to:sq(yy,xx),promotion:null});break}yy+=a;xx+=d}}}}
- return out.filter(m=>{const n=clone(b),f=parse(m.from),to=parse(m.to),piece=n[f[0]][f[1]];n[to[0]][to[1]]=piece;n[f[0]][f[1]]='.';if(m.castle==='K'||m.castle==='k'){n[to[0]][5]=n[to[0]][7];n[to[0]][7]='.'}if(m.castle==='Q'||m.castle==='q'){n[to[0]][3]=n[to[0]][0];n[to[0]][0]='.'}return !inCheck(n,side)})}
-function uci(m){return m.from+m.to+(m.promotion||'').toLowerCase()}
-function apply(m){const f=parse(m.from),t=parse(m.to),p=game.board[f[0]][f[1]],n=clone(game.board);n[f[0]][f[1]]='.';n[t[0]][t[1]]=m.promotion?(game.turn==='w'?m.promotion.toUpperCase():m.promotion.toLowerCase()):p;if(Math.abs(f[0]-t[0])===2&&p.toLowerCase()==='p')game.ep=sq((f[0]+t[0])/2,f[1]);else game.ep='-';if(p.toLowerCase()==='p'&&t[1]!==f[1]&&n[t[0]][t[1]]===p){const capRow=game.turn==='w'?t[0]+1:t[0]-1;if(game.board[t[0]][t[1]]==='.')n[capRow][t[1]]='.'}if(m.castle==='K'||m.castle==='k'){n[t[0]][5]=n[t[0]][7];n[t[0]][7]='.'}if(m.castle==='Q'||m.castle==='q'){n[t[0]][3]=n[t[0]][0];n[t[0]][0]='.'}game.board=n;game.moves.push(uci(m));game.lastMove=uci(m);game.turn=game.turn==='w'?'b':'w';}
-function legal(s){const p=parse(s.slice(0,2)),q=parse(s.slice(2,4));if(!p||!q)return null;let prom=s[4]?s[4].toLowerCase():null;return pseudo(game.board,game.turn,game.castles,game.ep).find(m=>m.from===s.slice(0,2)&&m.to===s.slice(2,4)&&(prom?m.promotion===prom:!m.promotion))||null}
-function promotionRequired(s){if(!game||s.length!==4)return false;return pseudo(game.board,game.turn,game.castles,game.ep).some(m=>m.from===s.slice(0,2)&&m.to===s.slice(2,4)&&m.promotion)}
-function state(sessionId){return game?{active:true,role:sessionId===game.playerSessionId?'player':'spectator',isPlayer:sessionId===game.playerSessionId,playerColor:game.playerColor,currentFen:'',board:game.board,moves:game.moves,turn:game.turn,engineThinking:game.engineThinking,result:game.result,lastMove:game.lastMove,depth:game.depth,evaluation:game.evaluation,legalMoves:pseudo(game.board,game.turn,game.castles,game.ep).map(uci),startedAt:game.startedAt}: {active:false,role:'spectator',isPlayer:false}}
-function emit(type,data=null){for(const [res,sessionId] of clients){const payload=data||state(sessionId);res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`)}}
-function end(result){if(!game)return;game.result=result;game.engineThinking=false;const endedAt=new Date().toISOString();fs.mkdirSync(path.dirname(DATA),{recursive:true});let old=[];try{old=JSON.parse(fs.readFileSync(DATA))}catch{};old.push({startTime:game.startedAt,endTime:endedAt,playerColor:game.playerColor,moves:game.moves,result});fs.writeFileSync(DATA,JSON.stringify(old,null,2));emit('gameOver');if(engine){engine.kill();engine=null}game=null;emit('state')}
-function engineGo(){if(!game||game.result||game.turn===game.playerColor)return;game.engineThinking=true;emit('engineThinking');if(!engine){engine=spawn(ENGINE,[],{stdio:['pipe','pipe','pipe']});engine.stdout.on('data',d=>{for(const line of d.toString().split(/\r?\n/)){if(line.startsWith('info ')){const dep=line.match(/\bdepth (\d+)/),sc=line.match(/\bscore cp (-?\d+)/);if(game){game.depth=dep?Number(dep[1]):game.depth;game.evaluation=sc?Number(sc[1])/100:game.evaluation;emit('engineInfo')}}if(line.startsWith('bestmove ')){const mv=line.split(/\s+/)[1];if(game&&game.engineThinking){const move=legal(mv);if(move){apply(move);game.engineThinking=false;emit('move');const moves=pseudo(game.board,game.turn,game.castles,game.ep);if(!moves.length)end(inCheck(game.board,game.turn)?'checkmate':'stalemate');else if(!game.result)engineGo()}}}}});engine.on('error',()=>{if(game){game.engineThinking=false;game.result='engine-error';emit('gameOver');game=null}});engine.stdin.write('uci\nisready\n');}const pos='position startpos moves '+game.moves.join(' ');const send=()=>{if(engine){engine.stdin.write(pos+'\ngo depth '+DEPTH+'\n')}};if(engine) setTimeout(send,150);}
-function start(session,colorChoice){if(game)return false;const pc=colorChoice==='random'?(Math.random()<.5?'w':'b'):colorChoice==='black'?'b':'w';game={active:true,playerSessionId:session,playerColor:pc,board:boardStart(),castles:'KQkq',ep:'-',moves:[],turn:'w',engineThinking:false,result:null,lastMove:null,depth:0,evaluation:0,startedAt:new Date().toISOString(),ownerConnected:false};emit('state');if(pc==='b')engineGo();return true}
-function body(req){return new Promise((ok,no)=>{let s='';req.on('data',d=>s+=d);req.on('end',()=>{try{ok(JSON.parse(s||'{}'))}catch{no(new Error('invalid json'))}})})}
-function json(res,status,data){res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(data))}
-function handle(req,res,session){const url=new URL(req.url,'http://localhost');if(url.pathname==='/events'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});clients.set(res,session);res.write(`event: state\ndata: ${JSON.stringify(state(session))}\n\n`);req.on('close',()=>clients.delete(res));return}if(url.pathname==='/api/state')return json(res,200,state(session));if(req.method==='POST'&&url.pathname==='/api/start')return body(req).then(x=>start(session,x.color||'random')?json(res,200,state(session)):json(res,409,{error:'active game'}));if(req.method==='POST'&&url.pathname==='/api/move')return body(req).then(x=>{if(!game)return json(res,409,{error:'no active game'});if(session!==game.playerSessionId)return json(res,403,{error:'spectator'});if(game.engineThinking||game.turn!==game.playerColor)return json(res,409,{error:'not your turn'});const requested=x.move||'';if(promotionRequired(requested))return json(res,422,{error:'promotion required',promotionRequired:true});const m=legal(requested);if(!m)return json(res,422,{error:'illegal move'});apply(m);emit('move');if(!pseudo(game.board,game.turn,game.castles,game.ep).length)end(inCheck(game.board,game.turn)?'checkmate':'stalemate');else engineGo();return json(res,200,state(session))});if(req.method==='POST'&&url.pathname==='/api/resign'){if(!game||session!==game.playerSessionId)return json(res,403,{error:'not player'});end(game.playerColor==='w'?'black-resignation':'white-resignation');return json(res,200,{ok:true})}if(url.pathname==='/'||url.pathname.startsWith('/public/')){const f=url.pathname==='/'?'index.html':url.pathname.slice(8);const fp=path.join(root,'public',f);if(!fp.startsWith(path.join(root,'public'))||!fs.existsSync(fp))return json(res,404,{error:'not found'});res.writeHead(200,{'Content-Type':files[path.extname(fp)]||'text/plain'});return fs.createReadStream(fp).pipe(res)}return json(res,404,{error:'not found'})}
-const server=http.createServer((req,res)=>{const s=cookie(req,res);serial=serial.then(()=>handle(req,res,s)).catch(e=>json(res,500,{error:e.message}))});
-if(require.main===module)server.listen(PORT,'127.0.0.1',()=>console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
-module.exports={server,start,state,legal,apply,emit,GRACE,promotionRequired,pseudo};
+function boardStart() { return ['rnbqkbnr','pppppppp','........','........','........','........','PPPPPPPP','RNBQKBNR'].map(row => row.split('')); }
+function inside(row, col) { return row >= 0 && row < 8 && col >= 0 && col < 8; }
+function color(piece) { return piece === '.' ? null : piece === piece.toUpperCase() ? 'w' : 'b'; }
+function square(row, col) { return 'abcdefgh'[col] + (8 - row); }
+function parse(value) { return /^[a-h][1-8]$/.test(value) ? [8 - Number(value[1]), value.charCodeAt(0) - 97] : null; }
+function boardFen(board) { return board.map(row => { let out = '', empty = 0; for (const piece of row) { if (piece === '.') empty++; else { if (empty) out += empty, empty = 0; out += piece; } } return out + (empty || ''); }).join('/'); }
+function positionKey(board, turn, castles, ep) { return `${boardFen(board)} ${turn} ${castles || '-'} ${ep || '-'}`; }
+function attacks(board, row, col, by) {
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+    const piece = board[y][x], type = piece.toLowerCase();
+    if (color(piece) !== by) continue;
+    const dr = row - y, dc = col - x, ar = Math.abs(dr), ac = Math.abs(dc);
+    if (type === 'p' && dr === (by === 'w' ? -1 : 1) && ac === 1) return true;
+    if (type === 'n' && ((ar === 2 && ac === 1) || (ar === 1 && ac === 2))) return true;
+    if (type === 'k' && ar <= 1 && ac <= 1) return true;
+    const diagonal = type === 'b' || type === 'q';
+    const straight = type === 'r' || type === 'q';
+    if ((diagonal && ar === ac && ar > 0) || (straight && ((ar === 0) !== (ac === 0)) && ar + ac > 0)) {
+      const sy = Math.sign(dr), sx = Math.sign(dc); let yy = y + sy, xx = x + sx, clear = true;
+      while (yy !== row || xx !== col) { if (board[yy][xx] !== '.') clear = false; yy += sy; xx += sx; }
+      if (clear) return true;
+    }
+  }
+  return false;
+}
+function inCheck(board, side) {
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return attacks(board, row, col, side === 'w' ? 'b' : 'w');
+  return true;
+}
+function applyToBoard(board, move, side) {
+  const next = copy(board), from = parse(move.from), to = parse(move.to), piece = next[from[0]][from[1]];
+  next[from[0]][from[1]] = '.';
+  next[to[0]][to[1]] = move.promotion ? (side === 'w' ? move.promotion.toUpperCase() : move.promotion.toLowerCase()) : piece;
+  if (move.enPassant) next[side === 'w' ? to[0] + 1 : to[0] - 1][to[1]] = '.';
+  if (move.castle === 'K' || move.castle === 'k') next[to[0]][5] = next[to[0]][7], next[to[0]][7] = '.';
+  if (move.castle === 'Q' || move.castle === 'q') next[to[0]][3] = next[to[0]][0], next[to[0]][0] = '.';
+  return next;
+}
+function pseudo(board, side, castles = '-', ep = '-') {
+  const out = [];
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) {
+    const piece = board[row][col], type = piece.toLowerCase(); if (color(piece) !== side) continue;
+    const add = (rr, cc, promotion = null, extra = {}) => { if (!inside(rr, cc) || color(board[rr][cc]) === side) return; out.push({from:square(row, col), to:square(rr, cc), promotion, ...extra}); };
+    const pawnAdd = (rr, cc, extra = {}) => { if (rr === 0 || rr === 7) for (const promotion of ['q','r','b','n']) add(rr, cc, promotion, extra); else add(rr, cc, null, extra); };
+    if (type === 'p') {
+      const direction = side === 'w' ? -1 : 1;
+      if (inside(row + direction, col) && board[row + direction][col] === '.') { pawnAdd(row + direction, col); if ((side === 'w' ? row === 6 : row === 1) && board[row + 2 * direction][col] === '.') add(row + 2 * direction, col); }
+      for (const targetCol of [col - 1, col + 1]) if (inside(row + direction, targetCol)) {
+        const target = square(row + direction, targetCol);
+        if (color(board[row + direction][targetCol]) === (side === 'w' ? 'b' : 'w')) pawnAdd(row + direction, targetCol);
+        else if (target === ep) pawnAdd(row + direction, targetCol, {enPassant:true});
+      }
+    } else if (type === 'n') for (const [dr, dc] of [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]) add(row + dr, col + dc);
+    else if (type === 'k') {
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (dr || dc) add(row + dr, col + dc);
+      if (side === 'w' && row === 7 && col === 4) {
+        if (castles.includes('K') && board[7][7] === 'R' && board[7][5] === '.' && board[7][6] === '.' && !inCheck(board, side) && !attacks(board, 7, 5, 'b') && !attacks(board, 7, 6, 'b')) out.push({from:'e1',to:'g1',castle:'K'});
+        if (castles.includes('Q') && board[7][0] === 'R' && board[7][1] === '.' && board[7][2] === '.' && board[7][3] === '.' && !inCheck(board, side) && !attacks(board, 7, 3, 'b') && !attacks(board, 7, 2, 'b')) out.push({from:'e1',to:'c1',castle:'Q'});
+      }
+      if (side === 'b' && row === 0 && col === 4) {
+        if (castles.includes('k') && board[0][7] === 'r' && board[0][5] === '.' && board[0][6] === '.' && !inCheck(board, side) && !attacks(board, 0, 5, 'w') && !attacks(board, 0, 6, 'w')) out.push({from:'e8',to:'g8',castle:'k'});
+        if (castles.includes('q') && board[0][0] === 'r' && board[0][1] === '.' && board[0][2] === '.' && board[0][3] === '.' && !inCheck(board, side) && !attacks(board, 0, 3, 'w') && !attacks(board, 0, 2, 'w')) out.push({from:'e8',to:'c8',castle:'q'});
+      }
+    } else {
+      const directions = type === 'b' ? [[1,1],[1,-1],[-1,1],[-1,-1]] : type === 'r' ? [[1,0],[-1,0],[0,1],[0,-1]] : [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+      for (const [dr, dc] of directions) { let rr = row + dr, cc = col + dc; while (inside(rr, cc)) { if (board[rr][cc] === '.') add(rr, cc); else { if (color(board[rr][cc]) !== side) add(rr, cc); break; } rr += dr; cc += dc; } }
+    }
+  }
+  return out.filter(move => !inCheck(applyToBoard(board, move, side), side));
+}
+function uci(move) { return move.from + move.to + (move.promotion || ''); }
+function sanFor(board, move, side, castles, ep) {
+  const piece = board[parse(move.from)[0]][parse(move.from)[1]], type = piece.toLowerCase();
+  if (move.castle) return move.castle.toUpperCase() === 'K' ? 'O-O' : 'O-O-O';
+  const capture = Boolean(board[parse(move.to)[0]][parse(move.to)[1]] !== '.' || move.enPassant);
+  let san = type === 'p' ? (capture ? move.from[0] : '') : type === 'n' ? 'N' : type === 'b' ? 'B' : type === 'r' ? 'R' : type === 'q' ? 'Q' : 'K';
+  if (type !== 'p') {
+    const peers = pseudo(board, side, castles, ep).filter(candidate => candidate.to === move.to && candidate.from !== move.from && board[parse(candidate.from)[0]][parse(candidate.from)[1]].toLowerCase() === type);
+    if (peers.length) san += peers.some(candidate => candidate.from[0] === move.from[0]) ? move.from[1] : move.from[0];
+  }
+  if (capture) san += 'x'; san += move.to; if (move.promotion) san += `=${move.promotion.toUpperCase()}`;
+  const next = applyToBoard(board, move, side), nextSide = side === 'w' ? 'b' : 'w', replies = pseudo(next, nextSide, castles, ep);
+  if (!replies.length && inCheck(next, nextSide)) san += '#'; else if (inCheck(next, nextSide)) san += '+';
+  return san;
+}
+function updateCastles(castles, move, piece, captured) {
+  let rights = castles;
+  if (piece === 'K') rights = rights.replace(/[KQ]/g, ''); if (piece === 'k') rights = rights.replace(/[kq]/g, '');
+  if (move.from === 'a1' || move.to === 'a1') rights = rights.replace('Q', ''); if (move.from === 'h1' || move.to === 'h1') rights = rights.replace('K', '');
+  if (move.from === 'a8' || move.to === 'a8') rights = rights.replace('q', ''); if (move.from === 'h8' || move.to === 'h8') rights = rights.replace('k', '');
+  return rights || '-';
+}
+function apply(move) {
+  const from = parse(move.from), to = parse(move.to), piece = game.board[from[0]][from[1]], captured = game.board[to[0]][to[1]], side = game.turn;
+  const san = sanFor(game.board, move, side, game.castles, game.ep);
+  game.board = applyToBoard(game.board, move, side); game.castles = updateCastles(game.castles, move, piece, captured);
+  game.ep = Math.abs(from[0] - to[0]) === 2 && piece.toLowerCase() === 'p' ? square((from[0] + to[0]) / 2, from[1]) : '-';
+  game.halfmove = piece.toLowerCase() === 'p' || captured !== '.' || move.enPassant ? 0 : game.halfmove + 1;
+  game.turn = side === 'w' ? 'b' : 'w'; game.moves.push(uci(move)); game.san.push(san); game.lastMove = uci(move);
+  const key = positionKey(game.board, game.turn, game.castles, game.ep); game.positionHistory.push(key); game.repetitions[key] = (game.repetitions[key] || 0) + 1;
+  game.history.push({uci: uci(move), san, board: copy(game.board), turn: game.turn, lastMove: game.lastMove});
+}
+function legal(value) {
+  const promotion = value[4] ? value[4].toLowerCase() : null;
+  return pseudo(game.board, game.turn, game.castles, game.ep).find(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && (promotion ? move.promotion === promotion : !move.promotion)) || null;
+}
+function promotionRequired(value) { return value.length === 4 && pseudo(game.board, game.turn, game.castles, game.ep).some(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && move.promotion); }
+function capturedPieces() {
+  const initial = {P:8,N:2,B:2,R:2,Q:1,p:8,n:2,b:2,r:2,q:1}, current = {};
+  for (const row of game.board) for (const piece of row) if (piece !== '.') current[piece] = (current[piece] || 0) + 1;
+  const taken = {w:[],b:[]}; for (const [piece, amount] of Object.entries(initial)) for (let i = Math.max(0, amount - (current[piece] || 0)); i; i--) taken[piece === piece.toUpperCase() ? 'b' : 'w'].push(piece.toLowerCase());
+  return taken;
+}
+function insufficientMaterial(board = game.board) {
+  const pieces = []; for (const row of board) for (const piece of row) if (piece !== '.' && piece.toLowerCase() !== 'k') pieces.push(piece.toLowerCase());
+  return pieces.length === 0 || (pieces.length === 1 && (pieces[0] === 'b' || pieces[0] === 'n'));
+}
+function drawReason() {
+  const key = game.positionHistory[game.positionHistory.length - 1];
+  if (game.repetitions[key] >= 3) return 'threefold repetition';
+  if (game.halfmove >= 100) return '50-move rule';
+  if (insufficientMaterial()) return 'insufficient material';
+  return null;
+}
+function currentState(sessionId) {
+  if (!game) return {active:false, role:'spectator', isPlayer:false, result:null, termination:null};
+  return {active:true, role:sessionId === game.playerSessionId ? 'player' : 'spectator', isPlayer:sessionId === game.playerSessionId, playerColor:game.playerColor, board:game.board, currentFen:`${boardFen(game.board)} ${game.turn} ${game.castles} ${game.ep} ${game.halfmove} ${Math.floor(game.moves.length / 2) + 1}`, moves:game.moves, san:game.san, history:game.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove})), turn:game.turn, engineThinking:game.engineThinking, result:game.result, termination:game.termination, lastMove:game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null, depth:game.depth, evaluation:game.evaluation, capturedPieces:capturedPieces(), legalMoves:pseudo(game.board, game.turn, game.castles, game.ep).map(uci), startedAt:game.startedAt};
+}
+function findKing(board, side) { for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return [row, col]; return [0, 0]; }
+function emit(type, data = null) { for (const [response, sessionId] of clients) { const payload = data || currentState(sessionId); response.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } }
+function end(result, termination) {
+  if (!game) return;
+  game.result = result; game.termination = termination; game.engineThinking = false;
+  const endedAt = new Date().toISOString();
+  fs.mkdirSync(path.dirname(DATA), {recursive:true}); let old = []; try { old = JSON.parse(fs.readFileSync(DATA)); } catch {}
+  old.push({startTime:game.startedAt, endTime:endedAt, playerColor:game.playerColor, moves:game.moves, result, termination}); fs.writeFileSync(DATA, JSON.stringify(old, null, 2));
+  emit('gameOver'); if (engine) { engine.kill(); engine = null; } game = null; emit('state');
+}
+function terminalAfterMove() {
+  const moves = pseudo(game.board, game.turn, game.castles, game.ep);
+  if (!moves.length) return inCheck(game.board, game.turn) ? [game.turn === 'w' ? '0-1' : '1-0', 'checkmate'] : ['1/2-1/2', 'stalemate'];
+  const draw = drawReason(); return draw ? ['1/2-1/2', draw] : null;
+}
+function engineGo() {
+  if (!game || game.result || game.turn === game.playerColor) return;
+  game.engineThinking = true; emit('engineThinking');
+  if (!engine) {
+    engine = spawn(ENGINE, [], {stdio:['pipe','pipe','pipe']});
+    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
+    engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
+  }
+  setTimeout(() => { if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo depth ${DEPTH}\n`); }, 150);
+}
+function start(session, colorChoice) {
+  if (game) return false;
+  const playerColor = colorChoice === 'random' ? (Math.random() < .5 ? 'w' : 'b') : colorChoice === 'black' ? 'b' : 'w';
+  const board = boardStart(), key = positionKey(board, 'w', 'KQkq', '-');
+  game = {active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:false, result:null, termination:null, lastMove:null, depth:0, evaluation:0, startedAt:new Date().toISOString(), repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null}]};
+  emit('state'); if (playerColor === 'b') engineGo(); return true;
+}
+function body(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', data => text += data); req.on('end', () => { try { resolve(JSON.parse(text || '{}')); } catch { reject(new Error('invalid json')); } }); }); }
+function json(response, status, data) { response.writeHead(status, {'Content-Type':'application/json'}); response.end(JSON.stringify(data)); }
+function handle(req, response, session) {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/events') { response.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'}); clients.set(response, session); response.write(`event: state\ndata: ${JSON.stringify(currentState(session))}\n\n`); req.on('close', () => clients.delete(response)); return; }
+  if (url.pathname === '/api/state') return json(response, 200, currentState(session));
+  if (req.method === 'POST' && url.pathname === '/api/start') return body(req).then(value => start(session, value.color || 'random') ? json(response, 200, currentState(session)) : json(response, 409, {error:'active game'}));
+  if (req.method === 'POST' && url.pathname === '/api/move') return body(req).then(value => { if (!game) return json(response, 409, {error:'no active game'}); if (session !== game.playerSessionId) return json(response, 403, {error:'spectator'}); if (game.engineThinking || game.turn !== game.playerColor) return json(response, 409, {error:'not your turn'}); const requested = value.move || ''; if (promotionRequired(requested)) return json(response, 422, {error:'promotion required', promotionRequired:true}); const move = legal(requested); if (!move) return json(response, 422, {error:'illegal move'}); apply(move); emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); return json(response, 200, currentState(session)); });
+  if (req.method === 'POST' && url.pathname === '/api/resign') { if (!game || session !== game.playerSessionId) return json(response, 403, {error:'not player'}); end(game.playerColor === 'w' ? '0-1' : '1-0', 'resignation'); return json(response, 200, {ok:true}); }
+  if (url.pathname === '/' || url.pathname.startsWith('/public/')) { const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(8), filePath = path.join(root, 'public', file); if (!filePath.startsWith(PUBLIC_ROOT) || !fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files[path.extname(filePath)] || 'text/plain'}); return fs.createReadStream(filePath).pipe(response); }
+  return json(response, 404, {error:'not found'});
+}
+const server = http.createServer((req, response) => { const session = cookie(req, response); serial = serial.then(() => handle(req, response, session)).catch(error => json(response, 500, {error:error.message})); });
+if (require.main === module) server.listen(PORT, '127.0.0.1', () => console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
+module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, setGame(value) { game = value; }, getGame:() => game};

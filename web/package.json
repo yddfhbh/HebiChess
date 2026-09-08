@@ -2,5 +2,5 @@
   "name": "hebichess-web",
   "private": true,
   "type": "commonjs",
-  "scripts": {"start": "node server.js", "test": "node --test test/server.test.js"}
+  "scripts": {"start": "node server.js", "test": "node --test test/*.test.js"}
 }
