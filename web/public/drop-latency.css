@@ -1,0 +1,15 @@
+.square .drop-preview {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 3;
+}
+.square .drop-preview .piece {
+  width: 76%;
+  height: 76%;
+}
+@media(max-width:800px){
+  .square .drop-preview .piece{width:82%;height:82%}
+}
