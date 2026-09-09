@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 from .make_test_network import make_network, write_network
-from .reference import HEADER, active_features
+from .reference import HEADER, active_features, load
 
 POSITIONS = {
     "startpos": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -75,13 +75,20 @@ def check_rejections(engine: Path, network: Path, directory: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", type=Path, required=True)
-    parser.add_argument("--keep-network", type=Path)
+    parser.add_argument("--keep-network", type=Path,
+                        help="validate this existing .hebinnue file without modifying it")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="hebichess-nnue-") as temp:
         directory = Path(temp)
-        network_path = args.keep_network or directory / "test.hebinnue"
-        network = make_network()
-        write_network(network, network_path)
+        if args.keep_network:
+            network_path = args.keep_network
+            if not network_path.is_file():
+                parser.error(f"--keep-network does not exist: {network_path}")
+            network = load(network_path)
+        else:
+            network_path = directory / "test.hebinnue"
+            network = make_network()
+            write_network(network, network_path)
         check_rejections(args.engine, network_path, directory)
         # A color swap plus vertical mirror maps an original side's normalized
         # features to the other perspective exactly.  It also reverses STM,
