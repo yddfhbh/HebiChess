@@ -1,4 +1,5 @@
 #include "chess/eval.hpp"
+#include "chess/nnue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -522,13 +523,11 @@ int evaluate_hce(const Board& board) noexcept {
 }
 
 bool eval_mode_available(EvalMode mode) noexcept {
-  return mode == EvalMode::HCE;
+  return mode == EvalMode::HCE || nnue_network_available();
 }
 
-std::optional<int> evaluate_nnue(const Board&) noexcept {
-  // A network and its validation/loading path will be introduced separately.
-  // Returning no value makes an accidental NNUE activation observable.
-  return std::nullopt;
+std::optional<int> evaluate_nnue(const Board& board) noexcept {
+  return evaluate_nnue_network(board);
 }
 
 std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {

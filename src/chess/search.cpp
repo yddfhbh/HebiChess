@@ -83,6 +83,7 @@ struct SearchContext {
   bool use_null_move{false};
   bool use_lmr{false};
   bool use_pvs{false};
+  EvalMode eval_mode{EvalMode::HCE};
 
   bool should_stop() {
     if (stopped) return true;
@@ -278,7 +279,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return best;
   }
 
-  const int stand_pat = evaluate(board);
+  const int stand_pat = evaluate(board, context.eval_mode).value_or(evaluate_hce(board));
   if (stand_pat >= beta) return beta;
   alpha = std::max(alpha, stand_pat);
 
@@ -496,7 +497,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
-                          limits.use_null_move, limits.use_lmr, limits.use_pvs};
+                          limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
@@ -546,7 +547,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                             limits.use_tt ? &tt : nullptr, &result,
                             limits.use_see_pruning,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
-                            limits.use_null_move, limits.use_lmr, limits.use_pvs};
+                            limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
       current.clear();
       best_score = -MATE_SCORE;
       std::optional<Move> root_tt_move;

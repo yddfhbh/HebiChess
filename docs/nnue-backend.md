@@ -25,15 +25,31 @@ promoted piece at `to`); promotion capture (also remove target); castling
 square itself changes the king-relative feature plane, so rebuild that
 perspective's accumulator rather than trying to transform every feature).
 
-## First representation
+## Fixed feature ABI: HalfKP-v1
 
-Start with a HalfKP-style king-relative encoding: for each perspective's king
-square, encode every non-king piece by color, type, and square.  A compact
-baseline uses `2 * 6 * 64 * 64 = 49,152` binary input features if both king
-perspectives and six piece types are retained (king features can be omitted,
-reducing the piece-type term to five).  It is simple, has proven king-safety
-expressiveness, and supports incremental updates for all non-king moves.
-Its costs are a relatively large sparse first layer and a full perspective
-refresh on king moves.  Do not put root style or aggression terms into these
-features: the network output must remain the objective score consumed by
-search, with HebiChess root policy applied afterwards.
+HalfKP-v1 has exactly `64 king squares * 12 colored piece types * 64 board
+squares = 49,152` binary features per perspective. Its index is
+`((oriented_king * 12 + colored_type) * 64 + oriented_piece_square)`.
+Squares use `a1=0 .. h8=63`. White leaves squares unchanged; Black applies
+`square ^ 56` (vertical rank flip only) to its king and piece squares. The
+perspective king is that side's own king. Colors normalize to own=0 and
+opponent=1; Pawn..King are types 0..5, so
+`colored_type=(own ? 0 : 6)+piece_type`. Kings, including the perspective king,
+are included. Side to move is not a feature; it selects accumulator order.
+
+The float32 reference network computes sparse `49152 -> 256` transform sums
+plus bias for each perspective, concatenates `[STM, opponent]`, then uses
+`512 -> 32 -> 32 -> 1`. Each non-output activation is `clamp(x, 0, 1)`.
+Output is side-to-move centipawns, rounded by C++. No SIMD, quantization, or
+incremental accumulator exists in v1.
+
+`.hebinnue` v1 is little-endian and starts with a packed 56-byte header:
+`HEBINNUE` magic, version, feature set, dimensions, scalar=float32 identifier,
+endian marker `0x01020304`, parameter count, and FNV-1a-64 payload checksum.
+Payload order is transform `[49152][256]`, bias, hidden1 `[32][512]`, bias,
+hidden2 `[32][32]`, bias, output `[32]`, bias. Loader rejects malformed magic,
+version/dimensions, scalar/endian mismatch, checksum mismatch, truncation, and
+trailing data.
+
+Do not put root style or aggression terms into these features: network output
+remains objective and root policy stays separate.
