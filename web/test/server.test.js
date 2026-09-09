@@ -7,7 +7,7 @@ const path = require('node:path');
 const port = 3417;
 const testData = path.join(os.tmpdir(), `hebichess-web-test-${process.pid}.json`);
 let child;
-test.before(async()=>{child=spawn(process.execPath,['server.js'],{cwd:__dirname+'/..',env:{...process.env,PORT:String(port),HEBICHESS_BINARY:'../build/HebiChess',DEFAULT_SEARCH_DEPTH:'1',DATA_PATH:testData}});await new Promise((resolve,reject)=>{child.stdout.on('data',d=>{if(d.toString().includes('listening'))resolve()});child.on('error',reject)})});
+test.before(async()=>{child=spawn(process.execPath,['server.js'],{cwd:__dirname+'/..',env:{...process.env,PORT:String(port),HEBICHESS_BINARY:'../build/HebiChess',DEFAULT_SEARCH_MOVETIME_MS:'1',DATA_PATH:testData}});await new Promise((resolve,reject)=>{child.stdout.on('data',d=>{if(d.toString().includes('listening'))resolve()});child.on('error',reject)})});
 test.after(()=>{child.kill();try{fs.unlinkSync(testData)}catch(error){if(error.code!=='ENOENT')throw error}});
 async function call(path,body,cookie){const r=await fetch(`http://127.0.0.1:${port}${path}`,{method:body?'POST':'GET',headers:{'content-type':'application/json',...(cookie?{cookie}: {})},body:body&&JSON.stringify(body)});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=raw}return {status:r.status,data,cookie:r.headers.get('set-cookie')?.split(';')[0]||cookie}}
 function session(value){return `hebichess_session=${value}`}

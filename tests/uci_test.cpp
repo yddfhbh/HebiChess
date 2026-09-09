@@ -42,12 +42,17 @@ void test_serialization_and_timeout_integrity() {
   SearchLimits limits;
   limits.max_depth = 64;
   limits.has_deadline = true;
-  limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+  limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
   const SearchResult result = search(board, limits);
   assert(board.to_fen() == before);
   bool legal = false;
   for (const Move& candidate : generate_legal_moves(board)) legal |= candidate == result.best_move;
   assert(legal);
+  assert(result.completed_depth > 0);
+  assert(result.completed_depth < limits.max_depth);
+  // The final result is the last wholly completed iteration: it must contain
+  // every root move, never the partially searched iteration that hit timeout.
+  assert(result.root_moves.size() == generate_legal_moves(board).size());
 }
 }
 

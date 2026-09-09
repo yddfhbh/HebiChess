@@ -1,4 +1,5 @@
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -337,6 +338,26 @@ void test_qe5_hanging_queen_regression() {
               << " best_score=" << result.score
               << " qe5_score=" << qe5_info->search_score << '\n';
   }
+
+  clear_transposition_table();
+  clear_search_heuristics();
+  SearchLimits timed;
+  timed.max_depth = 64;
+  timed.has_deadline = true;
+  timed.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  const SearchResult timed_result = search(board, timed);
+  require(timed_result.completed_depth > 0,
+          "timed Qe5 search must retain a completed iteration");
+  require(timed_result.best_move != qe5,
+          "timed Qe5 search must not return Qd6-e5+");
+  const auto timed_qe5 = std::find_if(timed_result.root_moves.begin(),
+      timed_result.root_moves.end(), [&qe5](const RootMoveInfo& info) {
+        return info.move == qe5;
+      });
+  require(timed_qe5 != timed_result.root_moves.end(),
+          "timed Qd6-e5+ must be a root candidate");
+  require(!timed_qe5->style_safe,
+          "timed Qd6-e5+ must fail the aggression threshold proof");
 }
 
 }  // namespace

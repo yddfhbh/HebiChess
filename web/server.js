@@ -8,7 +8,7 @@ const root = __dirname;
 const PUBLIC_ROOT = path.join(root, 'public') + path.sep;
 const PORT = Number(process.env.PORT || 3400);
 const ENGINE = path.resolve(root, process.env.HEBICHESS_BINARY || '../build/HebiChess');
-const DEPTH = Number(process.env.DEFAULT_SEARCH_DEPTH || 7);
+const MOVETIME = Number(process.env.DEFAULT_SEARCH_MOVETIME_MS || 1500);
 const DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
 const PRODUCTION = process.env.NODE_ENV === 'production';
 const clients = new Map();
@@ -175,7 +175,7 @@ function engineGo() {
     engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
     engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
   }
-  if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo depth ${DEPTH}\n`);
+  if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo movetime ${MOVETIME}\n`);
 }
 function start(session, colorChoice) {
   if (game) return false;

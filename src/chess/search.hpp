@@ -30,6 +30,9 @@ struct RootMoveInfo {
 struct SearchResult {
   Move best_move{};
   int score{0};
+  // Updated only after all root moves (and any aspiration retry) finish.
+  // A deadline can therefore never expose a partial root iteration as final.
+  int completed_depth{0};
   std::uint64_t nodes{0};
   std::uint64_t main_nodes{0};
   std::uint64_t qnodes{0};

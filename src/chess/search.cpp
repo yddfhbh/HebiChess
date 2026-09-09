@@ -606,19 +606,10 @@ SearchResult search(const Board& position, const SearchLimits& limits,
         objective_move = it;
       }
     }
-    // Style is a final root policy, not an input to the next iterative depth.
-    // Deferring its threshold proofs avoids repeating expensive verification at
-    // every completed depth, while preserving an objectively ordered PV.
-    if (depth != limits.max_depth) {
-      if (objective_move == current.end()) break;
-      result.best_move = objective_move->move;
-      result.score = objective_best;
-      result.root_moves = std::move(current);
-      if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
-      previous_root = result.root_moves;
-      legal = generate_legal_moves(root);
-      continue;
-    }
+    if (objective_move == current.end()) break;
+    // A movetime search normally stops before max_depth.  Apply the existing
+    // final root policy to every completed iteration so the last completed
+    // result retains its safety gate rather than silently bypassing it.
     // PVS zero-window fail-lows are upper bounds, not objective scores.  A
     // style candidate only needs a proof that it clears the tolerance, so use
     // a threshold null-window instead of turning every plausible upper bound
@@ -722,6 +713,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     // Keep the iterative-deepening score exact by reporting the objective PV.
     result.score = chosen->bound == ScoreBound::Exact ? chosen->search_score : objective_best;
     result.root_moves = std::move(current);
+    result.completed_depth = depth;
     if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
     previous_root = result.root_moves;
     legal = generate_legal_moves(root);
