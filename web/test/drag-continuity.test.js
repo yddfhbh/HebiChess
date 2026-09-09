@@ -29,7 +29,7 @@ test('drag pointer position is retained across board rerenders', () => {
   assert.match(js, /moveGhost\(\{clientX: drag\.lastX, clientY: drag\.lastY\}\)/);
 });
 
-test('interaction assets use the continuity cache version', () => {
-  assert.match(html, /interaction-fixes\.js\?v=20260909e/);
-  assert.match(html, /interaction-fixes\.css\?v=20260909e/);
+test('interaction assets use the current cache version', () => {
+  assert.match(html, /interaction-fixes\.js\?v=20260909f/);
+  assert.match(html, /interaction-fixes\.css\?v=20260909f/);
 });
