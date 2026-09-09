@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -10,9 +11,10 @@ using namespace hebichess;
 
 namespace {
 
-void run(const Board& position, const char* label, bool pvs, bool aspiration) {
+void run(const Board& position, const char* label, bool pvs, bool aspiration,
+         int depth = 4) {
   SearchLimits limits;
-  limits.max_depth = 4;
+  limits.max_depth = depth;
   limits.use_tt = true;
   limits.use_pvs = pvs;
   limits.use_aspiration = aspiration;
@@ -22,7 +24,8 @@ void run(const Board& position, const char* label, bool pvs, bool aspiration) {
       std::chrono::steady_clock::now() - started).count();
   std::cout << label << " bestmove " << move_to_uci(result.best_move)
             << " score " << result.score << " nodes " << result.nodes
-            << " qnodes " << result.qnodes << " see_calls " << result.see_calls
+            << " main_nodes " << result.main_nodes << " qnodes " << result.qnodes
+            << " qdelta_prunes " << result.qdelta_prunes << " see_calls " << result.see_calls
             << " see_prunes " << result.see_prunes
             << " killer_cutoffs " << result.killer_cutoffs
             << " killer_uses " << result.killer_uses
@@ -31,12 +34,25 @@ void run(const Board& position, const char* label, bool pvs, bool aspiration) {
             << " null_cutoffs " << result.null_cutoffs
             << " lmr_attempts " << result.lmr_attempts
             << " lmr_researches " << result.lmr_researches
+            << " lmr_reduced_nodes " << result.lmr_reduced_search_nodes
+            << " lmr_research_nodes " << result.lmr_research_nodes
             << " pvs_zero_window_searches " << result.pvs_zero_window_searches
             << " pvs_researches " << result.pvs_researches
+            << " pvs_research_nodes " << result.pvs_research_nodes
+            << " root_style_candidates " << result.root_style_candidates
+            << " root_style_verifications " << result.root_style_verification_searches
+            << " root_style_nodes " << result.root_style_verification_nodes
+            << " root_style_verified " << result.root_style_verified
+            << " root_style_rejected " << result.root_style_rejected
+            << " style_evaluations " << result.style_evaluations
             << " aspiration_retries " << result.aspiration_retries
             << " aspiration_fail_highs " << result.aspiration_fail_highs
             << " aspiration_fail_lows " << result.aspiration_fail_lows
-            << " elapsed_ms " << elapsed << '\n';
+            << " tt_hits " << result.tt_hits
+            << " tt_cutoffs " << result.tt_cutoffs
+            << " completed_depth " << depth
+            << " elapsed_ms " << elapsed
+            << " nps " << (elapsed > 0 ? result.nodes * 1000 / elapsed : 0) << '\n';
 }
 
 void run_timed(const Board& position, const char* label, bool pvs, bool aspiration) {
@@ -69,30 +85,27 @@ void run_timed(const Board& position, const char* label, bool pvs, bool aspirati
 
 }  // namespace
 
-int main() {
+int main(int argc, char*[]) {
   const Board startpos = Board::initial();
-  const Board quiet = Board::from_fen(
-      "r2q1rk1/ppp1bppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1").value();
-  const Board tactical = Board::from_fen(
-      "r1bq1rk1/ppp2ppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1").value();
-  const std::pair<const char*, const Board*> positions[] = {
-      {"start", &startpos}, {"quiet", &quiet}, {"tactical", &tactical}};
-  for (const auto& [name, position] : positions) {
-    for (const auto& [pvs, aspiration, suffix] : {
-             std::tuple<bool, bool, const char*>{false, false, "A"},
-             std::tuple<bool, bool, const char*>{true, false, "B"},
-             std::tuple<bool, bool, const char*>{false, true, "C"},
-             std::tuple<bool, bool, const char*>{true, true, "D"}}) {
+  Board qe5 = Board::initial();
+  for (const char* move : {"e2e4", "b8c6", "d2d4", "g8h6", "e4e5", "d7d6",
+                           "e5d6", "d8d6", "g1f3"}) {
+    const auto legal = generate_legal_moves(qe5);
+    const auto it = std::find_if(legal.begin(), legal.end(), [move](const Move& candidate) {
+      return move_to_uci(candidate) == move;
+    });
+    if (it == legal.end()) return 1;
+    qe5.make_move(*it);
+  }
+  const std::pair<const char*, const Board*> benchmark_positions[] = {
+      {"start", &startpos}, {"qe5", &qe5}};
+  for (const auto& [name, position] : benchmark_positions) {
+    if (argc > 1 && std::string(name) != "qe5") continue;
+    for (const int depth : {6, 7, 8}) {
       clear_transposition_table();
       clear_search_heuristics();
-      const std::string label = std::string(name) + "_" + suffix;
-      run(*position, label.c_str(), pvs, aspiration);
+      const std::string label = std::string(name) + "_d" + std::to_string(depth);
+      run(*position, label.c_str(), true, true, depth);
     }
   }
-  clear_transposition_table();
-  clear_search_heuristics();
-  run_timed(startpos, "timed_A", false, false);
-  clear_transposition_table();
-  clear_search_heuristics();
-  run_timed(startpos, "timed_D", true, true);
 }

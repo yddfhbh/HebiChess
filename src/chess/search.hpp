@@ -13,9 +13,15 @@ namespace hebichess {
 
 constexpr int MATE_SCORE = 30000;
 
+enum class ScoreBound : std::uint8_t { Exact, Lower, Upper };
+
 struct RootMoveInfo {
   Move move{};
   int search_score{0};
+  ScoreBound bound{ScoreBound::Exact};
+  // A threshold proof is sufficient for style selection, but is not an exact
+  // minimax score.  Keep that distinction explicit for callers.
+  bool style_safe{false};
   int style_score{0};
   bool sacrifice_candidate{false};
   int see_score{0};
@@ -25,7 +31,9 @@ struct SearchResult {
   Move best_move{};
   int score{0};
   std::uint64_t nodes{0};
+  std::uint64_t main_nodes{0};
   std::uint64_t qnodes{0};
+  std::uint64_t qdelta_prunes{0};
   std::uint64_t tt_probes{0};
   std::uint64_t tt_hits{0};
   std::uint64_t tt_cutoffs{0};
@@ -38,8 +46,17 @@ struct SearchResult {
   std::uint64_t null_cutoffs{0};
   std::uint64_t lmr_attempts{0};
   std::uint64_t lmr_researches{0};
+  std::uint64_t lmr_reduced_search_nodes{0};
+  std::uint64_t lmr_research_nodes{0};
   std::uint64_t pvs_zero_window_searches{0};
   std::uint64_t pvs_researches{0};
+  std::uint64_t pvs_research_nodes{0};
+  std::uint64_t root_style_candidates{0};
+  std::uint64_t root_style_verification_searches{0};
+  std::uint64_t root_style_verification_nodes{0};
+  std::uint64_t root_style_verified{0};
+  std::uint64_t root_style_rejected{0};
+  std::uint64_t style_evaluations{0};
   std::uint64_t aspiration_retries{0};
   std::uint64_t aspiration_fail_highs{0};
   std::uint64_t aspiration_fail_lows{0};

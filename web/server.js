@@ -175,7 +175,7 @@ function engineGo() {
     engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
     engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
   }
-  setTimeout(() => { if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo depth ${DEPTH}\n`); }, 150);
+  if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo depth ${DEPTH}\n`);
 }
 function start(session, colorChoice) {
   if (game) return false;

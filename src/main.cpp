@@ -112,7 +112,11 @@ int main() {
         limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);
       }
       const SearchResult result = search(board, limits, print_info);
-      std::cout << "info string tt probes " << result.tt_probes
+      std::cout << "info string nodes " << result.nodes
+                << " main_nodes " << result.main_nodes
+                << " qnodes " << result.qnodes
+                << " qdelta_prunes " << result.qdelta_prunes
+                << " tt probes " << result.tt_probes
                 << " hits " << result.tt_hits << " cutoffs "
                 << result.tt_cutoffs << " see_calls " << result.see_calls
                 << " see_prunes " << result.see_prunes
@@ -123,8 +127,17 @@ int main() {
                 << " null_cutoffs " << result.null_cutoffs
                 << " lmr_attempts " << result.lmr_attempts
                 << " lmr_researches " << result.lmr_researches
+                << " lmr_reduced_nodes " << result.lmr_reduced_search_nodes
+                << " lmr_research_nodes " << result.lmr_research_nodes
                 << " pvs_zero_window_searches " << result.pvs_zero_window_searches
                 << " pvs_researches " << result.pvs_researches
+                << " pvs_research_nodes " << result.pvs_research_nodes
+                << " root_style_candidates " << result.root_style_candidates
+                << " root_style_verifications " << result.root_style_verification_searches
+                << " root_style_nodes " << result.root_style_verification_nodes
+                << " root_style_verified " << result.root_style_verified
+                << " root_style_rejected " << result.root_style_rejected
+                << " style_evaluations " << result.style_evaluations
                 << " aspiration_retries " << result.aspiration_retries
                 << " aspiration_fail_highs " << result.aspiration_fail_highs
                 << " aspiration_fail_lows " << result.aspiration_fail_lows << std::endl;

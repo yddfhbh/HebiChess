@@ -166,6 +166,79 @@ std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
   return moves;
 }
 
+std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
+  std::vector<Move> moves;
+  const Color color = board.side_to_move();
+  constexpr std::array<std::pair<int, int>, 8> knight_steps = {
+      {{1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}}};
+  constexpr std::array<std::pair<int, int>, 8> king_steps = {
+      {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}}};
+  constexpr std::array<std::pair<int, int>, 4> diagonals = {{{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}};
+  constexpr std::array<std::pair<int, int>, 4> orthogonals = {{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}};
+  const auto add_sliding_captures = [&](Square from,
+                                        const auto& directions) {
+    for (const auto [df, dr] : directions) {
+      for (int file = from.file() + df, rank = from.rank() + dr;; file += df, rank += dr) {
+        const Square target = at(file, rank);
+        if (!target.is_valid()) break;
+        const Piece target_piece = board.piece_at(target);
+        if (target_piece.is_empty()) continue;
+        if (target_piece.color != color)
+          moves.push_back({from, target, PieceType::None, MoveFlag::Capture});
+        break;
+      }
+    }
+  };
+  for (std::uint8_t index = 0; index < Square::kSquareCount; ++index) {
+    const Square from = Square::from_index(index);
+    const Piece piece = board.piece_at(from);
+    if (piece.is_empty() || piece.color != color) continue;
+    switch (piece.type) {
+      case PieceType::Pawn: {
+        const int direction = color == Color::White ? 1 : -1;
+        const int promotion_rank = color == Color::White ? 7 : 0;
+        const Square one = at(from.file(), from.rank() + direction);
+        if (one.is_valid() && one.rank() == promotion_rank && board.piece_at(one).is_empty())
+          add_promotion_moves(moves, from, one, false);
+        for (const int file_delta : {-1, 1}) {
+          const Square target = at(from.file() + file_delta, from.rank() + direction);
+          if (!target.is_valid()) continue;
+          const bool capture = enemy_at(board, target, color);
+          const Square captured = at(target.file(), from.rank());
+          const bool en_passant = !capture && target == board.en_passant_target() &&
+              captured.is_valid() && board.piece_at(captured).type == PieceType::Pawn &&
+              board.piece_at(captured).color == opposite(color);
+          if (!capture && !en_passant) continue;
+          if (target.rank() == promotion_rank) add_promotion_moves(moves, from, target, true);
+          else moves.push_back({from, target, PieceType::None,
+                                en_passant ? MoveFlag::EnPassant : MoveFlag::Capture});
+        }
+        break;
+      }
+      case PieceType::Knight:
+        for (const auto [df, dr] : knight_steps) {
+          const Square to = at(from.file() + df, from.rank() + dr);
+          if (enemy_at(board, to, color)) moves.push_back({from, to, PieceType::None, MoveFlag::Capture});
+        }
+        break;
+      case PieceType::Bishop: add_sliding_captures(from, diagonals); break;
+      case PieceType::Rook: add_sliding_captures(from, orthogonals); break;
+      case PieceType::Queen:
+        add_sliding_captures(from, diagonals);
+        add_sliding_captures(from, orthogonals);
+        break;
+      case PieceType::King:
+        for (const auto [df, dr] : king_steps) {
+          const Square to = at(from.file() + df, from.rank() + dr);
+          if (enemy_at(board, to, color)) moves.push_back({from, to, PieceType::None, MoveFlag::Capture});
+        }
+        break;
+      case PieceType::None: break;
+    }
+  }
+  return moves;
+}
+
 std::vector<Move> generate_legal_moves(Board& board) {
   std::vector<Move> legal_moves;
   const Color moving_color = board.side_to_move();
@@ -175,6 +248,19 @@ std::vector<Move> generate_legal_moves(Board& board) {
     if (king.is_valid() && !board.is_square_attacked(king, opposite(moving_color))) {
       legal_moves.push_back(move);
     }
+    board.unmake_move(move, undo);
+  }
+  return legal_moves;
+}
+
+std::vector<Move> generate_legal_tactical_moves(Board& board) {
+  std::vector<Move> legal_moves;
+  const Color moving_color = board.side_to_move();
+  for (const Move& move : generate_pseudo_legal_tactical_moves(board)) {
+    const UndoState undo = board.make_move(move);
+    const Square king = board.find_king(moving_color);
+    if (king.is_valid() && !board.is_square_attacked(king, opposite(moving_color)))
+      legal_moves.push_back(move);
     board.unmake_move(move, undo);
   }
   return legal_moves;

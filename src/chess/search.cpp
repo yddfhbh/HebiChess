@@ -118,37 +118,59 @@ bool is_quiet_move(const Move& move) noexcept {
   return !is_capture(move) && !move.is_promotion();
 }
 
-int move_order(Board& board, const Move& move, SearchResult* result = nullptr,
-               SearchHeuristics* heuristics = nullptr, int ply = 0) noexcept {
-  const int see = move_see(board, move, result);
-  const bool capture = is_capture(move);
-  int score = 0;
-  const Piece victim = board.piece_at(move.to);
-  if (capture && see >= 0) score += 4000000 + see * 10;
-  else if (move.is_promotion()) score += 3000000 + see * 10;
-  else if (is_quiet_move(move) && heuristics != nullptr &&
-           ply >= 0 && ply < MAX_SEARCH_PLY) {
-    if (move == heuristics->killers[ply][0]) {
-      score += 2500000;
-      if (result != nullptr) ++result->killer_uses;
-    } else if (move == heuristics->killers[ply][1]) {
-      score += 2400000;
-      if (result != nullptr) ++result->killer_uses;
-    } else if (heuristics->history_score(board.side_to_move(), move) > 0) {
-      score += 2200000 + heuristics->history_score(board.side_to_move(), move);
-    } else if (gives_check(board, move)) score += 2000000;
-  }
-  else if (gives_check(board, move)) score += 2000000;
-  else if (capture) score += 1000000 + see * 10;
-  if (move.flag == MoveFlag::EnPassant) score += 10 * piece_value(PieceType::Pawn);
-  else if (!victim.is_empty()) score += 10 * piece_value(victim.type) - piece_value(board.piece_at(move.from).type);
-  return score;
-}
+struct OrderedMove {
+  Move move{};
+  int see{0};
+  int score{0};
+  bool capture{false};
+  bool gives_check{false};
+};
 
-bool is_tactical_move(const Move& move) noexcept {
-  return move.flag == MoveFlag::Capture || move.flag == MoveFlag::EnPassant ||
-         move.flag == MoveFlag::Promotion ||
-         move.flag == MoveFlag::PromotionCapture;
+std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& moves,
+                                     SearchResult* result,
+                                     SearchHeuristics* heuristics, int ply,
+                                     const std::optional<Move>& tt_move = std::nullopt,
+                                     bool include_checks = false) {
+  std::vector<OrderedMove> ordered;
+  ordered.reserve(moves.size());
+  for (const Move& move : moves) {
+    OrderedMove item;
+    item.move = move;
+    item.capture = is_capture(move);
+    item.see = move_see(board, move, result);
+    // Check detection requires make/unmake and dominates NPS if performed for
+    // every legal move at every main-search node.  Main search probes it only
+    // for an otherwise reducible late quiet move; qsearch needs it for its
+    // tactical pruning exceptions.
+    item.gives_check = include_checks && gives_check(board, move);
+    const Piece victim = board.piece_at(move.to);
+    if (item.capture && item.see >= 0) item.score += 4000000 + item.see * 10;
+    else if (move.is_promotion()) item.score += 3000000 + item.see * 10;
+    else if (is_quiet_move(move) && heuristics != nullptr && ply >= 0 && ply < MAX_SEARCH_PLY) {
+      if (move == heuristics->killers[ply][0]) {
+        item.score += 2500000;
+        if (result != nullptr) ++result->killer_uses;
+      } else if (move == heuristics->killers[ply][1]) {
+        item.score += 2400000;
+        if (result != nullptr) ++result->killer_uses;
+      } else if (heuristics->history_score(board.side_to_move(), move) > 0) {
+        item.score += 2200000 + heuristics->history_score(board.side_to_move(), move);
+      } else if (item.gives_check) item.score += 2000000;
+    } else if (item.gives_check) {
+      item.score += 2000000;
+    } else if (item.capture) {
+      item.score += 1000000 + item.see * 10;
+    }
+    if (move.flag == MoveFlag::EnPassant) item.score += 10 * piece_value(PieceType::Pawn);
+    else if (!victim.is_empty())
+      item.score += 10 * piece_value(victim.type) - piece_value(board.piece_at(move.from).type);
+    if (tt_move.has_value() && move == *tt_move) item.score += 5000000;
+    ordered.push_back(item);
+  }
+  std::sort(ordered.begin(), ordered.end(), [](const OrderedMove& a, const OrderedMove& b) {
+    return a.score > b.score;
+  });
+  return ordered;
 }
 
 bool has_non_pawn_material(const Board& board, Color side) noexcept {
@@ -160,24 +182,6 @@ bool has_non_pawn_material(const Board& board, Color side) noexcept {
     }
   }
   return false;
-}
-
-int quiescence_move_order(Board& board, const Move& move, SearchResult* result) noexcept {
-  const bool capture = is_capture(move);
-  const bool promotion = move.is_promotion();
-  const bool en_passant = move.flag == MoveFlag::EnPassant;
-  const int see = move_see(board, move, result);
-  int score = capture && see >= 0 ? 4000000 + see * 10 :
-              promotion ? 3000000 + see * 10 :
-              capture ? 1000000 + see * 10 : en_passant ? 50000 : 0;
-  if (capture) {
-    const Piece victim = en_passant
-        ? Piece{PieceType::Pawn, opposite(board.side_to_move())}
-        : board.piece_at(move.to);
-    score += 10 * piece_value(victim.type) -
-             piece_value(board.piece_at(move.from).type);
-  }
-  return score;
 }
 
 int count_king_escapes(const Board& board, Color king_color) {
@@ -254,21 +258,18 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   const Square king = board.find_king(side);
   const bool in_check = king.is_valid() &&
                         board.is_square_attacked(king, opposite(side));
-  const std::vector<Move> legal = generate_legal_moves(board);
+  const std::vector<Move> legal = in_check ? generate_legal_moves(board) : std::vector<Move>{};
 
   if (in_check) {
     if (legal.empty()) return -MATE_SCORE + ply;
-    std::vector<Move> evasions = legal;
-    std::sort(evasions.begin(), evasions.end(), [&board, &context, ply](const Move& a, const Move& b) {
-      return move_order(board, a, context.result, context.heuristics, ply) >
-             move_order(board, b, context.result, context.heuristics, ply);
-    });
+    const auto evasions = order_moves(board, legal, context.result, context.heuristics, ply,
+                                      std::nullopt, true);
     int best = -MATE_SCORE;
-    for (const Move& move : evasions) {
-      const UndoState undo = board.make_move(move);
+    for (const OrderedMove& item : evasions) {
+      const UndoState undo = board.make_move(item.move);
       const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                          context);
-      board.unmake_move(move, undo);
+      board.unmake_move(item.move, undo);
       if (context.stopped) return 0;
       best = std::max(best, score);
       alpha = std::max(alpha, score);
@@ -277,25 +278,34 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return best;
   }
 
-  if (legal.empty()) return 0;
   const int stand_pat = evaluate(board);
   if (stand_pat >= beta) return beta;
   alpha = std::max(alpha, stand_pat);
 
-  std::vector<Move> tactical;
-  for (const Move& move : legal)
-    if (is_tactical_move(move)) tactical.push_back(move);
-  std::sort(tactical.begin(), tactical.end(), [&board, &context](const Move& a, const Move& b) {
-      return quiescence_move_order(board, a, context.result) >
-             quiescence_move_order(board, b, context.result);
-  });
-  for (const Move& move : tactical) {
+  const std::vector<Move> tactical_moves = generate_legal_tactical_moves(board);
+  if (tactical_moves.empty() && generate_legal_moves(board).empty()) return 0;
+  const auto tactical = order_moves(board, tactical_moves, context.result, nullptr, ply,
+                                    std::nullopt, true);
+  for (const OrderedMove& item : tactical) {
+    const Move& move = item.move;
     const bool promotion = move.is_promotion();
-    const bool capture = is_capture(move);
-    const bool check = gives_check(board, move);
-    const int see = move_see(board, move, context.result);
+    const bool capture = item.capture;
+    const bool check = item.gives_check;
+    const int see = item.see;
     if (context.use_see_pruning && capture && see < -100 && !check && !promotion) {
       if (context.result != nullptr) ++context.result->see_prunes;
+      continue;
+    }
+    // A non-checking, non-promotion capture cannot raise alpha when even the
+    // captured material plus a deliberately generous margin is insufficient.
+    // Keep checks and promotions out: their tactical value is not bounded by
+    // the immediate victim value.
+    const Piece victim = move.flag == MoveFlag::EnPassant
+        ? Piece{PieceType::Pawn, opposite(side)} : board.piece_at(move.to);
+    constexpr int DELTA_MARGIN_CP = 120;
+    if (capture && !check && !promotion &&
+        stand_pat + piece_value(victim.type) + DELTA_MARGIN_CP < alpha) {
+      if (context.result != nullptr) ++context.result->qdelta_prunes;
       continue;
     }
     const UndoState undo = board.make_move(move);
@@ -365,15 +375,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   }
   int best = -MATE_SCORE;
   std::optional<Move> best_move;
-  std::sort(moves.begin(), moves.end(), [&board, &tt_move, &context, ply](const Move& a, const Move& b) {
-    const bool a_is_tt = tt_move.has_value() && a == *tt_move;
-    const bool b_is_tt = tt_move.has_value() && b == *tt_move;
-    if (a_is_tt != b_is_tt) return a_is_tt;
-      return move_order(board, a, context.result, context.heuristics, ply) >
-             move_order(board, b, context.result, context.heuristics, ply);
-  });
-  for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
-    const Move& move = moves[move_index];
+  const auto ordered_moves = order_moves(board, moves, context.result, context.heuristics,
+                                         ply, tt_move);
+  for (std::size_t move_index = 0; move_index < ordered_moves.size(); ++move_index) {
+    const OrderedMove& ordered = ordered_moves[move_index];
+    const Move& move = ordered.move;
     const bool killer_move = context.heuristics != nullptr && ply >= 0 &&
         ply < MAX_SEARCH_PLY && (move == context.heuristics->killers[ply][0] ||
                                  move == context.heuristics->killers[ply][1]);
@@ -396,20 +402,34 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     };
     if (lmr_candidate) {
       if (context.result != nullptr) ++context.result->lmr_attempts;
+      const std::uint64_t before_reduced = context.nodes;
       score = search_child(depth - 2, pvs_candidate);
-      if (!context.stopped && score >= alpha) {
+      if (context.result != nullptr)
+        context.result->lmr_reduced_search_nodes += context.nodes - before_reduced;
+      // In a null window, equality is a fail-low and cannot improve alpha.
+      // Re-searching it was the main source of the inflated LMR rate.
+      if (!context.stopped && score > alpha) {
         if (context.result != nullptr) ++context.result->lmr_researches;
+        const std::uint64_t before_research = context.nodes;
         score = search_child(depth - 1, pvs_candidate);
+        if (context.result != nullptr)
+          context.result->lmr_research_nodes += context.nodes - before_research;
         if (!context.stopped && pvs_candidate && score > alpha && score < beta) {
           if (context.result != nullptr) ++context.result->pvs_researches;
+          const std::uint64_t before_pvs_research = context.nodes;
           score = search_child(depth - 1, false);
+          if (context.result != nullptr)
+            context.result->pvs_research_nodes += context.nodes - before_pvs_research;
         }
       }
     } else {
       score = search_child(depth - 1, pvs_candidate);
       if (!context.stopped && pvs_candidate && score > alpha && score < beta) {
         if (context.result != nullptr) ++context.result->pvs_researches;
+        const std::uint64_t before_pvs_research = context.nodes;
         score = search_child(depth - 1, false);
+        if (context.result != nullptr)
+          context.result->pvs_research_nodes += context.nodes - before_pvs_research;
       }
     }
     board.unmake_move(move, undo);
@@ -481,6 +501,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     return result;
   }
   result.best_move = legal.front();
+  std::vector<RootMoveInfo> previous_root;
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
     const int previous_score = result.score;
     const bool mate_score = previous_score > MATE_SCORE - 1000 ||
@@ -504,29 +525,48 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                             limits.use_null_move, limits.use_lmr, limits.use_pvs};
       current.clear();
       best_score = -MATE_SCORE;
-      for (std::size_t move_index = 0; move_index < legal.size(); ++move_index) {
-        const Move& move = legal[move_index];
+      std::optional<Move> root_tt_move;
+      if (limits.use_tt) {
+        if (const TTEntry* entry = tt.probe(root.zobrist_key()); entry != nullptr)
+          root_tt_move = entry->best_move;
+      }
+      auto root_order = order_moves(root, legal, &result,
+                                    limits.use_killer_history ? &search_heuristics() : nullptr,
+                                    0, root_tt_move);
+      for (OrderedMove& item : root_order) {
+        if (item.move == result.best_move) item.score += 10000000;
+        const auto previous = std::find_if(previous_root.begin(), previous_root.end(),
+            [&item](const RootMoveInfo& info) { return info.move == item.move; });
+        if (previous != previous_root.end()) item.score += 6000000 + previous->search_score;
+      }
+      std::sort(root_order.begin(), root_order.end(), [](const OrderedMove& a, const OrderedMove& b) {
+        return a.score > b.score;
+      });
+      for (std::size_t move_index = 0; move_index < root_order.size(); ++move_index) {
+        const Move& move = root_order[move_index].move;
         if (context.should_stop()) break;
         const UndoState undo = root.make_move(move);
         int score = 0;
         const bool zero_window = limits.use_pvs && move_index > 0;
+        ScoreBound bound = ScoreBound::Exact;
         if (zero_window) {
           ++result.pvs_zero_window_searches;
           score = -negamax_impl(root, depth - 1, -alpha - 1, -alpha, 1, context);
           if (!context.stopped && score > alpha && score < beta) {
             ++result.pvs_researches;
             score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+          } else if (score <= alpha) {
+            bound = ScoreBound::Upper;
+          } else {
+            bound = ScoreBound::Lower;
           }
         } else {
           score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+          if (score >= beta) bound = ScoreBound::Lower;
         }
-        Board child = root;
         root.unmake_move(move, undo);
         if (context.stopped) break;
-        child.make_move(move);
-        current.push_back({move, score, evaluate_move_style(position, move, child),
-                           is_sacrifice_candidate(position, move, child),
-                           move_see(position, move, &result)});
+        current.push_back({move, score, bound});
         best_score = std::max(best_score, score);
         alpha = std::max(alpha, score);
       }
@@ -534,7 +574,6 @@ SearchResult search(const Board& position, const SearchLimits& limits,
         stopped_iteration = true;
         break;
       }
-      const bool fail_high = use_aspiration && best_score >= beta;
       // Root alpha is updated while searching, so retain the original window
       // edge for reliable aspiration classification.
       const bool outside_low = use_aspiration && best_score <=
@@ -558,7 +597,75 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       completed = true;
     }
     if (stopped_iteration || current.size() != legal.size()) break;
-    const bool mate_found = best_score > MATE_SCORE - 1000 || best_score < -MATE_SCORE + 1000;
+    int objective_best = -MATE_SCORE;
+    auto objective_move = current.end();
+    for (auto it = current.begin(); it != current.end(); ++it) {
+      if (it->bound == ScoreBound::Exact &&
+          (objective_move == current.end() || it->search_score > objective_best)) {
+        objective_best = it->search_score;
+        objective_move = it;
+      }
+    }
+    // Style is a final root policy, not an input to the next iterative depth.
+    // Deferring its threshold proofs avoids repeating expensive verification at
+    // every completed depth, while preserving an objectively ordered PV.
+    if (depth != limits.max_depth) {
+      if (objective_move == current.end()) break;
+      result.best_move = objective_move->move;
+      result.score = objective_best;
+      result.root_moves = std::move(current);
+      if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
+      previous_root = result.root_moves;
+      legal = generate_legal_moves(root);
+      continue;
+    }
+    // PVS zero-window fail-lows are upper bounds, not objective scores.  A
+    // style candidate only needs a proof that it clears the tolerance, so use
+    // a threshold null-window instead of turning every plausible upper bound
+    // into a full-window exact re-search.
+    SearchContext verification{result.nodes, result.qnodes, limits.has_deadline,
+                               limits.deadline, false,
+                               limits.use_tt ? &tt : nullptr, &result,
+                               limits.use_see_pruning,
+                               limits.use_killer_history ? &search_heuristics() : nullptr,
+                               limits.use_null_move, limits.use_lmr, limits.use_pvs};
+    const int threshold = objective_best - AGGRESSION_TOLERANCE_CP;
+    for (RootMoveInfo& info : current) {
+      if (info.bound == ScoreBound::Exact) {
+        info.style_safe = info.search_score >= threshold;
+        if (info.style_safe) ++result.root_style_verified;
+        else ++result.root_style_rejected;
+        continue;
+      }
+      ++result.root_style_candidates;
+      // An upper bound below the threshold is already a conclusive reject.
+      if (info.bound == ScoreBound::Upper && info.search_score < threshold) {
+        ++result.root_style_rejected;
+        continue;
+      }
+      ++result.root_style_verification_searches;
+      const std::uint64_t before_verification = result.nodes;
+      const UndoState undo = root.make_move(info.move);
+      const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                      -threshold + 1, 1, verification);
+      root.unmake_move(info.move, undo);
+      result.root_style_verification_nodes += result.nodes - before_verification;
+      if (verification.stopped) break;
+      info.style_safe = proof >= threshold;
+      if (info.style_safe) ++result.root_style_verified;
+      else ++result.root_style_rejected;
+    }
+    if (verification.stopped) break;
+    for (RootMoveInfo& info : current) {
+      if (!info.style_safe) continue;
+      Board child = root;
+      child.make_move(info.move);
+      ++result.style_evaluations;
+      info.style_score = evaluate_move_style(position, info.move, child);
+      info.sacrifice_candidate = is_sacrifice_candidate(position, info.move, child);
+      info.see_score = move_see(position, info.move, &result);
+    }
+    const bool mate_found = objective_best > MATE_SCORE - 1000 || objective_best < -MATE_SCORE + 1000;
     const Square root_king = root.find_king(root.side_to_move());
     const bool root_in_check = root_king.is_valid() &&
         root.is_square_attacked(root_king, opposite(root.side_to_move()));
@@ -576,10 +683,15 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       evasion.unmake_move(info.move, undo);
       return safe;
     };
-    auto chosen = current.begin();
-    for (auto candidate = std::next(current.begin()); candidate != current.end(); ++candidate) {
-      const bool chosen_ok = chosen->search_score >= best_score - AGGRESSION_TOLERANCE_CP;
-      const bool candidate_ok = candidate->search_score >= best_score - AGGRESSION_TOLERANCE_CP;
+    auto chosen = std::max_element(current.begin(), current.end(), [](const RootMoveInfo& a, const RootMoveInfo& b) {
+      if (a.bound != ScoreBound::Exact) return true;
+      if (b.bound != ScoreBound::Exact) return false;
+      return a.search_score < b.search_score;
+    });
+    for (auto candidate = current.begin(); candidate != current.end(); ++candidate) {
+      if (candidate == chosen) continue;
+      const bool chosen_ok = chosen->style_safe;
+      const bool candidate_ok = candidate->style_safe;
       bool candidate_wins = false;
       const bool captures_checker = is_capture_evasion(*candidate);
       if (captures_checker && !is_capture(chosen->move)) {
@@ -589,21 +701,32 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       } else if (candidate->style_score != chosen->style_score) {
         candidate_wins = candidate->style_score > chosen->style_score;
       } else {
-        candidate_wins = candidate->search_score > chosen->search_score;
+        candidate_wins = candidate->search_score > chosen->search_score ||
+            (candidate->search_score == chosen->search_score &&
+             (candidate->move.from.index() < chosen->move.from.index() ||
+              (candidate->move.from == chosen->move.from &&
+               candidate->move.to.index() < chosen->move.to.index())));
       }
       if (candidate_wins) chosen = candidate;
     }
     if (root_in_check) {
       for (auto candidate = current.begin(); candidate != current.end(); ++candidate) {
-        if (is_capture_evasion(*candidate)) { chosen = candidate; break; }
+        if (candidate->style_safe && is_capture_evasion(*candidate)) {
+          chosen = candidate;
+          break;
+        }
       }
     }
     result.best_move = chosen->move;
-    result.score = chosen->search_score;
+    // A style-selected threshold-proof move does not have an exact score.
+    // Keep the iterative-deepening score exact by reporting the objective PV.
+    result.score = chosen->bound == ScoreBound::Exact ? chosen->search_score : objective_best;
     result.root_moves = std::move(current);
     if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
+    previous_root = result.root_moves;
     legal = generate_legal_moves(root);
   }
+  result.main_nodes = result.nodes - result.qnodes;
   return result;
 }
 
