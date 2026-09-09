@@ -501,7 +501,31 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     return result;
   }
   result.best_move = legal.front();
+  // Root moves do not change between iterations.  Style is position-only, so
+  // calculate it once; the more expensive sacrifice/SEE metadata remains lazy.
+  std::vector<RootMoveInfo> root_style_cache;
+  root_style_cache.reserve(legal.size());
+  for (const Move& move : legal) {
+    Board child = root;
+    child.make_move(move);
+    RootMoveInfo cached;
+    cached.move = move;
+    cached.style_score = evaluate_move_style(position, move, child);
+    root_style_cache.push_back(cached);
+    ++result.style_evaluations;
+  }
+  const auto cached_style = [&root_style_cache](const Move& move) {
+    const auto it = std::find_if(root_style_cache.begin(), root_style_cache.end(),
+        [&move](const RootMoveInfo& info) { return info.move == move; });
+    return it->style_score;
+  };
+  // Keep a small, bounded slice of a timed search for the one final root
+  // safety proof.  UCI already has its own transport margin above this.
+  const auto objective_deadline = limits.has_deadline
+      ? limits.deadline - std::chrono::milliseconds(10) : limits.deadline;
   std::vector<RootMoveInfo> previous_root;
+  std::vector<RootMoveInfo> last_completed;
+  int last_objective_best = -MATE_SCORE;
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
     const int previous_score = result.score;
     const bool mate_score = previous_score > MATE_SCORE - 1000 ||
@@ -518,7 +542,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     bool stopped_iteration = false;
     while (!completed) {
       SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
-                            limits.deadline, false,
+                            objective_deadline, false,
                             limits.use_tt ? &tt : nullptr, &result,
                             limits.use_see_pruning,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
@@ -607,60 +631,30 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       }
     }
     if (objective_move == current.end()) break;
-    // A movetime search normally stops before max_depth.  Apply the existing
-    // final root policy to every completed iteration so the last completed
-    // result retains its safety gate rather than silently bypassing it.
-    // PVS zero-window fail-lows are upper bounds, not objective scores.  A
-    // style candidate only needs a proof that it clears the tolerance, so use
-    // a threshold null-window instead of turning every plausible upper bound
-    // into a full-window exact re-search.
-    SearchContext verification{result.nodes, result.qnodes, limits.has_deadline,
-                               limits.deadline, false,
-                               limits.use_tt ? &tt : nullptr, &result,
-                               limits.use_see_pruning,
-                               limits.use_killer_history ? &search_heuristics() : nullptr,
-                               limits.use_null_move, limits.use_lmr, limits.use_pvs};
-    const int threshold = objective_best - AGGRESSION_TOLERANCE_CP;
-    for (RootMoveInfo& info : current) {
-      if (info.bound == ScoreBound::Exact) {
-        info.style_safe = info.search_score >= threshold;
-        if (info.style_safe) ++result.root_style_verified;
-        else ++result.root_style_rejected;
-        continue;
-      }
-      ++result.root_style_candidates;
-      // An upper bound below the threshold is already a conclusive reject.
-      if (info.bound == ScoreBound::Upper && info.search_score < threshold) {
-        ++result.root_style_rejected;
-        continue;
-      }
-      ++result.root_style_verification_searches;
-      const std::uint64_t before_verification = result.nodes;
-      const UndoState undo = root.make_move(info.move);
-      const int proof = -negamax_impl(root, depth - 1, -threshold,
-                                      -threshold + 1, 1, verification);
-      root.unmake_move(info.move, undo);
-      result.root_style_verification_nodes += result.nodes - before_verification;
-      if (verification.stopped) break;
-      info.style_safe = proof >= threshold;
-      if (info.style_safe) ++result.root_style_verified;
-      else ++result.root_style_rejected;
-    }
-    if (verification.stopped) break;
-    for (RootMoveInfo& info : current) {
-      if (!info.style_safe) continue;
-      Board child = root;
-      child.make_move(info.move);
-      ++result.style_evaluations;
-      info.style_score = evaluate_move_style(position, info.move, child);
-      info.sacrifice_candidate = is_sacrifice_candidate(position, info.move, child);
-      info.see_score = move_see(position, info.move, &result);
-    }
-    const bool mate_found = objective_best > MATE_SCORE - 1000 || objective_best < -MATE_SCORE + 1000;
-    const Square root_king = root.find_king(root.side_to_move());
-    const bool root_in_check = root_king.is_valid() &&
-        root.is_square_attacked(root_king, opposite(root.side_to_move()));
-    const auto is_capture_evasion = [&](const RootMoveInfo& info) {
+    for (RootMoveInfo& info : current) info.style_score = cached_style(info.move);
+    const Move objective_best_move = objective_move->move;
+    last_completed = std::move(current);
+    last_objective_best = objective_best;
+    result.best_move = objective_best_move;
+    result.score = objective_best;
+    result.completed_depth = depth;
+    result.root_moves = last_completed;
+    if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
+    previous_root = last_completed;
+    legal = generate_legal_moves(root);
+  }
+  if (last_completed.empty()) {
+    result.main_nodes = result.nodes - result.qnodes;
+    return result;
+  }
+  auto& current = last_completed;
+  const int depth = result.completed_depth;
+  const int objective_best = last_objective_best;
+  const int threshold = objective_best - AGGRESSION_TOLERANCE_CP;
+  const Square root_king = root.find_king(root.side_to_move());
+  const bool root_in_check = root_king.is_valid() &&
+      root.is_square_attacked(root_king, opposite(root.side_to_move()));
+  const auto is_capture_evasion = [&](const RootMoveInfo& info) {
       if (!root_in_check || !is_capture(info.move)) return false;
       // Preserve the ordinary objective choice for a pawn-check capture;
       // this exception is for clear high-value forced recaptures.
@@ -673,51 +667,111 @@ SearchResult search(const Board& position, const SearchLimits& limits,
           !evasion.is_square_attacked(king, opposite(root.side_to_move()));
       evasion.unmake_move(info.move, undo);
       return safe;
-    };
-    auto chosen = std::max_element(current.begin(), current.end(), [](const RootMoveInfo& a, const RootMoveInfo& b) {
+  };
+  auto objective_move = std::max_element(current.begin(), current.end(), [](const RootMoveInfo& a, const RootMoveInfo& b) {
       if (a.bound != ScoreBound::Exact) return true;
       if (b.bound != ScoreBound::Exact) return false;
       return a.search_score < b.search_score;
-    });
-    for (auto candidate = current.begin(); candidate != current.end(); ++candidate) {
-      if (candidate == chosen) continue;
-      const bool chosen_ok = chosen->style_safe;
-      const bool candidate_ok = candidate->style_safe;
-      bool candidate_wins = false;
-      const bool captures_checker = is_capture_evasion(*candidate);
-      if (captures_checker && !is_capture(chosen->move)) {
-        candidate_wins = true;
-      } else if (mate_found || !chosen_ok || !candidate_ok) {
-        candidate_wins = candidate->search_score > chosen->search_score;
-      } else if (candidate->style_score != chosen->style_score) {
-        candidate_wins = candidate->style_score > chosen->style_score;
-      } else {
-        candidate_wins = candidate->search_score > chosen->search_score ||
+  });
+  for (RootMoveInfo& info : current) {
+    if (info.bound == ScoreBound::Exact) {
+      info.style_safe = info.search_score >= threshold;
+      if (info.style_safe) ++result.root_style_verified;
+      else ++result.root_style_rejected;
+    }
+  }
+  RootMoveInfo* chosen = &*objective_move;
+  const bool mate_found = objective_best > MATE_SCORE - 1000 || objective_best < -MATE_SCORE + 1000;
+  if (!mate_found) {
+    for (RootMoveInfo& candidate : current) {
+      if (!candidate.style_safe || &candidate == chosen) continue;
+      if (candidate.style_score > chosen->style_score ||
+          (candidate.style_score == chosen->style_score &&
+           (candidate.search_score > chosen->search_score ||
+            (candidate.search_score == chosen->search_score &&
+             (candidate.move.from.index() < chosen->move.from.index() ||
+              (candidate.move.from == chosen->move.from &&
+               candidate.move.to.index() < chosen->move.to.index())))))) {
+        chosen = &candidate;
+      }
+    }
+  }
+  std::vector<RootMoveInfo*> candidates;
+  for (RootMoveInfo& info : current) {
+    if (&info == &*objective_move || info.bound == ScoreBound::Exact) continue;
+    ++result.root_style_candidates;
+    const bool forced_evasion = is_capture_evasion(info);
+    if (!forced_evasion && (info.style_score < objective_move->style_score ||
+        (info.style_score == objective_move->style_score &&
+         !(info.search_score > objective_best ||
+           (info.search_score == objective_best &&
+            (info.move.from.index() < objective_move->move.from.index() ||
+             (info.move.from == objective_move->move.from && info.move.to.index() < objective_move->move.to.index()))))))) {
+      ++result.root_style_prefilter_skips;
+      continue;
+    }
+    if (info.bound == ScoreBound::Upper && info.search_score < threshold) {
+      ++result.root_style_rejected;
+      continue;
+    }
+    candidates.push_back(&info);
+  }
+  std::sort(candidates.begin(), candidates.end(), [](const RootMoveInfo* a, const RootMoveInfo* b) {
+    return a->style_score > b->style_score;
+  });
+  SearchContext verification{result.nodes, result.qnodes, limits.has_deadline,
+                             limits.deadline, false, limits.use_tt ? &tt : nullptr, &result,
+                             limits.use_see_pruning,
+                             limits.use_killer_history ? &search_heuristics() : nullptr,
+                             limits.use_null_move, limits.use_lmr, limits.use_pvs};
+  for (RootMoveInfo* candidate : candidates) {
+    if (candidate->style_score < chosen->style_score) {
+      ++result.root_style_prefilter_skips;
+      continue;
+    }
+    ++result.root_style_verification_searches;
+    const std::uint64_t before_verification = result.nodes;
+    const UndoState undo = root.make_move(candidate->move);
+    const int proof = -negamax_impl(root, depth - 1, -threshold, -threshold + 1, 1, verification);
+    root.unmake_move(candidate->move, undo);
+    result.root_style_verification_nodes += result.nodes - before_verification;
+    if (verification.stopped) break;
+    candidate->style_safe = proof >= threshold;
+    if (candidate->style_safe) {
+      ++result.root_style_verified;
+      if (candidate->style_score > chosen->style_score ||
+          (candidate->style_score == chosen->style_score &&
+           (candidate->search_score > chosen->search_score ||
             (candidate->search_score == chosen->search_score &&
              (candidate->move.from.index() < chosen->move.from.index() ||
               (candidate->move.from == chosen->move.from &&
-               candidate->move.to.index() < chosen->move.to.index())));
+               candidate->move.to.index() < chosen->move.to.index())))))) {
+        chosen = candidate;
       }
-      if (candidate_wins) chosen = candidate;
+    } else ++result.root_style_rejected;
+  }
+  if (!verification.stopped && !mate_found) {
+    for (RootMoveInfo& info : current) if (info.style_safe) {
+      Board child = root;
+      child.make_move(info.move);
+      info.sacrifice_candidate = is_sacrifice_candidate(position, info.move, child);
+      info.see_score = move_see(position, info.move, &result);
     }
     if (root_in_check) {
-      for (auto candidate = current.begin(); candidate != current.end(); ++candidate) {
-        if (candidate->style_safe && is_capture_evasion(*candidate)) {
-          chosen = candidate;
+      for (RootMoveInfo& info : current) {
+        if (info.style_safe && is_capture_evasion(info)) {
+          chosen = &info;
           break;
         }
       }
     }
     result.best_move = chosen->move;
-    // A style-selected threshold-proof move does not have an exact score.
-    // Keep the iterative-deepening score exact by reporting the objective PV.
-    result.score = chosen->bound == ScoreBound::Exact ? chosen->search_score : objective_best;
-    result.root_moves = std::move(current);
-    result.completed_depth = depth;
-    if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
-    previous_root = result.root_moves;
-    legal = generate_legal_moves(root);
+  } else {
+    // A partial final proof never exposes an unverified aggressive move.
+    result.best_move = objective_move->move;
   }
+  result.score = objective_best;
+  result.root_moves = std::move(current);
   result.main_nodes = result.nodes - result.qnodes;
   return result;
 }

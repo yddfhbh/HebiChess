@@ -1,0 +1,9 @@
+smoke 2 0.00586166
+chess_types 2 0.00126641
+chess_movegen 2 0.00120361
+chess_perft 2 0.00135817
+chess_search 2 0.604186
+chess_uci 2 0.248873
+chess_zobrist_tt 2 0.0321972
+chess_see 2 0.00124435
+---

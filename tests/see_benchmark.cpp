@@ -40,6 +40,7 @@ void run(const Board& position, const char* label, bool pvs, bool aspiration,
             << " pvs_researches " << result.pvs_researches
             << " pvs_research_nodes " << result.pvs_research_nodes
             << " root_style_candidates " << result.root_style_candidates
+            << " root_style_prefilter_skips " << result.root_style_prefilter_skips
             << " root_style_verifications " << result.root_style_verification_searches
             << " root_style_nodes " << result.root_style_verification_nodes
             << " root_style_verified " << result.root_style_verified

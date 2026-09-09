@@ -55,6 +55,7 @@ struct SearchResult {
   std::uint64_t pvs_researches{0};
   std::uint64_t pvs_research_nodes{0};
   std::uint64_t root_style_candidates{0};
+  std::uint64_t root_style_prefilter_skips{0};
   std::uint64_t root_style_verification_searches{0};
   std::uint64_t root_style_verification_nodes{0};
   std::uint64_t root_style_verified{0};
