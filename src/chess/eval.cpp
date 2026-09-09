@@ -1,4 +1,5 @@
 #include "chess/eval.hpp"
+#include "chess/nnue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -517,8 +518,25 @@ EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept
   return EvalContext(board).breakdown(perspective);
 }
 
-int evaluate(const Board& board) noexcept {
+int evaluate_hce(const Board& board) noexcept {
   return evaluate_breakdown(board, board.side_to_move()).total;
+}
+
+bool eval_mode_available(EvalMode mode) noexcept {
+  return mode == EvalMode::HCE || nnue_network_available();
+}
+
+std::optional<int> evaluate_nnue(const Board& board) noexcept {
+  return evaluate_nnue_network(board);
+}
+
+std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {
+  if (mode == EvalMode::HCE) return evaluate_hce(board);
+  return evaluate_nnue(board);
+}
+
+int evaluate(const Board& board) noexcept {
+  return evaluate_hce(board);
 }
 
 }  // namespace hebichess

@@ -78,6 +78,7 @@ struct SearchLimits {
   bool use_lmr{true};
   bool use_pvs{true};
   bool use_aspiration{true};
+  EvalMode eval_mode{EvalMode::HCE};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,

@@ -1,12 +1,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 
 #include "chess/search.hpp"
 #include "chess/eval.hpp"
+#include "chess/nnue.hpp"
+#include "chess/nnue_features.hpp"
 #include "chess/uci.hpp"
 
 namespace {
@@ -33,19 +36,45 @@ int integer_after(std::istringstream& input) {
 int main() {
   using namespace hebichess;
   Board board = Board::initial();
+  EvalMode eval_mode = EvalMode::HCE;
   std::string line;
   while (std::getline(std::cin, line)) {
     std::istringstream input(line);
     std::string command;
     input >> command;
     if (command == "uci") {
-      std::cout << "id name HebiChess\nid author Hebi\nuciok" << std::endl;
+      std::cout << "id name HebiChess\nid author Hebi\n"
+                << "option name EvalMode type combo default HCE var HCE var NNUE\n"
+                << "option name EvalFile type string default \n"
+                << "uciok" << std::endl;
     } else if (command == "isready") {
       std::cout << "readyok" << std::endl;
     } else if (command == "ucinewgame") {
       board = Board::initial();
       clear_transposition_table();
       clear_search_heuristics();
+    } else if (command == "setoption") {
+      std::string name_token, name, value_token;
+      input >> name_token >> name >> value_token;
+      std::string value; std::getline(input, value);
+      if (!value.empty() && value.front() == ' ') value.erase(0, 1);
+      if (name_token != "name" || value_token != "value") {
+        std::cout << "info string error unsupported setoption" << std::endl;
+      } else if (name == "EvalFile") {
+        std::string error;
+        if (value.empty()) { clear_nnue_network(); if (eval_mode == EvalMode::NNUE) eval_mode = EvalMode::HCE; std::cout << "info string NNUE network cleared" << std::endl; }
+        else if (load_nnue_network(value, error)) std::cout << "info string NNUE network loaded " << value << std::endl;
+        else std::cout << "info string error " << error << std::endl;
+      } else if (name == "EvalMode" && value == "HCE") {
+        eval_mode = EvalMode::HCE;
+        std::cout << "info string EvalMode HCE" << std::endl;
+      } else if (name == "EvalMode" && value == "NNUE") {
+        if (nnue_network_available()) { eval_mode = EvalMode::NNUE; std::cout << "info string EvalMode NNUE" << std::endl; }
+        else std::cout << "info string error EvalMode NNUE unavailable: no network loaded; retaining "
+                  << (eval_mode == EvalMode::HCE ? "HCE" : "NNUE") << std::endl;
+      } else {
+        std::cout << "info string error unsupported setoption" << std::endl;
+      }
     } else if (command == "position") {
       std::string kind;
       input >> kind;
@@ -85,9 +114,24 @@ int main() {
                 << "\nspace " << e.space << "\nthreats " << e.threats
                 << "\ninitiative " << e.initiative
                 << "\ntotal " << e.total << std::endl;
+    } else if (command == "features") {
+      // Development helper: `position fen ...` followed by `features`.
+      for (Color perspective : {Color::White, Color::Black}) {
+        const NnueFeatures features = extract_nnue_features(board, perspective);
+        std::cout << (perspective == Color::White ? "white" : "black");
+        for (std::size_t i = 0; i < features.size; ++i) std::cout << ' ' << features.indices[i];
+        std::cout << '\n';
+      }
+    } else if (command == "nnueeval") {
+      const auto score = evaluate_nnue(board);
+      const auto raw_score = evaluate_nnue_network_raw(board);
+      if (score && raw_score) std::cout << "nnue " << *score << " raw " << std::setprecision(9)
+                                        << *raw_score << std::endl;
+      else std::cout << "info string error NNUE unavailable" << std::endl;
     } else if (command == "go") {
       SearchLimits limits;
       limits.max_depth = 64;
+      limits.eval_mode = eval_mode;
       bool has_movetime = false;
       int movetime = 0, wtime = 0, btime = 0, winc = 0, binc = 0;
       std::string option;

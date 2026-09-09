@@ -1,10 +1,19 @@
 #pragma once
 
+#include <optional>
+
 #include "chess/board.hpp"
 
 namespace hebichess {
 
 constexpr int AGGRESSION_TOLERANCE_CP = 35;
+
+// Keep evaluator selection outside the search hot path.  The production
+// evaluator remains HCE until an NNUE network has been loaded.
+enum class EvalMode {
+  HCE,
+  NNUE,
+};
 
 struct EvalBreakdown {
   int material{0};
@@ -41,6 +50,16 @@ int evaluate_development(const Board& board, Color perspective) noexcept;
 int evaluate_attack_pressure(const Board& board, Color perspective) noexcept;
 
 EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept;
+// The hand-crafted evaluator.  This is deliberately the implementation used
+// by the legacy evaluate(board) entry point, so its scores stay bit-identical.
+int evaluate_hce(const Board& board) noexcept;
+
+// NNUE has no network in this revision, so this reports unavailable rather
+// than manufacturing a score.  std::optional performs no heap allocation.
+bool eval_mode_available(EvalMode mode) noexcept;
+std::optional<int> evaluate_nnue(const Board& board) noexcept;
+std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept;
+
 // Returns centipawns from the side-to-move perspective.
 int evaluate(const Board& board) noexcept;
 

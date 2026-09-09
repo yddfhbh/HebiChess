@@ -1,3 +1,5 @@
 uci
+setoption name EvalMode value HCE
+setoption name EvalMode value NNUE
 isready
 quit

@@ -1,0 +1,171 @@
+Start testing: Sep 09 11:52 KST
+----------------------------------------------------------
+1/8 Testing: smoke
+1/8 Test: smoke
+Command: "/usr/bin/cmake" "-DENGINE=/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChess" "-DINPUT=/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/tests/smoke.in" "-P" "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/tests/smoke.cmake"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"smoke" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"smoke" end time: Sep 09 11:52 KST
+"smoke" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/8 Testing: chess_types
+2/8 Test: chess_types
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessTypesTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_types" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"chess_types" end time: Sep 09 11:52 KST
+"chess_types" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/8 Testing: chess_movegen
+3/8 Test: chess_movegen
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessMovegenTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_movegen" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"chess_movegen" end time: Sep 09 11:52 KST
+"chess_movegen" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/8 Testing: chess_perft
+4/8 Test: chess_perft
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessPerftTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_perft" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"chess_perft" end time: Sep 09 11:52 KST
+"chess_perft" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/8 Testing: chess_search
+5/8 Test: chess_search
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessSearchTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_search" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+opening black candidates (total/development/space/attack):
+  Nf6 106/0/1/0
+  Nc6 103/0/0/0
+  a6  57/-14/-1/0
+  h6  57/-14/-1/0
+  g5  68/-14/1/0
+opening best=c8f5
+  root g8f6 score=81 style=15
+  root d8d4 score=81 style=11
+  root b8d7 score=81 style=14
+  root b8c6 score=81 style=14
+  root b8a6 score=81 style=6
+  root c8d7 score=81 style=14
+  root c8e6 score=81 style=15
+  root c8f5 score=81 style=15
+  root c8g4 score=81 style=24
+  root d8d7 score=81 style=0
+  root d8d6 score=81 style=2
+  root d8d5 score=81 style=5
+  root e8d7 score=81 style=0
+  root g8h6 score=81 style=6
+  root c8h3 score=81 style=17
+  root g7g6 score=81 style=0
+  root f7f5 score=81 style=-3
+  root g7g5 score=81 style=4
+  root h7h6 score=81 style=-6
+  root h7h5 score=81 style=-6
+  root f7f6 score=81 style=-4
+  root e7e5 score=81 style=1
+  root e7e6 score=81 style=0
+  root c7c5 score=81 style=0
+  root c7c6 score=81 style=0
+  root b7b5 score=81 style=4
+  root b7b6 score=81 style=0
+  root a7a5 score=81 style=-6
+  root a7a6 score=81 style=-6
+  root e4e3 score=81 style=9
+replayed flank line: total=-133 pawns=-32 development=-42 space=-5
+example best=f7h7 search=29999 style=18
+nodes d1=32/q32 d2=43/q29 d3=479/q424 d4=346/q161
+hanging best=e1f2 score=165 qnodes=9
+Qe5 regression d1 best=c8g4 best_score=78 qe5_score=42
+Qe5 regression d2 best=c8g4 best_score=66 qe5_score=66
+Qe5 regression d3 best=c8g4 best_score=65 qe5_score=57
+Qe5 regression d4 best=c8g4 best_score=63 qe5_score=63
+<end of output>
+Test time =   1.36 sec
+----------------------------------------------------------
+Test Passed.
+"chess_search" end time: Sep 09 11:52 KST
+"chess_search" time elapsed: 00:00:01
+----------------------------------------------------------
+
+6/8 Testing: chess_uci
+6/8 Test: chess_uci
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessUciTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_uci" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.50 sec
+----------------------------------------------------------
+Test Passed.
+"chess_uci" end time: Sep 09 11:52 KST
+"chess_uci" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/8 Testing: chess_zobrist_tt
+7/8 Test: chess_zobrist_tt
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessZobristTtTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_zobrist_tt" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+tt off bestmove d1d5 score 781 nodes 4778 qnodes 4563 elapsed_ms 43
+tt on bestmove d1d5 score 781 nodes 4120 qnodes 3926 tt_probes 194 tt_hits 63 tt_cutoffs 0 elapsed_ms 22
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"chess_zobrist_tt" end time: Sep 09 11:52 KST
+"chess_zobrist_tt" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/8 Testing: chess_see
+8/8 Test: chess_see
+Command: "/home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue/HebiChessSeeTest"
+Directory: /home/ubuntu/.local/share/agent-hebi/task-worktrees/hebichess/3471a9d83b0048398c29d36b0232ea5e/build-nnue
+"chess_see" start time: Sep 09 11:52 KST
+Output:
+----------------------------------------------------------
+SEE tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"chess_see" end time: Sep 09 11:52 KST
+"chess_see" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Sep 09 11:52 KST
