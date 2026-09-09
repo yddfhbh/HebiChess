@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from .features import both_features, parse_fen
-from .model import deterministic_network
+from .model import HebiNnueV1, deterministic_network
 
 
 FENS = [
@@ -31,6 +31,25 @@ class SinglePositionInferenceTest(unittest.TestCase):
         for fen in FENS:
             with self.subTest(fen=fen):
                 self.assertAlmostEqual(model.evaluate_fen(fen), batch_score(model, fen), places=5)
+
+
+class TrainingInitializationTest(unittest.TestCase):
+    def test_initial_accumulators_are_inside_clipped_relu_linear_region(self):
+        torch.manual_seed(20260909)
+        model = HebiNnueV1().eval()
+        white_ids, black_ids = both_features(FENS[0])
+        for ids in (white_ids, black_ids):
+            indices = torch.tensor(ids, dtype=torch.long)
+            offsets = torch.tensor([0], dtype=torch.long)
+            raw = model.transform(indices, offsets) + model.transform_bias
+            self.assertGreater(float(raw.min()), 0.0)
+            self.assertLess(float(raw.max()), 1.0)
+
+    def test_initial_scores_depend_on_position(self):
+        torch.manual_seed(20260909)
+        model = HebiNnueV1().eval()
+        scores = [batch_score(model, fen) for fen in FENS]
+        self.assertGreater(max(scores) - min(scores), 1e-4)
 
 
 if __name__ == "__main__":
