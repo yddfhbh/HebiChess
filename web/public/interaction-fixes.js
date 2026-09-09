@@ -8,6 +8,21 @@
     return squareFromClientPoint(clientX, clientY, board.getBoundingClientRect(), flipped);
   }
 
+  function clearDragMoveHints() {
+    document.querySelectorAll('.drag-legal,.drag-capture').forEach(el => {
+      el.classList.remove('drag-legal', 'drag-capture');
+    });
+  }
+
+  function applyDragMoveHints() {
+    clearDragMoveHints();
+    legalDestinations.forEach(destination => {
+      const square = document.querySelector(`.square[data-square="${destination}"]`);
+      if (!square) return;
+      square.classList.add(pieceAt(destination) === '.' ? 'drag-legal' : 'drag-capture');
+    });
+  }
+
   function reconcilePartialSelection() {
     const decision = reconcilePartialPremove({
       mode: selectedInteractionMode,
@@ -67,6 +82,7 @@
     selectedPiece = drag.piece;
     selectedInteractionMode = S.turn === S.playerColor ? 'live' : 'premove';
     legalDestinations = selectedInteractionMode === 'live' ? normalTargets(drag.from) : relaxedTargets(drag.from);
+    applyDragMoveHints();
 
     const sourcePiece = drag.source?.querySelector?.('.piece');
     if (sourcePiece) sourcePiece.style.opacity = '.28';
@@ -91,6 +107,7 @@
   };
 
   cleanupDrag = function cleanupDragStable() {
+    clearDragMoveHints();
     if (!drag) return;
     try { drag.source?.releasePointerCapture?.(drag.pointerId); } catch {}
     const sourcePiece = drag.source?.querySelector?.('.piece');
