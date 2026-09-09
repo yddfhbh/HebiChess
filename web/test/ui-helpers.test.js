@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {coordinateLabels, materialDifference} = require('../public/ui-helpers');
+const {coordinateLabels, materialDifference, squareFromClientPoint, reconcilePartialPremove} = require('../public/ui-helpers');
 const chess = require('../server');
 const {whitePovEvaluation} = chess;
 
@@ -26,4 +26,40 @@ test('engine centipawns are normalized from root side to White POV', () => {
   assert.equal(whitePovEvaluation(227, 'w'), 2.27);
   assert.equal(whitePovEvaluation(227, 'b'), -2.27);
   assert.equal(whitePovEvaluation(-80, 'b'), 0.8);
+});
+
+test('client point maps to chess squares in both orientations', () => {
+  const rect = {left:100, top:200, width:800, height:800};
+  assert.equal(squareFromClientPoint(101, 201, rect, false), 'a8');
+  assert.equal(squareFromClientPoint(899, 999, rect, false), 'h1');
+  assert.equal(squareFromClientPoint(101, 201, rect, true), 'h1');
+  assert.equal(squareFromClientPoint(899, 999, rect, true), 'a8');
+  assert.equal(squareFromClientPoint(450, 550, rect, false), 'd5');
+  assert.equal(squareFromClientPoint(450, 550, rect, true), 'e4');
+  assert.equal(squareFromClientPoint(99, 201, rect, false), null);
+  assert.equal(squareFromClientPoint(900, 201, rect, false), null);
+});
+
+test('partial premove becomes a live selection with fresh legal targets', () => {
+  const decision = reconcilePartialPremove({
+    mode:'premove',
+    from:'f3',
+    hasQueuedPremove:false,
+    playerTurn:true,
+    sourceIsOwnPiece:true,
+    legalMoves:['f3e5','f3g5','a2a3','f3h4']
+  });
+  assert.deepEqual(decision, {action:'live', from:'f3', legalDestinations:['e5','g5','h4']});
+});
+
+test('partial premove is cleared if the selected piece disappeared', () => {
+  assert.deepEqual(reconcilePartialPremove({
+    mode:'premove', from:'f3', hasQueuedPremove:false, playerTurn:true, sourceIsOwnPiece:false, legalMoves:[]
+  }), {action:'clear'});
+});
+
+test('completed premove is left alone for automatic execution', () => {
+  assert.deepEqual(reconcilePartialPremove({
+    mode:'premove', from:'f3', hasQueuedPremove:true, playerTurn:true, sourceIsOwnPiece:true, legalMoves:['f3e5']
+  }), {action:'keep'});
 });
