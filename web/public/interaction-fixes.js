@@ -23,6 +23,28 @@
     });
   }
 
+  function preserveActiveDragAcrossRender() {
+    if (!drag || !drag.dragging || !selectedSquare) return;
+    drag.source = document.querySelector(`.square[data-square="${drag.from}"]`);
+    if (!drag.source || !ownPiece(drag.from)) {
+      clearInteraction();
+      return;
+    }
+
+    const sourcePiece = drag.source.querySelector?.('.piece');
+    if (sourcePiece) sourcePiece.style.opacity = '.28';
+    drag.source.style.opacity = '';
+    applyDragMoveHints();
+
+    if (Number.isFinite(drag.lastX) && Number.isFinite(drag.lastY)) {
+      moveGhost({clientX: drag.lastX, clientY: drag.lastY});
+      const destination = boardSquareAt(drag.lastX, drag.lastY);
+      if (destination && legalDestinations.includes(destination)) {
+        document.querySelector(`.square[data-square="${destination}"]`)?.classList.add('drag-target');
+      }
+    }
+  }
+
   function reconcilePartialSelection() {
     const decision = reconcilePartialPremove({
       mode: selectedInteractionMode,
@@ -38,11 +60,14 @@
       return;
     }
     if (decision.action === 'live') {
-      cleanupDrag();
       selectedSquare = decision.from;
       selectedPiece = pieceAt(decision.from);
       selectedInteractionMode = 'live';
       legalDestinations = decision.legalDestinations;
+      if (drag && drag.dragging) {
+        drag.piece = pieceAt(decision.from);
+        drag.mode = 'live';
+      }
     }
   }
 
@@ -60,6 +85,7 @@
 
     const wasLive = live();
     const oldLength = S.moves?.length || 0;
+    const activeDrag = drag && drag.dragging;
     S = data;
 
     if (!isPlayer()) {
@@ -73,11 +99,14 @@
 
     if (data.active && data.turn === data.playerColor && data.isPlayer) maybePremove();
     render();
+    if (activeDrag && drag) preserveActiveDragAcrossRender();
   };
 
   activateDrag = function activateDragStable(event) {
     if (!drag || drag.dragging) return;
     drag.dragging = true;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
     selectedSquare = drag.from;
     selectedPiece = drag.piece;
     selectedInteractionMode = S.turn === S.playerColor ? 'live' : 'premove';
@@ -122,6 +151,8 @@
   moveDrag = function moveDragStable(event) {
     if (!drag || event.pointerId !== drag.pointerId) return;
     if (event.cancelable) event.preventDefault();
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
     const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
     if (!drag.dragging && distance >= 6) activateDrag(event);
     if (!drag.dragging) return;
