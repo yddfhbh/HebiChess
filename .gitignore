@@ -3,3 +3,10 @@ cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 compile_commands.json
+
+# Local build outputs
+build-nnue/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
