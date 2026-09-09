@@ -69,6 +69,37 @@ void test_evaluation() {
   assert(evaluate_king_attack(attack, Color::White) > 0);
 }
 
+void test_hce_backend_regression() {
+  struct RegressionCase {
+    const char* name;
+    const char* fen;
+    int expected_hce;
+  };
+  // Captured before the backend split.  These cover initial, opening,
+  // middlegame, endgame, and the Qe5 tactical position in both turn states.
+  constexpr RegressionCase cases[] = {
+      {"startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 10},
+      {"opening", "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3", 5},
+      {"middlegame", "r1bq1rk1/pp2bppp/2n1pn2/2bp4/8/1PNP1NP1/PBPPPPBP/R2Q1RK1 w - - 0 8", -131},
+      {"endgame", "8/8/3k4/8/3K4/8/4P3/8 w - - 0 1", 119},
+      {"qe5-black", "r1b1kb1r/ppp1pppp/2nq3n/8/3P4/5N2/PPP2PPP/RNBQKB1R b KQkq - 0 5", 56},
+      {"qe5-white", "r1b1kb1r/ppp1pppp/2nq3n/8/3P4/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 5", -36},
+  };
+  for (const RegressionCase& test : cases) {
+    const auto board = Board::from_fen(test.fen);
+    require(board.has_value(), test.name);
+    require(evaluate_hce(*board) == test.expected_hce, test.name);
+    require(evaluate(*board) == test.expected_hce, test.name);
+    const std::optional<int> selected = evaluate(*board, EvalMode::HCE);
+    require(selected.has_value() && *selected == test.expected_hce, test.name);
+  }
+  require(eval_mode_available(EvalMode::HCE), "HCE must be available");
+  require(!eval_mode_available(EvalMode::NNUE), "NNUE must be unavailable without a network");
+  require(!evaluate_nnue(Board::initial()).has_value(), "NNUE must not synthesize a score");
+  require(!evaluate(Board::initial(), EvalMode::NNUE).has_value(),
+          "NNUE mode must report unavailable");
+}
+
 void test_opening_development_and_breakdown() {
   Board opening = Board::initial();
   play(opening, "e2e4");
@@ -364,6 +395,7 @@ void test_qe5_hanging_queen_regression() {
 
 int main() {
   test_evaluation();
+  test_hce_backend_regression();
   test_opening_development_and_breakdown();
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();

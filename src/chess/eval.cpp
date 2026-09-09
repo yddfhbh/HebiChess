@@ -517,8 +517,27 @@ EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept
   return EvalContext(board).breakdown(perspective);
 }
 
-int evaluate(const Board& board) noexcept {
+int evaluate_hce(const Board& board) noexcept {
   return evaluate_breakdown(board, board.side_to_move()).total;
+}
+
+bool eval_mode_available(EvalMode mode) noexcept {
+  return mode == EvalMode::HCE;
+}
+
+std::optional<int> evaluate_nnue(const Board&) noexcept {
+  // A network and its validation/loading path will be introduced separately.
+  // Returning no value makes an accidental NNUE activation observable.
+  return std::nullopt;
+}
+
+std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {
+  if (mode == EvalMode::HCE) return evaluate_hce(board);
+  return evaluate_nnue(board);
+}
+
+int evaluate(const Board& board) noexcept {
+  return evaluate_hce(board);
 }
 
 }  // namespace hebichess

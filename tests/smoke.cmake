@@ -39,6 +39,16 @@ if(UCIOK_POS EQUAL -1)
   )
 endif()
 
+string(FIND "${ENGINE_OUTPUT}" "option name EvalMode type combo default HCE var HCE var NNUE" EVALMODE_OPTION_POS)
+if(EVALMODE_OPTION_POS EQUAL -1)
+  message(FATAL_ERROR "HebiChess smoke output is missing the HCE EvalMode option\nstdout:\n${ENGINE_OUTPUT}")
+endif()
+
+string(FIND "${ENGINE_OUTPUT}" "error EvalMode NNUE unavailable: no network loaded; retaining HCE" NNUE_UNAVAILABLE_POS)
+if(NNUE_UNAVAILABLE_POS EQUAL -1)
+  message(FATAL_ERROR "HebiChess smoke output does not report unavailable NNUE\nstdout:\n${ENGINE_OUTPUT}")
+endif()
+
 string(FIND "${ENGINE_OUTPUT}" "readyok" READYOK_POS)
 if(READYOK_POS EQUAL -1)
   message(FATAL_ERROR

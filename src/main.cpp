@@ -33,19 +33,37 @@ int integer_after(std::istringstream& input) {
 int main() {
   using namespace hebichess;
   Board board = Board::initial();
+  EvalMode eval_mode = EvalMode::HCE;
   std::string line;
   while (std::getline(std::cin, line)) {
     std::istringstream input(line);
     std::string command;
     input >> command;
     if (command == "uci") {
-      std::cout << "id name HebiChess\nid author Hebi\nuciok" << std::endl;
+      std::cout << "id name HebiChess\nid author Hebi\n"
+                << "option name EvalMode type combo default HCE var HCE var NNUE\n"
+                << "uciok" << std::endl;
     } else if (command == "isready") {
       std::cout << "readyok" << std::endl;
     } else if (command == "ucinewgame") {
       board = Board::initial();
       clear_transposition_table();
       clear_search_heuristics();
+    } else if (command == "setoption") {
+      std::string name_token, name, value_token, value;
+      input >> name_token >> name >> value_token >> value;
+      if (name_token != "name" || name != "EvalMode" || value_token != "value") {
+        std::cout << "info string error unsupported setoption" << std::endl;
+      } else if (value == "HCE") {
+        eval_mode = EvalMode::HCE;
+        std::cout << "info string EvalMode HCE" << std::endl;
+      } else if (value == "NNUE") {
+        // Do not silently fall back: retain the known active mode and state why.
+        std::cout << "info string error EvalMode NNUE unavailable: no network loaded; retaining "
+                  << (eval_mode == EvalMode::HCE ? "HCE" : "NNUE") << std::endl;
+      } else {
+        std::cout << "info string error invalid EvalMode " << value << std::endl;
+      }
     } else if (command == "position") {
       std::string kind;
       input >> kind;
