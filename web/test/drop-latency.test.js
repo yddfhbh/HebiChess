@@ -14,7 +14,7 @@ test('live drag drop paints an immediate optimistic destination preview', () => 
 });
 
 test('optimistic preview is cleared on server receive and move failure', () => {
-  assert.match(js, /clearOptimisticDrop\(\);\s*if \(!data\.active/);
+  assert.match(js, /receive\s*=\s*function receiveWithDropPreviewCleanup\(data, eventType\) \{\s*clearOptimisticDrop\(\);\s*return previousReceive\(data, eventType\);/);
   assert.match(js, /catch\(error=>\{\s*clearOptimisticDrop\(\)/);
 });
 
