@@ -16,8 +16,9 @@ class HebiNnueV1(nn.Module):
         self.output = nn.Linear(HIDDEN2, 1)
 
     def forward_indices(self, white, black, side: str):
-        white = torch.clamp(white, 0.0, 1.0); black = torch.clamp(black, 0.0, 1.0)
-        x = torch.cat((white, black) if side == "w" else (black, white))
+        white = torch.clamp(white, 0.0, 1.0)
+        black = torch.clamp(black, 0.0, 1.0)
+        x = torch.cat((white, black) if side == "w" else (black, white), dim=1)
         return self.output(torch.clamp(self.hidden2(torch.clamp(self.hidden1(x), 0.0, 1.0)), 0.0, 1.0)).squeeze()
 
     def forward_batch(self, white_indices, white_offsets, black_indices, black_offsets, sides):
@@ -35,13 +36,16 @@ class HebiNnueV1(nn.Module):
 
     @torch.no_grad()
     def evaluate_fen(self, fen: str) -> float:
-        white_ids, black_ids = both_features(fen); _, side = parse_fen(fen)
+        white_ids, black_ids = both_features(fen)
+        _, side = parse_fen(fen)
         device = self.transform.weight.device
         w = self.transform(torch.tensor(white_ids, device=device), torch.tensor([0], device=device)) + self.transform_bias
         b = self.transform(torch.tensor(black_ids, device=device), torch.tensor([0], device=device)) + self.transform_bias
         return float(self.forward_indices(w, b, side).cpu())
 
 def deterministic_network(seed=20260909):
-    torch.manual_seed(seed); model = HebiNnueV1().float()
-    for parameter in model.parameters(): parameter.data.uniform_(-0.01, 0.01)
+    torch.manual_seed(seed)
+    model = HebiNnueV1().float()
+    for parameter in model.parameters():
+        parameter.data.uniform_(-0.01, 0.01)
     return model
