@@ -20,6 +20,19 @@ class HebiNnueV1(nn.Module):
         x = torch.cat((white, black) if side == "w" else (black, white))
         return self.output(torch.clamp(self.hidden2(torch.clamp(self.hidden1(x), 0.0, 1.0)), 0.0, 1.0)).squeeze()
 
+    def forward_batch(self, white_indices, white_offsets, black_indices, black_offsets, sides):
+        """Evaluate packed sparse HalfKP features; returns STM-centipawn scores."""
+        white = self.transform(white_indices, white_offsets) + self.transform_bias
+        black = self.transform(black_indices, black_offsets) + self.transform_bias
+        white = torch.clamp(white, 0.0, 1.0)
+        black = torch.clamp(black, 0.0, 1.0)
+        black_to_move = sides.to(dtype=torch.bool).unsqueeze(1)
+        x = torch.cat((torch.where(black_to_move, black, white),
+                       torch.where(black_to_move, white, black)), dim=1)
+        x = torch.clamp(self.hidden1(x), 0.0, 1.0)
+        x = torch.clamp(self.hidden2(x), 0.0, 1.0)
+        return self.output(x).squeeze(1)
+
     @torch.no_grad()
     def evaluate_fen(self, fen: str) -> float:
         white_ids, black_ids = both_features(fen); _, side = parse_fen(fen)
