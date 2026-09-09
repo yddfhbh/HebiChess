@@ -12,11 +12,12 @@ const MOVETIME = Number(process.env.DEFAULT_SEARCH_MOVETIME_MS || 1500);
 const DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
 const PRODUCTION = process.env.NODE_ENV === 'production';
 const clients = new Map();
-let game = null, engine = null, serial = Promise.resolve();
+let game = null, engine = null, engineRootSide = null, serial = Promise.resolve();
 
 const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript'};
 const copy = board => board.map(row => row.slice());
 const id = () => crypto.randomUUID();
+const whitePovEvaluation = (scoreCp, rootSide) => (rootSide === 'b' ? -scoreCp : scoreCp) / 100;
 function cookie(req, res) {
   const match = (req.headers.cookie || '').match(/hebichess_session=([^;]+)/);
   if (match) return match[1];
@@ -169,10 +170,11 @@ function terminalAfterMove() {
 }
 function engineGo() {
   if (!game || game.result || game.turn === game.playerColor) return;
+  engineRootSide = game.turn;
   game.engineThinking = true; emit('engineThinking');
   if (!engine) {
     engine = spawn(ENGINE, [], {stdio:['pipe','pipe','pipe']});
-    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? Number(score[1]) / 100 : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
+    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? whitePovEvaluation(Number(score[1]), engineRootSide) : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
     engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
   }
   if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo movetime ${MOVETIME}\n`);
@@ -198,4 +200,4 @@ function handle(req, response, session) {
 }
 const server = http.createServer((req, response) => { const session = cookie(req, response); serial = serial.then(() => handle(req, response, session)).catch(error => json(response, 500, {error:error.message})); });
 if (require.main === module) server.listen(PORT, '127.0.0.1', () => console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
-module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, setGame(value) { game = value; }, getGame:() => game};
+module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, whitePovEvaluation, setGame(value) { game = value; }, getGame:() => game};

@@ -7,6 +7,7 @@ const PIECE_SVG={
   n:'M28 16c16-4 31 4 38 20l-8 8 11 19H30c5-12 3-22-7-31l5-16zm0 51h43l6 12H22l6-12zm-10 16h64v7H18z',
   p:'M50 13a14 14 0 100 28 14 14 0 000-28zM35 47h30l7 22H28l7-22zm-12 26h54l6 12H17l6-12z'
 };
+const {coordinateLabels, materialDifference}=HebiChessUi;
 let S={active:false}, selectedSquare=null, selectedPiece=null, selectedInteractionMode=null, legalDestinations=[], premove=null, drag=null, flipped=false, viewIndex=-1, latestState=null, toastTimer, perspectiveInitialized=false, requestInFlight=false, pendingPromotion=null, suppressClick=false;
 const $=id=>document.getElementById(id);
 function isPlayer(){return S.active&&S.isPlayer===true&&S.role==='player'}
@@ -19,9 +20,9 @@ function parsePosition(pos){return [8-Number(pos[1]),pos.charCodeAt(0)-97]}
 function pieceAt(pos,position=S){const [r,c]=parsePosition(pos);return position.board?.[r]?.[c]||'.'}
 function clearInteraction(){selectedSquare=null;selectedPiece=null;selectedInteractionMode=null;legalDestinations=[];cleanupDrag()}
 function cancelPremove(){premove=null;pendingPromotion=null;hidePromotion();clearInteraction();render()}
-function coordinates(){const files=flipped?'hgfedcba':'abcdefgh',ranks=flipped?'12345678':'87654321';$('files').textContent=files.split('').join('');$('ranks').textContent=ranks.split('').join('')}
+function coordinates(){const labels=coordinateLabels(flipped);for(const [id,values] of Object.entries(labels)){$(id).replaceChildren(...values.map(value=>{const label=document.createElement('span');label.textContent=value;return label}))}}
 function capturedHtml(color){const pieces=S.capturedPieces?.[color]||[], order=['q','r','b','n','p'];return order.map(type=>pieces.filter(p=>p===type).map(p=>pieceSvg(color==='w'?p.toUpperCase():p,true)).join('')).join('')}
-function material(){const value={q:9,r:5,b:3,n:3,p:1};const white=(S.capturedPieces?.b||[]).reduce((n,p)=>n+(value[p]||0),0),black=(S.capturedPieces?.w||[]).reduce((n,p)=>n+(value[p]||0),0),diff=white-black;return diff?` ${diff>0?'+':''}${diff}`:''}
+function material(){const diff=materialDifference(S.capturedPieces);return diff?` ${diff>0?'+':''}${diff}`:''}
 function resultText(){if(!S.result)return '';if(S.result==='1/2-1/2')return 'Draw';const winner=S.result==='1-0'?'w':'b';return isPlayer()?(winner===S.playerColor?'You win':'You lose'):`${winner==='w'?'White':'Black'} wins`}
 function renderCards(){const playerWhite=S.playerColor!=='b', spectator=!isPlayer();const top=spectator?'b':playerWhite?'b':'w', bottom=top==='w'?'b':'w';const card=(side,engine)=>{const winner=S.result&&(S.result==='1/2-1/2'?'draw':(S.result==='1-0'?'w':'b')===side?'winner':'loser');return `<div class="avatar">${pieceSvg(side==='w'?'N':'n',true)}</div><div><strong>${engine?'HebiChess':spectator?(side==='w'?'White':'Black'):'You'}</strong><small>${side==='w'?'White':'Black'}${engine?' · Engine':''}</small></div><span class="turn-dot ${!S.result&&S.turn===side?'active':''}"></span><div class="captured">${capturedHtml(side)}${side==='w'?material():''}</div><span class="winner-mark ${winner||''}">${winner==='winner'?'♛':''}</span>`};$('top-card').innerHTML=card(top,!spectator&&top!==S.playerColor);$('bottom-card').innerHTML=card(bottom,!spectator&&bottom!==S.playerColor)}
 function render(){

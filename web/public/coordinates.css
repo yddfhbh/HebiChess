@@ -1,0 +1,4 @@
+#files.edge-coordinates,#ranks.edge-coordinates{display:grid;letter-spacing:normal;white-space:normal}
+#files.edge-coordinates{grid-template-columns:repeat(8,minmax(0,1fr));left:18px;right:0;bottom:0;height:18px}
+#ranks.edge-coordinates{grid-template-rows:repeat(8,minmax(0,1fr));top:0;bottom:18px;left:0;width:18px;writing-mode:horizontal-tb;text-orientation:mixed}
+#files.edge-coordinates span,#ranks.edge-coordinates span{display:grid;place-items:center}
