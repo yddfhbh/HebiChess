@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdlib>
 
 namespace hebichess {
@@ -219,7 +220,7 @@ struct EvalContext {
     for (int color = 0; color < kColors; ++color) {
       for (int rank = 0; rank < 8; ++rank) {
         const std::uint8_t files = pawn_rank_files[color][rank];
-        score[color] += static_cast<int>(__builtin_popcount(
+        score[color] += static_cast<int>(std::popcount(
             static_cast<unsigned int>(files & (files << 1)))) * 8;
       }
     }
