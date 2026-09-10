@@ -63,3 +63,20 @@ test('reinitializing the worker rejects its pending search',async()=>{
   await ready;
   engine.terminate();
 });
+
+test('same server game position sync keeps the engine generation and skips ucinewgame',async()=>{
+  const {engine,worker}=await client();
+  const initialCommandCount=worker.messages.filter(message=>message.type==='command').length;
+  engine.position({gameId:'server-game',fen:'start'});
+  const firstGameId=engine.gameId;
+  const firstCommands=worker.messages.filter(message=>message.type==='command').map(message=>message.command);
+  engine.position({gameId:'server-game',fen:'next'});
+  const allCommands=worker.messages.filter(message=>message.type==='command').map(message=>message.command);
+  assert.equal(engine.gameId,firstGameId);
+  assert.equal(firstCommands.length,initialCommandCount+1);
+  assert.equal(allCommands.length,initialCommandCount+1);
+  engine.position({gameId:'new-server-game',fen:'start'});
+  assert.equal(engine.gameId,firstGameId+1);
+  assert.equal(worker.messages.filter(message=>message.type==='command').length,initialCommandCount+2);
+  engine.terminate();
+});

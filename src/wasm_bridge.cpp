@@ -3,6 +3,16 @@
 
 #include "chess/uci_engine.hpp"
 
+#ifdef HEBICHESS_BROWSER_WASM
+#include <emscripten.h>
+
+EM_JS(void, hebichess_browser_output, (const char* line), {
+  if (typeof self.hebichessOutputLine === 'function') {
+    self.hebichessOutputLine(UTF8ToString(line));
+  }
+});
+#endif
+
 namespace {
 
 std::string output;
@@ -10,6 +20,9 @@ hebichess::UciEngine& engine() {
   static hebichess::UciEngine instance([](const std::string& line) {
     output += line;
     output += '\n';
+#ifdef HEBICHESS_BROWSER_WASM
+    hebichess_browser_output(line.c_str());
+#endif
   });
   return instance;
 }
