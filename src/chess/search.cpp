@@ -188,11 +188,158 @@ bool has_non_pawn_material(const Board& board, Color side) noexcept {
 int count_king_escapes(const Board& board, Color king_color) {
   Board copy = board;
   copy.set_side_to_move(king_color);
-  return static_cast<int>(generate_legal_moves(copy).size());
+  int escapes = 0;
+  for (const Move& move : generate_legal_moves(copy)) {
+    if (copy.piece_at(move.from).type == PieceType::King &&
+        move.flag != MoveFlag::CastleKingSide &&
+        move.flag != MoveFlag::CastleQueenSide) {
+      ++escapes;
+    }
+  }
+  return escapes;
 }
 
-int material_loss(const Board& before, const Board& after, Color mover) {
-  return evaluate_material(after, mover) - evaluate_material(before, mover);
+Square at(int file, int rank) noexcept {
+  if (file < 0 || file >= 8 || rank < 0 || rank >= 8) return {};
+  return Square::from_file_rank(static_cast<std::uint8_t>(file),
+                                static_cast<std::uint8_t>(rank));
+}
+
+int chebyshev_distance(Square a, Square b) noexcept {
+  return std::max(std::abs(static_cast<int>(a.file()) - b.file()),
+                  std::abs(static_cast<int>(a.rank()) - b.rank()));
+}
+
+bool piece_attacks_square(const Board& board, Square from, Square target,
+                          Color attacker) noexcept {
+  const Piece piece = board.piece_at(from);
+  if (piece.color != attacker || piece.is_empty()) return false;
+  const int df = static_cast<int>(target.file()) - from.file();
+  const int dr = static_cast<int>(target.rank()) - from.rank();
+  if (piece.type == PieceType::Pawn)
+    return dr == (attacker == Color::White ? 1 : -1) && std::abs(df) == 1;
+  if (piece.type == PieceType::Knight) return df * df + dr * dr == 5;
+  if (piece.type == PieceType::King) return std::max(std::abs(df), std::abs(dr)) == 1;
+  const bool diagonal = df != 0 && std::abs(df) == std::abs(dr);
+  const bool straight = (df == 0) != (dr == 0);
+  if ((piece.type == PieceType::Bishop && !diagonal) ||
+      (piece.type == PieceType::Rook && !straight) ||
+      (piece.type == PieceType::Queen && !diagonal && !straight)) return false;
+  const int step_file = df == 0 ? 0 : (df > 0 ? 1 : -1);
+  const int step_rank = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
+  for (int file = static_cast<int>(from.file()) + step_file,
+           rank = static_cast<int>(from.rank()) + step_rank;
+       file != target.file() || rank != target.rank(); file += step_file, rank += step_rank) {
+    if (!board.piece_at(at(file, rank)).is_empty()) return false;
+  }
+  return true;
+}
+
+bool attacks_king_ring(const Board& board, Square from, Color attacker,
+                       Square king) noexcept {
+  for (int df = -1; df <= 1; ++df) {
+    for (int dr = -1; dr <= 1; ++dr) {
+      if (df == 0 && dr == 0) continue;
+      const Square target = at(static_cast<int>(king.file()) + df,
+                               static_cast<int>(king.rank()) + dr);
+      if (target.is_valid() && piece_attacks_square(board, from, target, attacker)) return true;
+    }
+  }
+  return false;
+}
+
+struct StyleAttackState {
+  int ring_control{0};
+  int ring_participants{0};
+  int congregation{0};
+  int open_lines{0};
+  int checking_motifs{0};
+  int threats{0};
+};
+
+StyleAttackState style_attack_state(const Board& board, Color attacker) {
+  StyleAttackState state;
+  const Square king = board.find_king(opposite(attacker));
+  if (!king.is_valid()) return state;
+
+  // This deliberately does not call evaluate_king_attack(): style must not
+  // count the same immediate HCE king-attack signal twice.
+  for (int df = -1; df <= 1; ++df) {
+    for (int dr = -1; dr <= 1; ++dr) {
+      if (df == 0 && dr == 0) continue;
+      const Square ring = at(static_cast<int>(king.file()) + df,
+                             static_cast<int>(king.rank()) + dr);
+      if (ring.is_valid() && board.is_square_attacked(ring, attacker)) ++state.ring_control;
+    }
+  }
+  for (std::uint8_t i = 0; i < Square::kSquareCount; ++i) {
+    const Square square = Square::from_index(i);
+    const Piece piece = board.piece_at(square);
+    if (piece.color != attacker || piece.is_empty()) continue;
+    if (piece.type == PieceType::Knight || piece.type == PieceType::Bishop ||
+        piece.type == PieceType::Rook || piece.type == PieceType::Queen) {
+      if (attacks_king_ring(board, square, attacker, king)) ++state.ring_participants;
+      // A compact, capped measure of piece concentration toward the enemy king.
+      state.congregation += std::max(0, 5 - chebyshev_distance(square, king));
+    }
+  }
+  state.congregation = std::min(12, state.congregation);
+
+  // Open or semi-open lanes next to the enemy king are useful only when a
+  // heavy piece can actually use that file or diagonal.
+  for (int df : {-1, 0, 1}) {
+    const int file = static_cast<int>(king.file()) + df;
+    if (file < 0 || file >= 8) continue;
+    bool own_pawn = false;
+    bool enemy_pawn = false;
+    bool heavy = false;
+    for (int rank = 0; rank < 8; ++rank) {
+      const Piece piece = board.piece_at(at(file, rank));
+      own_pawn |= piece == Piece{PieceType::Pawn, attacker};
+      enemy_pawn |= piece == Piece{PieceType::Pawn, opposite(attacker)};
+      heavy |= piece.color == attacker &&
+               (piece.type == PieceType::Rook || piece.type == PieceType::Queen);
+    }
+    if (heavy && !own_pawn) state.open_lines += enemy_pawn ? 1 : 2;
+  }
+  for (int df : {-1, 1}) for (int dr : {-1, 1}) {
+    for (int f = static_cast<int>(king.file()) + df, r = static_cast<int>(king.rank()) + dr;
+         f >= 0 && f < 8 && r >= 0 && r < 8; f += df, r += dr) {
+      const Piece piece = board.piece_at(at(f, r));
+      if (piece.is_empty()) continue;
+      if (piece.color == attacker &&
+          (piece.type == PieceType::Bishop || piece.type == PieceType::Queen)) ++state.open_lines;
+      break;
+    }
+  }
+  state.open_lines = std::min(6, state.open_lines);
+
+  Board motif_board = board;
+  motif_board.set_side_to_move(attacker);
+  for (const Move& candidate : generate_legal_moves(motif_board)) {
+    if (gives_check(motif_board, candidate) && ++state.checking_motifs == 4) break;
+  }
+  state.threats = std::clamp(evaluate_threats(board, attacker), -20, 20);
+  return state;
+}
+
+int attack_reward(const StyleAttackState& before, const StyleAttackState& after,
+                  bool check) noexcept {
+  const int ring = std::clamp(after.ring_control - before.ring_control, 0, 3);
+  const int participants = std::clamp(after.ring_participants - before.ring_participants, 0, 2);
+  const int motifs = std::clamp(after.checking_motifs - before.checking_motifs, 0, 2);
+  const int lines = std::clamp(after.open_lines - before.open_lines, 0, 2);
+  const int threats = std::clamp(after.threats - before.threats, 0, 8);
+  return (check ? 8 : 0) + ring * 4 + participants * 4 + motifs * 3 + lines * 3 + threats / 2;
+}
+
+bool destination_can_be_captured(const Board& after, const Move& move, Color mover) {
+  Board reply = after;
+  reply.set_side_to_move(opposite(mover));
+  for (const Move& candidate : generate_legal_moves(reply)) {
+    if (is_capture(candidate) && candidate.to == move.to) return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -202,18 +349,14 @@ int evaluate_move_style(const Board& before, const Move& move,
   const Color mover = before.side_to_move();
   Board probe = before;
   const bool check = gives_check(probe, move);
-  const int pressure_delta = evaluate_attack_pressure(after, mover) -
-                             evaluate_attack_pressure(before, mover);
-  const EvalBreakdown before_eval = evaluate_breakdown(before, mover);
-  const EvalBreakdown after_eval = evaluate_breakdown(after, mover);
+  const StyleAttackState before_attack = style_attack_state(before, mover);
+  const StyleAttackState after_attack = style_attack_state(after, mover);
   const int escape_delta = count_king_escapes(after, opposite(mover)) -
                            count_king_escapes(before, opposite(mover));
-  int style = (check ? 18 : 0) + std::max(0, pressure_delta) * 2 +
-              std::max(0, -escape_delta) * 3 + (move.is_promotion() ? 12 : 0);
-  style += std::max(0, after_eval.king_attack - before_eval.king_attack);
-  style += std::max(0, after_eval.space - before_eval.space) / 2;
-  style += std::max(0, after_eval.passed_pawns - before_eval.passed_pawns) / 2;
-  style += std::max(0, after_eval.development - before_eval.development);
+  const int reward = attack_reward(before_attack, after_attack, check);
+  const int congregation = std::clamp(after_attack.congregation - before_attack.congregation, 0, 4);
+  const int escapes = std::clamp(-escape_delta, 0, 3);
+  int style = reward + congregation * 2 + escapes * 2 + (move.is_promotion() ? 8 : 0);
   const Piece moving = before.piece_at(move.from);
   const bool opening = game_phase(before) >= 18;
   const bool quiet_flank_pawn = opening && is_quiet_move(move) &&
@@ -223,29 +366,54 @@ int evaluate_move_style(const Board& before, const Move& move,
   if (opening && is_quiet_move(move) && moving.type == PieceType::Pawn &&
       (move.from.file() == 5 || move.from.file() == 6) &&
       before.find_king(mover).is_valid() && before.find_king(mover).file() >= 4 &&
-      after_eval.king_safety < before_eval.king_safety) {
-    style -= 4;
+      after_attack.ring_control <= before_attack.ring_control &&
+      after_attack.checking_motifs <= before_attack.checking_motifs) {
+    style -= 6;
   }
-  if (is_sacrifice_candidate(before, move, after)) style += check ? 12 : 5;
+  // Quiet preparation receives its reward only when several independent
+  // attacking signals improve together; a lone queen sortie cannot dominate.
+  if (is_quiet_move(move) && moving.type != PieceType::Pawn) {
+    int preparation = 0;
+    preparation += after_attack.ring_control > before_attack.ring_control;
+    preparation += after_attack.ring_participants > before_attack.ring_participants;
+    preparation += after_attack.congregation > before_attack.congregation;
+    preparation += after_attack.checking_motifs > before_attack.checking_motifs;
+    preparation += after_attack.open_lines > before_attack.open_lines;
+    preparation += after_attack.threats > before_attack.threats;
+    if (preparation >= 2) style += std::min(10, preparation * 3);
+    if (moving.type == PieceType::Queen && preparation < 2) style -= 4;
+  }
+  if (is_sacrifice_candidate(before, move, after)) style += check ? 8 : 5;
   return style;
 }
 
 bool is_sacrifice_candidate(const Board& before, const Move& move,
                             const Board& after) noexcept {
   const Color mover = before.side_to_move();
-  const int loss = material_loss(before, after, mover);
-  if (loss >= -30) return false;
   Board probe = before;
   const bool check = gives_check(probe, move);
-  const int pressure_delta = evaluate_attack_pressure(after, mover) -
-                             evaluate_attack_pressure(before, mover);
+  const StyleAttackState before_attack = style_attack_state(before, mover);
+  const StyleAttackState after_attack = style_attack_state(after, mover);
+  const int reward = attack_reward(before_attack, after_attack, check);
   const int escape_delta = count_king_escapes(after, opposite(mover)) -
                            count_king_escapes(before, opposite(mover));
-  const EvalBreakdown before_eval = evaluate_breakdown(before, mover);
-  const EvalBreakdown after_eval = evaluate_breakdown(after, mover);
-  const bool attack_gain = after_eval.king_attack - before_eval.king_attack >= 8;
-  const bool shield_break = after_eval.king_safety - before_eval.king_safety >= 8;
-  return check || attack_gain || shield_break || pressure_delta >= 5 || escape_delta <= -2;
+  if (is_capture(move)) {
+    // Captures are sacrifices only when SEE says the offered exchange loses
+    // material and the move produces a concrete king-side payoff.
+    return static_exchange_eval(before, move) < -50 &&
+           (check || reward >= 8 || escape_delta <= -2);
+  }
+  const Piece offered = before.piece_at(move.from);
+  if (is_quiet_move(move) && offered.type != PieceType::Pawn &&
+      offered.type != PieceType::King && piece_value(offered.type) >= 300) {
+    // Quiet offers need both a legal opposing capture and a larger, concrete
+    // attack gain.  This intentionally excludes merely loose developing moves.
+    return destination_can_be_captured(after, move, mover) &&
+           (check || reward >= 12 ||
+            (after_attack.ring_control - before_attack.ring_control >= 2 &&
+             after_attack.checking_motifs > before_attack.checking_motifs));
+  }
+  return false;
 }
 
 int quiescence_impl(Board& board, int alpha, int beta, int ply,
