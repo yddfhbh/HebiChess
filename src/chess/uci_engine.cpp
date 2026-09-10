@@ -117,6 +117,18 @@ void UciEngine::send_command(const std::string& line) {
     else emit("info string error invalid position");
   } else if (command == "eval") {
     const EvalBreakdown e = evaluate_breakdown(board_, board_.side_to_move());
+    emit("info string eval material " + std::to_string(e.material));
+    emit("info string eval pst " + std::to_string(e.pst));
+    emit("info string eval mobility " + std::to_string(e.mobility));
+    emit("info string eval pawns " + std::to_string(e.pawns));
+    emit("info string eval passed_pawns " + std::to_string(e.passed_pawns));
+    emit("info string eval bishop_pair " + std::to_string(e.bishop_pair));
+    emit("info string eval rook_activity " + std::to_string(e.rook_activity));
+    emit("info string eval king_safety " + std::to_string(e.king_safety));
+    emit("info string eval king_attack " + std::to_string(e.king_attack));
+    emit("info string eval space " + std::to_string(e.space));
+    emit("info string eval threats " + std::to_string(e.threats));
+    emit("info string eval initiative " + std::to_string(e.initiative));
     emit("info string eval total " + std::to_string(e.total));
   } else if (command == "features" || command == "nnueeval") {
 #ifdef HEBICHESS_WASM
