@@ -259,6 +259,36 @@ void test_aggressive_style_v2() {
   require(nf5_style > nb3_style,
           "increased king-ring control must increase style score");
 
+  // A quiet queen sortie cannot use two cheap static signals to skip four
+  // undeveloped minor pieces.  This must remain a style-layer preference, not
+  // an objective-search or FEN-specific rule.
+  Board premature_queen = Board::from_fen(
+      "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2").value();
+  const int qh5 = style_for(premature_queen, "d1h5");
+  const int bb5 = style_for(premature_queen, "f1b5");
+  const int bc4 = style_for(premature_queen, "f1c4");
+  const int nf3 = style_for(premature_queen, "g1f3");
+  require(qh5 < std::max({bb5, bc4, nf3}),
+          "premature Qh5 must rank below a normal developing move");
+  clear_transposition_table();
+  clear_search_heuristics();
+  SearchLimits early_queen_search;
+  early_queen_search.max_depth = 4;
+  early_queen_search.use_pvs = true;
+  early_queen_search.use_aspiration = true;
+  const SearchResult early_queen_result = search(premature_queen, early_queen_search);
+  require(early_queen_result.best_move != Move{sq('d', 1), sq('h', 5)},
+          "depth-4 style selector must not choose premature Qh5");
+
+  // Once all original minor squares are clear, a queen may still join a real
+  // king-side attack rather than being treated as an early sortie.
+  Board developed_attack = Board::from_fen(
+      "r2q1rk1/ppp2pp1/2nppn1p/2b1p1N1/2B1P3/2NPB3/PPP2PPP/R2Q1RK1 w - - 0 9").value();
+  const int qh5_developed = style_for(developed_attack, "d1h5");
+  const int queen_retreat = style_for(developed_attack, "d1d2");
+  require(qh5_developed > queen_retreat,
+          "developed queen attack preparation must outrank an irrelevant retreat");
+
   Board sacrifice = Board::from_fen(
       "6k1/5ppp/8/8/8/3B4/5PPP/3Q2K1 w - - 0 1").value();
   const Move bxh7 = legal_move(sacrifice, "d3h7");
@@ -268,7 +298,10 @@ void test_aggressive_style_v2() {
   sacrifice_after.make_move(bxh7);
   require(is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after),
           "negative SEE checking sacrifice must be recognized");
-  std::cout << "style v2: Nf5=" << attack_prep << " Nb3=" << retreat
+  std::cout << "style v2.1: Nf5=" << attack_prep << " Nb3=" << retreat
+            << " early_Qh5=" << qh5 << " Bb5=" << bb5 << " Bc4=" << bc4
+            << " Nf3=" << nf3 << " developed_Qh5=" << qh5_developed
+            << " retreat=" << queen_retreat
             << " Bxh7+ SEE=" << static_exchange_eval(sacrifice, bxh7)
             << " sacrifice=" << is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after)
             << '\n';

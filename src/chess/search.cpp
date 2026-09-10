@@ -119,6 +119,32 @@ bool is_quiet_move(const Move& move) noexcept {
   return !is_capture(move) && !move.is_promotion();
 }
 
+int undeveloped_minor_count(const Board& board, Color side) noexcept {
+  struct StartingMinor {
+    Square square;
+    PieceType type;
+  };
+  const std::array<StartingMinor, 4> starting = side == Color::White
+      ? std::array<StartingMinor, 4>{{
+            {Square::from_file_rank(1, 0), PieceType::Knight},
+            {Square::from_file_rank(6, 0), PieceType::Knight},
+            {Square::from_file_rank(2, 0), PieceType::Bishop},
+            {Square::from_file_rank(5, 0), PieceType::Bishop},
+        }}
+      : std::array<StartingMinor, 4>{{
+            {Square::from_file_rank(1, 7), PieceType::Knight},
+            {Square::from_file_rank(6, 7), PieceType::Knight},
+            {Square::from_file_rank(2, 7), PieceType::Bishop},
+            {Square::from_file_rank(5, 7), PieceType::Bishop},
+        }};
+  int undeveloped = 0;
+  for (const StartingMinor& minor : starting) {
+    const Piece piece = board.piece_at(minor.square);
+    if (piece.color == side && piece.type == minor.type) ++undeveloped;
+  }
+  return undeveloped;
+}
+
 struct OrderedMove {
   Move move{};
   int see{0};
@@ -373,15 +399,38 @@ int evaluate_move_style(const Board& before, const Move& move,
   // Quiet preparation receives its reward only when several independent
   // attacking signals improve together; a lone queen sortie cannot dominate.
   if (is_quiet_move(move) && moving.type != PieceType::Pawn) {
+    const int ring_delta = after_attack.ring_control - before_attack.ring_control;
+    const int participant_delta = after_attack.ring_participants - before_attack.ring_participants;
+    const int congregation_delta = after_attack.congregation - before_attack.congregation;
+    const int motif_delta = after_attack.checking_motifs - before_attack.checking_motifs;
+    const int line_delta = after_attack.open_lines - before_attack.open_lines;
+    const int threat_delta = after_attack.threats - before_attack.threats;
     int preparation = 0;
-    preparation += after_attack.ring_control > before_attack.ring_control;
-    preparation += after_attack.ring_participants > before_attack.ring_participants;
-    preparation += after_attack.congregation > before_attack.congregation;
-    preparation += after_attack.checking_motifs > before_attack.checking_motifs;
-    preparation += after_attack.open_lines > before_attack.open_lines;
-    preparation += after_attack.threats > before_attack.threats;
-    if (preparation >= 2) style += std::min(10, preparation * 3);
-    if (moving.type == PieceType::Queen && preparation < 2) style -= 4;
+    preparation += ring_delta > 0;
+    preparation += participant_delta > 0;
+    preparation += congregation_delta > 0;
+    preparation += motif_delta > 0;
+    preparation += line_delta > 0;
+    preparation += threat_delta > 0;
+    int preparation_bonus = preparation >= 2 ? std::min(10, preparation * 3) : 0;
+    if (moving.type == PieceType::Queen) {
+      const int development_debt = opening ? undeveloped_minor_count(before, mover) : 0;
+      if (development_debt >= 2) {
+        // Before development is complete, ring control plus a fresh checking
+        // motif alone is too easy for a queen to manufacture.  Preserve the
+        // full reward only when multiple concrete attacking gains accompany it.
+        int concrete_attack_signals = 0;
+        concrete_attack_signals += ring_delta >= 2;
+        concrete_attack_signals += participant_delta >= 1;
+        concrete_attack_signals += line_delta >= 1;
+        concrete_attack_signals += threat_delta >= 4;
+        concrete_attack_signals += motif_delta >= 2;
+        if (concrete_attack_signals < 2) preparation_bonus = std::min(preparation_bonus, 3);
+        style -= std::min(12, development_debt * 3);
+      }
+      if (preparation < 2) style -= 4;
+    }
+    style += preparation_bonus;
   }
   if (is_sacrifice_candidate(before, move, after)) style += check ? 8 : 5;
   return style;
