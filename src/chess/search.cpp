@@ -23,6 +23,13 @@ struct StyleProfile {
   SearchResult& result;
 };
 
+bool move_order_less(const Move& a, const Move& b) noexcept {
+  if (a.from.index() != b.from.index()) return a.from.index() < b.from.index();
+  if (a.to.index() != b.to.index()) return a.to.index() < b.to.index();
+  if (a.promotion != b.promotion) return a.promotion < b.promotion;
+  return a.flag < b.flag;
+}
+
 thread_local StyleProfile* active_style_profile = nullptr;
 
 class StyleTimer {
@@ -224,7 +231,7 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
     ordered.push_back(item);
   }
   std::sort(ordered.begin(), ordered.end(), [](const OrderedMove& a, const OrderedMove& b) {
-    return a.score > b.score;
+    return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
   });
   return ordered;
 }
@@ -1057,7 +1064,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
         if (previous != previous_root.end()) item.score += 6000000 + previous->search_score;
       }
       std::sort(root_order.begin(), root_order.end(), [](const OrderedMove& a, const OrderedMove& b) {
-        return a.score > b.score;
+        return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
       });
       for (std::size_t move_index = 0; move_index < root_order.size(); ++move_index) {
         const Move& move = root_order[move_index].move;
@@ -1254,7 +1261,9 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     candidates.push_back(&info);
   }
   std::sort(candidates.begin(), candidates.end(), [](const RootMoveInfo* a, const RootMoveInfo* b) {
-    return a->style_score > b->style_score;
+    return a->style_score != b->style_score
+               ? a->style_score > b->style_score
+               : move_order_less(a->move, b->move);
   });
   constexpr std::size_t kMaxStyleVerificationCandidates = 4;
   if (candidates.size() > kMaxStyleVerificationCandidates)

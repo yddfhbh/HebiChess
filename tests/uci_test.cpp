@@ -1,8 +1,11 @@
 #include <cassert>
 #include <chrono>
+#include <string>
+#include <vector>
 
 #include "chess/search.hpp"
 #include "chess/uci.hpp"
+#include "chess/uci_engine.hpp"
 
 using namespace hebichess;
 
@@ -54,9 +57,31 @@ void test_serialization_and_timeout_integrity() {
   // every root move, never the partially searched iteration that hit timeout.
   assert(result.root_moves.size() == generate_legal_moves(board).size());
 }
+
+void test_eval_breakdown_uci_output() {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  engine.send_command("position fen 4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1");
+  engine.send_command("eval");
+  assert((output == std::vector<std::string>{
+      "material 900",
+      "pst -4",
+      "mobility 44",
+      "pawns 0",
+      "passed_pawns 0",
+      "bishop_pair 0",
+      "rook_activity 0",
+      "king_safety 5",
+      "king_attack 1",
+      "space 9",
+      "threats 0",
+      "initiative 10",
+      "total 965"}));
+}
 }
 
 int main() {
   test_move_parsing();
   test_serialization_and_timeout_integrity();
+  test_eval_breakdown_uci_output();
 }

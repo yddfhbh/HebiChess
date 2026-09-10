@@ -4,8 +4,17 @@
 
 namespace hebichess {
 
+namespace {
+
+// Keep the bucket count stable across libstdc++ and libc++ builds.  The
+// optional<Move> layout differs between the native and Emscripten runtimes,
+// so sizing by sizeof(TTEntry) would otherwise change TT collision behavior.
+constexpr std::size_t kReferenceEntryBytes = 24;
+
+}  // namespace
+
 TranspositionTable::TranspositionTable(std::size_t megabytes) {
-  const std::size_t requested = std::max<std::size_t>(1, (megabytes * 1024 * 1024) / sizeof(TTEntry));
+  const std::size_t requested = std::max<std::size_t>(1, (megabytes * 1024 * 1024) / kReferenceEntryBytes);
   std::size_t count = 1;
   while (count <= requested / 2) count <<= 1;
   entries_.resize(count);

@@ -14,7 +14,7 @@ const PRODUCTION = process.env.NODE_ENV === 'production';
 const clients = new Map();
 let game = null, engine = null, engineRootSide = null, serial = Promise.resolve();
 
-const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript'};
+const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript','.wasm':'application/wasm'};
 const copy = board => board.map(row => row.slice());
 const id = () => crypto.randomUUID();
 const whitePovEvaluation = (scoreCp, rootSide) => (rootSide === 'b' ? -scoreCp : scoreCp) / 100;
@@ -195,6 +195,8 @@ function handle(req, response, session) {
   if (req.method === 'POST' && url.pathname === '/api/start') return body(req).then(value => start(session, value.color || 'random') ? json(response, 200, currentState(session)) : json(response, 409, {error:'active game'}));
   if (req.method === 'POST' && url.pathname === '/api/move') return body(req).then(value => { if (!game) return json(response, 409, {error:'no active game'}); if (session !== game.playerSessionId) return json(response, 403, {error:'spectator'}); if (game.engineThinking || game.turn !== game.playerColor) return json(response, 409, {error:'not your turn'}); const requested = value.move || ''; if (promotionRequired(requested)) return json(response, 422, {error:'promotion required', promotionRequired:true}); const move = legal(requested); if (!move) return json(response, 422, {error:'illegal move'}); apply(move); emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); return json(response, 200, currentState(session)); });
   if (req.method === 'POST' && url.pathname === '/api/resign') { if (!game || session !== game.playerSessionId) return json(response, 403, {error:'not player'}); end(game.playerColor === 'w' ? '0-1' : '1-0', 'resignation'); return json(response, 200, {ok:true}); }
+  if (!PRODUCTION && url.pathname === '/engine-test') { const filePath = path.join(root, 'public', 'engine-test.html'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files['.html']}); return fs.createReadStream(filePath).pipe(response); }
+  if (!PRODUCTION && url.pathname === '/test-data/wasm-parity-100.fen') { const filePath = path.resolve(root, '../tests/data/wasm-parity-100.fen'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':'text/plain; charset=utf-8'}); return fs.createReadStream(filePath).pipe(response); }
   if (url.pathname === '/' || url.pathname.startsWith('/public/')) { const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(8), filePath = path.join(root, 'public', file); if (!filePath.startsWith(PUBLIC_ROOT) || !fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files[path.extname(filePath)] || 'text/plain'}); return fs.createReadStream(filePath).pipe(response); }
   return json(response, 404, {error:'not found'});
 }
