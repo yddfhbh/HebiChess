@@ -26,7 +26,7 @@ if(HEBICHESS_BUILD_WASM)
   endif()
   add_executable(HebiChessWasm src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasm PRIVATE src)
-  target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1)
+  target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/web/public/engine"

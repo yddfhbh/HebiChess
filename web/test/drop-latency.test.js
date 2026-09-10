@@ -15,7 +15,17 @@ test('live drag drop paints an immediate optimistic destination preview', () => 
 
 test('optimistic preview is cleared on server receive and move failure', () => {
   assert.match(js, /receive\s*=\s*function receiveWithDropPreviewCleanup\(data, eventType\) \{\s*clearOptimisticDrop\(\);\s*return previousReceive\(data, eventType\);/);
-  assert.match(js, /catch\(error=>\{\s*clearOptimisticDrop\(\)/);
+  assert.match(js, /canonicalSendMove\(move\)/);
+});
+
+test('optimistic drop uses the shared revisioned move path', () => {
+  assert.match(js, /const canonicalSendMove = sendMove/);
+  assert.match(js, /canonicalSendMove\(move\)/);
+  assert.doesNotMatch(js, /api\('\/api\/move',\{move\}\)/);
+});
+
+test('optimistic drop cannot bypass state apply and engine reconciliation', () => {
+  assert.doesNotMatch(js, /S=data/);
 });
 
 test('optimistic preview does not intercept pointer input', () => {
@@ -23,6 +33,6 @@ test('optimistic preview does not intercept pointer input', () => {
 });
 
 test('drop latency assets use the next cache version', () => {
-  assert.match(html, /drop-latency\.js\?v=20260909f/);
+  assert.match(html, /drop-latency\.js\?v=20260910r3/);
   assert.match(html, /drop-latency\.css\?v=20260909f/);
 });

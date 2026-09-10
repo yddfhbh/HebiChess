@@ -2,17 +2,17 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const {spawn} = require('node:child_process');
 
 const root = __dirname;
 const PUBLIC_ROOT = path.join(root, 'public') + path.sep;
 const PORT = Number(process.env.PORT || 3400);
-const ENGINE = path.resolve(root, process.env.HEBICHESS_BINARY || '../build/HebiChess');
-const MOVETIME = Number(process.env.DEFAULT_SEARCH_MOVETIME_MS || 1500);
 const DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
 const PRODUCTION = process.env.NODE_ENV === 'production';
+const MOVETIME = Number(process.env.DEFAULT_SEARCH_MOVETIME_MS || 1500);
+const games = new Map();
+const ownedGames = new Map();
 const clients = new Map();
-let game = null, engine = null, engineRootSide = null, serial = Promise.resolve();
+let legacyGame = null;
 
 const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript','.wasm':'application/wasm'};
 const copy = board => board.map(row => row.slice());
@@ -117,89 +117,135 @@ function updateCastles(castles, move, piece, captured) {
   if (move.from === 'a8' || move.to === 'a8') rights = rights.replace('q', ''); if (move.from === 'h8' || move.to === 'h8') rights = rights.replace('k', '');
   return rights || '-';
 }
-function apply(move) {
-  const from = parse(move.from), to = parse(move.to), piece = game.board[from[0]][from[1]], captured = game.board[to[0]][to[1]], side = game.turn;
-  const san = sanFor(game.board, move, side, game.castles, game.ep);
-  game.board = applyToBoard(game.board, move, side); game.castles = updateCastles(game.castles, move, piece, captured);
-  game.ep = Math.abs(from[0] - to[0]) === 2 && piece.toLowerCase() === 'p' ? square((from[0] + to[0]) / 2, from[1]) : '-';
-  game.halfmove = piece.toLowerCase() === 'p' || captured !== '.' || move.enPassant ? 0 : game.halfmove + 1;
-  game.turn = side === 'w' ? 'b' : 'w'; game.moves.push(uci(move)); game.san.push(san); game.lastMove = uci(move);
-  const key = positionKey(game.board, game.turn, game.castles, game.ep); game.positionHistory.push(key); game.repetitions[key] = (game.repetitions[key] || 0) + 1;
-  game.history.push({uci: uci(move), san, board: copy(game.board), turn: game.turn, lastMove: game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null});
+function apply(move, target = legacyGame) {
+  const from = parse(move.from), to = parse(move.to), piece = target.board[from[0]][from[1]], captured = target.board[to[0]][to[1]], side = target.turn;
+  const san = sanFor(target.board, move, side, target.castles, target.ep);
+  target.board = applyToBoard(target.board, move, side); target.castles = updateCastles(target.castles, move, piece, captured);
+  target.ep = Math.abs(from[0] - to[0]) === 2 && piece.toLowerCase() === 'p' ? square((from[0] + to[0]) / 2, from[1]) : '-';
+  target.halfmove = piece.toLowerCase() === 'p' || captured !== '.' || move.enPassant ? 0 : target.halfmove + 1;
+  target.turn = side === 'w' ? 'b' : 'w'; target.moves.push(uci(move)); target.san.push(san); target.lastMove = uci(move);
+  const key = positionKey(target.board, target.turn, target.castles, target.ep); target.positionHistory.push(key); target.repetitions[key] = (target.repetitions[key] || 0) + 1;
+  target.history.push({uci: uci(move), san, board: copy(target.board), turn: target.turn, lastMove: target.lastMove, checkSquare:inCheck(target.board, target.turn) ? square(...findKing(target.board, target.turn)) : null});
+  target.revision++;
 }
-function legal(value) {
+function legal(value, target = legacyGame) {
   const promotion = value[4] ? value[4].toLowerCase() : null;
-  return pseudo(game.board, game.turn, game.castles, game.ep).find(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && (promotion ? move.promotion === promotion : !move.promotion)) || null;
+  return target && pseudo(target.board, target.turn, target.castles, target.ep).find(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && (promotion ? move.promotion === promotion : !move.promotion)) || null;
 }
-function promotionRequired(value) { return value.length === 4 && pseudo(game.board, game.turn, game.castles, game.ep).some(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && move.promotion); }
-function capturedPieces() {
+function promotionRequired(value, target = legacyGame) { return target && value.length === 4 && pseudo(target.board, target.turn, target.castles, target.ep).some(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && move.promotion); }
+function capturedPieces(target = legacyGame) {
   const initial = {P:8,N:2,B:2,R:2,Q:1,p:8,n:2,b:2,r:2,q:1}, current = {};
-  for (const row of game.board) for (const piece of row) if (piece !== '.') current[piece] = (current[piece] || 0) + 1;
+  for (const row of target.board) for (const piece of row) if (piece !== '.') current[piece] = (current[piece] || 0) + 1;
   const taken = {w:[],b:[]}; for (const [piece, amount] of Object.entries(initial)) for (let i = Math.max(0, amount - (current[piece] || 0)); i; i--) taken[piece === piece.toUpperCase() ? 'b' : 'w'].push(piece.toLowerCase());
   return taken;
 }
-function insufficientMaterial(board = game.board) {
+function insufficientMaterial(board = legacyGame.board) {
   const pieces = []; for (const row of board) for (const piece of row) if (piece !== '.' && piece.toLowerCase() !== 'k') pieces.push(piece.toLowerCase());
   return pieces.length === 0 || (pieces.length === 1 && (pieces[0] === 'b' || pieces[0] === 'n'));
 }
-function drawReason() {
-  const key = game.positionHistory[game.positionHistory.length - 1];
-  if (game.repetitions[key] >= 3) return 'threefold repetition';
-  if (game.halfmove >= 100) return '50-move rule';
-  if (insufficientMaterial()) return 'insufficient material';
+function drawReason(target = legacyGame) {
+  const key = target.positionHistory[target.positionHistory.length - 1];
+  if (target.repetitions[key] >= 3) return 'threefold repetition';
+  if (target.halfmove >= 100) return '50-move rule';
+  if (insufficientMaterial(target.board)) return 'insufficient material';
   return null;
 }
-function currentState(sessionId) {
-  if (!game) return {active:false, role:'spectator', isPlayer:false, result:null, termination:null};
-  return {active:true, role:sessionId === game.playerSessionId ? 'player' : 'spectator', isPlayer:sessionId === game.playerSessionId, playerColor:game.playerColor, board:game.board, currentFen:`${boardFen(game.board)} ${game.turn} ${game.castles} ${game.ep} ${game.halfmove} ${Math.floor(game.moves.length / 2) + 1}`, moves:game.moves, san:game.san, history:game.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove, checkSquare:item.checkSquare || null})), turn:game.turn, engineThinking:game.engineThinking, result:game.result, termination:game.termination, lastMove:game.lastMove, checkSquare:inCheck(game.board, game.turn) ? square(...findKing(game.board, game.turn)) : null, depth:game.depth, evaluation:game.evaluation, nodes:game.nodes || 0, capturedPieces:capturedPieces(), legalMoves:pseudo(game.board, game.turn, game.castles, game.ep).map(uci), startedAt:game.startedAt};
+function currentState(sessionId, gameId) {
+  const target = gameId ? games.get(gameId) : (ownedGames.get(sessionId) ? games.get(ownedGames.get(sessionId)) : fallbackGame());
+  if (!target) return {active:false, role:'spectator', isPlayer:false, gameId:gameId || null, result:null, termination:null};
+  const isPlayer = sessionId === target.playerSessionId;
+  return {active:target.active, gameId:target.id, revision:target.revision, role:isPlayer?'player':'spectator', isPlayer, playerColor:target.playerColor, board:target.board, currentFen:`${boardFen(target.board)} ${target.turn} ${target.castles} ${target.ep} ${target.halfmove} ${Math.floor(target.moves.length / 2) + 1}`, moves:target.moves, san:target.san, history:target.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove, checkSquare:item.checkSquare || null})), turn:target.turn, engineThinking:target.engineThinking, result:target.result, termination:target.termination, lastMove:target.lastMove, checkSquare:inCheck(target.board, target.turn) ? square(...findKing(target.board, target.turn)) : null, depth:target.depth, evaluation:target.evaluation, nodes:target.nodes || 0, capturedPieces:capturedPieces(target), legalMoves:pseudo(target.board, target.turn, target.castles, target.ep).map(uci), startedAt:target.startedAt, createdAt:target.createdAt, updatedAt:target.updatedAt};
 }
 function findKing(board, side) { for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return [row, col]; return [0, 0]; }
-function emit(type, data = null) { for (const [response, sessionId] of clients) { const payload = data || currentState(sessionId); response.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } }
-function end(result, termination) {
-  if (!game) return;
-  game.result = result; game.termination = termination; game.engineThinking = false;
-  const endedAt = new Date().toISOString();
-  fs.mkdirSync(path.dirname(DATA), {recursive:true}); let old = []; try { old = JSON.parse(fs.readFileSync(DATA)); } catch {}
-  old.push({startTime:game.startedAt, endTime:endedAt, playerColor:game.playerColor, moves:game.moves, result, termination}); fs.writeFileSync(DATA, JSON.stringify(old, null, 2));
-  emit('gameOver'); if (engine) { engine.kill(); engine = null; } game = null; emit('state');
+function emit(target, type, data = null) { for (const [response, client] of clients) { if (client.gameId !== target.id && !(client.gameId == null && client.sessionId === target.playerSessionId)) continue; const payload = data || currentState(client.sessionId, target.id); response.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } }
+function completedRecord(target, result, termination, endedAt) {
+  return {startTime:target.startedAt, endTime:endedAt, playerColor:target.playerColor, moves:target.moves, result, termination};
 }
-function terminalAfterMove() {
-  const moves = pseudo(game.board, game.turn, game.castles, game.ep);
-  if (!moves.length) return inCheck(game.board, game.turn) ? [game.turn === 'w' ? '0-1' : '1-0', 'checkmate'] : ['1/2-1/2', 'stalemate'];
-  const draw = drawReason(); return draw ? ['1/2-1/2', draw] : null;
-}
-function engineGo() {
-  if (!game || game.result || game.turn === game.playerColor) return;
-  engineRootSide = game.turn;
-  game.engineThinking = true; emit('engineThinking');
-  if (!engine) {
-    engine = spawn(ENGINE, [], {stdio:['pipe','pipe','pipe']});
-    engine.stdout.on('data', data => { for (const line of data.toString().split(/\r?\n/)) { if (line.startsWith('info ')) { const depth = line.match(/\bdepth (\d+)/), score = line.match(/\bscore cp (-?\d+)/), nodes = line.match(/\bnodes (\d+)/); if (game) { game.depth = depth ? Number(depth[1]) : game.depth; game.evaluation = score ? whitePovEvaluation(Number(score[1]), engineRootSide) : game.evaluation; game.nodes = nodes ? Number(nodes[1]) : game.nodes; emit('engineInfo'); } } if (line.startsWith('bestmove ') && game && game.engineThinking) { const move = legal(line.split(/\s+/)[1]); if (move) { apply(move); game.engineThinking = false; emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); } } } });
-    engine.on('error', () => { if (game) { game.engineThinking = false; end('0-1', 'engine-error'); } }); engine.stdin.write('uci\nisready\n');
+function appendCompletedRecord(existing, record) {
+  if (Array.isArray(existing)) return [...existing, record];
+  if (!existing || typeof existing !== 'object') throw new TypeError('unsupported games.json schema');
+  for (const key of ['games', 'completedGames', 'history', 'records']) {
+    if (Array.isArray(existing[key])) return {...existing, [key]:[...existing[key], record]};
+    if (existing[key] && typeof existing[key] === 'object' && !Array.isArray(existing[key])) {
+      return {...existing, [key]:{...existing[key], [record.gameId || record.endTime]:record}};
+    }
   }
-  if (engine && game) engine.stdin.write(`position startpos moves ${game.moves.join(' ')}\ngo movetime ${MOVETIME}\n`);
+  if (existing.gameId || existing.startTime || existing.endTime) return [existing, record];
+  return {...existing, completedGames:[record]};
 }
+function persistCompleted(target, result, termination, endedAt) {
+  fs.mkdirSync(path.dirname(DATA), {recursive:true});
+  let existing = [];
+  try { existing = JSON.parse(fs.readFileSync(DATA, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const record = completedRecord(target, result, termination, endedAt);
+  const persisted = appendCompletedRecord(existing, record);
+  fs.writeFileSync(DATA, JSON.stringify(persisted, null, 2));
+  return record;
+}
+function end(target, result, termination) {
+  if (!target || target.result) return;
+  target.result = result; target.termination = termination; target.engineThinking = false; target.active = false; target.revision++; target.updatedAt = new Date().toISOString();
+  const endedAt = new Date().toISOString();
+  const record = persistCompleted(target, result, termination, endedAt);
+  if (ownedGames.get(target.playerSessionId) === target.id) ownedGames.delete(target.playerSessionId);
+  emit(target, 'gameOver');
+  emit(target, 'state');
+  return record;
+}
+function terminalAfterMove(target = legacyGame) { const moves = pseudo(target.board, target.turn, target.castles, target.ep); if (!moves.length) return inCheck(target.board, target.turn) ? [target.turn === 'w' ? '0-1' : '1-0', 'checkmate'] : ['1/2-1/2', 'stalemate']; const draw = drawReason(target); return draw ? ['1/2-1/2', draw] : null; }
 function start(session, colorChoice) {
-  if (game) return false;
+  const ownedId = ownedGames.get(session), owned = ownedId && games.get(ownedId);
+  if (owned?.active) return false;
+  if (ownedId) ownedGames.delete(session);
   const playerColor = colorChoice === 'random' ? (Math.random() < .5 ? 'w' : 'b') : colorChoice === 'black' ? 'b' : 'w';
   const board = boardStart(), key = positionKey(board, 'w', 'KQkq', '-');
-  game = {active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:false, result:null, termination:null, lastMove:null, depth:0, evaluation:0, nodes:0, startedAt:new Date().toISOString(), repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null, checkSquare:null}]};
-  emit('state'); if (playerColor === 'b') engineGo(); return true;
+  const now = new Date().toISOString(), target = {id:id(), active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:playerColor === 'b', result:null, termination:null, lastMove:null, depth:0, evaluation:0, nodes:0, revision:0, createdAt:now, updatedAt:now, startedAt:now, repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null, checkSquare:null}]};
+  games.set(target.id, target); ownedGames.set(session, target.id); legacyGame = target; emit(target, 'state'); return target;
 }
 function body(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', data => text += data); req.on('end', () => { try { resolve(JSON.parse(text || '{}')); } catch { reject(new Error('invalid json')); } }); }); }
 function json(response, status, data) { response.writeHead(status, {'Content-Type':'application/json'}); response.end(JSON.stringify(data)); }
+function staleState(response, target, receivedRevision) {
+  const data = {error:'stale state', stale:true, gameId:target.id, expectedRevision:target.revision, receivedRevision};
+  if (!PRODUCTION || process.env.HEBICHESS_REVISION_DEBUG === '1') console.warn(`[revision] game=${target.id} expected=${target.revision} received=${receivedRevision}`);
+  return json(response, 409, data);
+}
+function fallbackGame() { const active = [...games.values()].filter(target => target.active); return active.length === 1 ? active[0] : null; }
+function requestedGame(session, requestedId) { return (requestedId && games.get(requestedId)) || games.get(ownedGames.get(session)) || fallbackGame(); }
 function handle(req, response, session) {
   const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/events') { response.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'}); clients.set(response, session); response.write(`event: state\ndata: ${JSON.stringify(currentState(session))}\n\n`); req.on('close', () => clients.delete(response)); return; }
-  if (url.pathname === '/api/state') return json(response, 200, currentState(session));
-  if (req.method === 'POST' && url.pathname === '/api/start') return body(req).then(value => start(session, value.color || 'random') ? json(response, 200, currentState(session)) : json(response, 409, {error:'active game'}));
-  if (req.method === 'POST' && url.pathname === '/api/move') return body(req).then(value => { if (!game) return json(response, 409, {error:'no active game'}); if (session !== game.playerSessionId) return json(response, 403, {error:'spectator'}); if (game.engineThinking || game.turn !== game.playerColor) return json(response, 409, {error:'not your turn'}); const requested = value.move || ''; if (promotionRequired(requested)) return json(response, 422, {error:'promotion required', promotionRequired:true}); const move = legal(requested); if (!move) return json(response, 422, {error:'illegal move'}); apply(move); emit('move'); const terminal = terminalAfterMove(); if (terminal) end(...terminal); else engineGo(); return json(response, 200, currentState(session)); });
-  if (req.method === 'POST' && url.pathname === '/api/resign') { if (!game || session !== game.playerSessionId) return json(response, 403, {error:'not player'}); end(game.playerColor === 'w' ? '0-1' : '1-0', 'resignation'); return json(response, 200, {ok:true}); }
+  if (url.pathname === '/events') { const targetId = url.searchParams.get('gameId') || url.searchParams.get('game'); response.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'}); clients.set(response, {sessionId:session, gameId:targetId}); response.write(`event: state\ndata: ${JSON.stringify(currentState(session, targetId))}\n\n`); req.on('close', () => clients.delete(response)); return; }
+  if (url.pathname === '/api/state') return json(response, 200, currentState(session, url.searchParams.get('gameId') || url.searchParams.get('game')));
+  if (req.method === 'POST' && url.pathname === '/api/start') return body(req).then(value => { const target = start(session, value.color || 'random'); return target ? json(response, 200, currentState(session, target.id)) : json(response, 409, {error:'active game'}); });
+  if (req.method === 'POST' && url.pathname === '/api/move') return body(req).then(value => {
+    const target = requestedGame(session, value.gameId);
+    if (!target) return json(response, 409, {error:'no active game'});
+    if (session !== target.playerSessionId) return json(response, 403, {error:'spectator'});
+    if (target.result || !target.active) return json(response, 409, {error:'game over'});
+    if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision);
+    if (target.engineThinking || target.turn !== target.playerColor) return json(response, 409, {error:'not your turn'});
+    const requested = value.move || ''; if (promotionRequired(requested, target)) return json(response, 422, {error:'promotion required', promotionRequired:true});
+    const move = legal(requested, target); if (!move) return json(response, 422, {error:'illegal move'});
+    apply(move, target); target.engineThinking = false; target.updatedAt = new Date().toISOString(); emit(target, 'move'); const terminal = terminalAfterMove(target);
+    if (terminal) end(target, ...terminal); else { target.engineThinking = true; emit(target, 'engineThinking'); }
+    return json(response, 200, currentState(session, target.id));
+  });
+  if (req.method === 'POST' && url.pathname === '/api/engine-move') return body(req).then(value => {
+    const target = games.get(value.gameId); if (!target) return json(response, 409, {error:'no active game'});
+    if (session !== target.playerSessionId) return json(response, 403, {error:'not owner'});
+    if (target.result || !target.active) return json(response, 409, {error:'game over'});
+    if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision);
+    if (!target.engineThinking || target.turn === target.playerColor) return json(response, 409, {error:'not engine turn'});
+    const move = legal(value.move || '', target); if (!move) return json(response, 422, {error:'illegal engine move'});
+    apply(move, target); target.engineThinking = false; target.updatedAt = new Date().toISOString(); emit(target, 'move'); const terminal = terminalAfterMove(target);
+    if (terminal) end(target, ...terminal); else { target.engineThinking = false; }
+    return json(response, 200, currentState(session, target.id));
+  });
+  if (req.method === 'POST' && url.pathname === '/api/resign') return body(req).then(value => { const target = requestedGame(session, value.gameId); if (!target || session !== target.playerSessionId) return json(response, 403, {error:'not player'}); if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision); end(target, target.playerColor === 'w' ? '0-1' : '1-0', 'resignation'); return json(response, 200, {ok:true, gameId:target.id, revision:target.revision, state:currentState(session, target.id)}); });
   if (!PRODUCTION && url.pathname === '/engine-test') { const filePath = path.join(root, 'public', 'engine-test.html'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files['.html']}); return fs.createReadStream(filePath).pipe(response); }
   if (!PRODUCTION && url.pathname === '/test-data/wasm-parity-100.fen') { const filePath = path.resolve(root, '../tests/data/wasm-parity-100.fen'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':'text/plain; charset=utf-8'}); return fs.createReadStream(filePath).pipe(response); }
   if (url.pathname === '/' || url.pathname.startsWith('/public/')) { const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(8), filePath = path.join(root, 'public', file); if (!filePath.startsWith(PUBLIC_ROOT) || !fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files[path.extname(filePath)] || 'text/plain'}); return fs.createReadStream(filePath).pipe(response); }
   return json(response, 404, {error:'not found'});
 }
-const server = http.createServer((req, response) => { const session = cookie(req, response); serial = serial.then(() => handle(req, response, session)).catch(error => json(response, 500, {error:error.message})); });
+const server = http.createServer((req, response) => { const session = cookie(req, response); Promise.resolve(handle(req, response, session)).catch(error => { if (!response.headersSent) json(response, 500, {error:error.message}); }); });
 if (require.main === module) server.listen(PORT, '127.0.0.1', () => console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
-module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, whitePovEvaluation, setGame(value) { game = value; }, getGame:() => game};
+module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, whitePovEvaluation, appendCompletedRecord, setGame(value) { legacyGame = value; }, getGame:() => legacyGame, getGames:() => games};

@@ -50,29 +50,19 @@
     return HebiChessUi.squareFromClientPoint(clientX, clientY, board.getBoundingClientRect(), flipped);
   }
 
+  const canonicalSendMove = sendMove;
   sendMove = function sendMoveImmediate(move) {
     if (requestInFlight) {
       queuedDropPreview = null;
       return;
     }
-    requestInFlight = true;
-    clearInteraction();
     if (queuedDropPreview && move.startsWith(queuedDropPreview.from + queuedDropPreview.to)) {
       showOptimisticDrop(queuedDropPreview);
     }
     queuedDropPreview = null;
 
-    api('/api/move',{move}).then(data=>{
-      clearOptimisticDrop();
-      S=data;
-      viewIndex=-1;
-      render();
-    }).catch(error=>{
-      clearOptimisticDrop();
-      premove=null;
-      toast(error.message);
-      render();
-    }).finally(()=>{requestInFlight=false});
+    console.debug?.('[Phase2][drop-latency] delegating move to canonical sendMove', {move});
+    canonicalSendMove(move);
   };
 
   const previousReceive = receive;
