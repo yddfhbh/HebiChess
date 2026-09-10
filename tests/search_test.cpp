@@ -307,6 +307,91 @@ void test_aggressive_style_v2() {
             << '\n';
 }
 
+void test_style_v3_sacrifice_metadata() {
+  // Rxg7+ gives up a rook for a knight: the black king can recapture, while
+  // the move checks the king and expands control of its immediate ring.
+  const Board exchange = Board::from_fen(
+      "6k1/5pnp/8/7Q/8/8/8/6RK w - - 0 1").value();
+  const Move rxg7 = legal_move(exchange, "g1g7");
+  require(static_exchange_eval(exchange, rxg7) < 0,
+          "Rxg7+ must be a material-losing exchange sacrifice");
+  SearchLimits exchange_limits;
+  exchange_limits.max_depth = 2;
+  exchange_limits.use_pvs = false;
+  exchange_limits.use_aspiration = false;
+  const SearchResult exchange_result = search(exchange, exchange_limits);
+  const auto exchange_info = std::find_if(exchange_result.root_moves.begin(),
+      exchange_result.root_moves.end(), [&rxg7](const RootMoveInfo& info) {
+        return info.move == rxg7;
+      });
+  require(exchange_info != exchange_result.root_moves.end(), "Rxg7+ must be a root move");
+  require(exchange_info->sacrifice_kind == SacrificeKind::ExchangeSacrifice,
+          "only a losing RxN with concrete attack payoff is an exchange sacrifice");
+  require(exchange_info->sacrifice_candidate && exchange_info->style_tolerance == 50,
+          "exchange sacrifice must receive the capped 50cp dynamic tolerance");
+  require(is_style_score_safe(100, 55, exchange_info->style_tolerance),
+          "a concrete exchange sacrifice 45cp behind can pass the root safety gate");
+  require(is_style_score_safe(100, 50, exchange_info->style_tolerance),
+          "a concrete exchange sacrifice exactly 50cp behind can pass the root safety gate");
+  require(!is_style_score_safe(100, 49, exchange_info->style_tolerance),
+          "a 51cp-behind exchange-sacrifice control case must not pass the root safety gate");
+
+  // Bxh7+ removes a pawn adjacent to the black king, not merely a central pawn.
+  const Board shield = Board::from_fen(
+      "6k1/5ppp/8/8/8/3B4/5PPP/3Q2K1 w - - 0 1").value();
+  const Move bxh7 = legal_move(shield, "d3h7");
+  SearchLimits shield_limits;
+  shield_limits.max_depth = 2;
+  shield_limits.use_pvs = false;
+  shield_limits.use_aspiration = false;
+  const SearchResult shield_result = search(shield, shield_limits);
+  const auto shield_info = std::find_if(shield_result.root_moves.begin(),
+      shield_result.root_moves.end(), [&bxh7](const RootMoveInfo& info) {
+        return info.move == bxh7;
+      });
+  require(shield_info != shield_result.root_moves.end() && shield_info->king_break,
+          "capturing a pawn in the enemy king shield must be marked as a king break");
+  require(shield_info->style_tolerance == 50,
+          "king shield destruction must use the capped 50cp tolerance");
+
+  // Be2-d3 is quiet, but it creates the next-move Bxh7+ motif.  The motif
+  // scan is intentionally root-only; this guards the preparation reward
+  // without putting tactical enumeration in negamax.
+  const Board preparation = Board::from_fen(
+      "6k1/5ppp/8/8/8/8/4BPPP/3Q2K1 w - - 0 1").value();
+  const Move be2d3 = legal_move(preparation, "e2d3");
+  const SearchResult preparation_result = search(preparation, shield_limits);
+  const auto preparation_info = std::find_if(preparation_result.root_moves.begin(),
+      preparation_result.root_moves.end(), [&be2d3](const RootMoveInfo& info) {
+        return info.move == be2d3;
+      });
+  require(preparation_info != preparation_result.root_moves.end() &&
+              preparation_info->sacrifice_preparation,
+          "quiet Be2-d3 must be recognized as Bxh7+ sacrifice preparation");
+  require(preparation_info->style_tolerance == 45,
+          "sacrifice preparation must receive the 45cp dynamic tolerance");
+
+  // A normal opening must not manufacture a king-break exception from a pawn
+  // capture far away from the king.
+  Board central = Board::initial();
+  play(central, "e2e4");
+  play(central, "d7d5");
+  const Move exd5 = legal_move(central, "e4d5");
+  const SearchResult central_result = search(central, 2);
+  const auto central_info = std::find_if(central_result.root_moves.begin(),
+      central_result.root_moves.end(), [&exd5](const RootMoveInfo& info) {
+        return info.move == exd5;
+      });
+  require(central_info != central_result.root_moves.end() && !central_info->king_break,
+          "central pawn capture must not be classified as a king shield break");
+
+  std::cout << "style v3: Rxg7 score=" << exchange_info->search_score
+            << " objective=" << exchange_result.score
+            << " tolerance=" << exchange_info->style_tolerance
+            << " Bxh7 king_break=" << shield_info->king_break
+            << " Be2d3 preparation=" << preparation_info->sacrifice_preparation << '\n';
+}
+
 void test_quiescence_and_special_tactics() {
   {
     Board board = Board::initial();
@@ -496,6 +581,41 @@ void test_qe5_hanging_queen_regression() {
           "timed Qd6-e5+ must fail the aggression threshold proof");
 }
 
+void test_game1_bxa6_replay_and_v32_reserve() {
+  Board board = Board::initial();
+  for (const char* move : {"d2d4", "e7e6", "g1f3", "f7f5", "b1c3", "g8f6",
+                           "c1f4", "d7d5", "c3b5", "b8a6", "f3e5", "c7c6",
+                           "b5c3", "f8d6", "e2e3", "e8g8"}) {
+    play(board, move);
+  }
+  // SAN 9.Bxa6 is the f1 bishop's clear diagonal, not the bishop on f4.
+  const Move bxa6 = legal_move(board, "f1a6");
+  require(bxa6.flag == MoveFlag::Capture, "Game 1 9.Bxa6 must be a legal capture");
+  play(board, "f1a6");
+
+  const Board concrete = Board::from_fen(
+      "r2q1rk1/ppp2pp1/2nppn1p/2b1p1N1/2B1P3/2NPB3/PPP2PPP/R2Q1RK1 w - - 0 9").value();
+  SearchLimits timed;
+  timed.max_depth = 64;
+  timed.has_deadline = true;
+  timed.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  timed.style_verification_reserve_ms = 125;
+  // A network is intentionally not required for this structural regression:
+  // unavailable NNUE still falls back inside evaluate(), while the proof
+  // context must preserve the caller's selected evaluator mode.
+  timed.eval_mode = EvalMode::NNUE;
+  const SearchResult result = search(concrete, timed);
+  require(result.completed_depth > 0, "v3.2 must retain a completed objective iteration");
+  require(result.style_verification_reserve_active,
+          "concrete root candidates must activate the verification reserve");
+  require(result.style_verification_reserve_ms == 125,
+          "explicit benchmark reserve must be preserved");
+  require(result.root_style_shortlist <= 4,
+          "v3.2 must bound root verification shortlist to four moves");
+  require(result.style_verification_eval_mode == EvalMode::NNUE,
+          "style threshold verification must inherit limits.eval_mode");
+}
+
 }  // namespace
 
 int main() {
@@ -505,8 +625,10 @@ int main() {
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();
   test_aggressive_style_v2();
+  test_style_v3_sacrifice_metadata();
   test_quiescence_and_special_tactics();
   test_pruning_flags_and_tactics();
   test_pvs_and_aspiration_equivalence();
   test_qe5_hanging_queen_regression();
+  test_game1_bxa6_replay_and_v32_reserve();
 }

@@ -19,6 +19,28 @@ constexpr int MAX_SEARCH_PLY = 128;
 constexpr int MAX_HISTORY = 32768;
 constexpr int ASPIRATION_INITIAL_WINDOW_CP = 35;
 
+struct StyleProfile {
+  SearchResult& result;
+};
+
+thread_local StyleProfile* active_style_profile = nullptr;
+
+class StyleTimer {
+ public:
+  explicit StyleTimer(std::uint64_t SearchResult::*field) : field_(field) {
+    if (active_style_profile != nullptr) started_ = std::chrono::steady_clock::now();
+  }
+  ~StyleTimer() {
+    if (active_style_profile != nullptr)
+      active_style_profile->result.*field_ += static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - started_).count());
+  }
+ private:
+  std::uint64_t SearchResult::*field_;
+  std::chrono::steady_clock::time_point started_{};
+};
+
 struct SearchHeuristics {
   std::array<std::array<Move, 2>, MAX_SEARCH_PLY> killers{};
   std::array<std::array<std::array<int, Square::kSquareCount>,
@@ -84,11 +106,17 @@ struct SearchContext {
   bool use_lmr{false};
   bool use_pvs{false};
   EvalMode eval_mode{EvalMode::HCE};
+  // The main search amortizes the clock read across a small node batch.
+  // Root style proofs use a separate, strict policy below.
+  std::uint64_t deadline_check_interval_nodes{1};
+  std::uint64_t deadline_check_calls{0};
 
   bool should_stop() {
     if (stopped) return true;
-    if ((nodes & 1023U) != 0) return false;
-    if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
+    if (!has_deadline) return false;
+    if (deadline_check_interval_nodes > 1 &&
+        ++deadline_check_calls % deadline_check_interval_nodes != 0) return false;
+    if (std::chrono::steady_clock::now() >= deadline) {
       stopped = true;
     }
     return stopped;
@@ -96,6 +124,7 @@ struct SearchContext {
 };
 
 bool gives_check(Board& board, const Move& move) noexcept {
+  if (active_style_profile != nullptr) ++active_style_profile->result.style_gives_check_calls;
   const Color mover = board.side_to_move();
   const UndoState undo = board.make_move(move);
   const Square king = board.find_king(board.side_to_move());
@@ -280,13 +309,35 @@ struct StyleAttackState {
   int congregation{0};
   int open_lines{0};
   int checking_motifs{0};
+  int sacrifice_motifs{0};
   int threats{0};
+  // Pawns directly in front of the enemy king.  This deliberately only looks
+  // at the king's three neighbouring files, so a central pawn trade cannot be
+  // mistaken for a king break.
+  int king_shield{0};
 };
 
-StyleAttackState style_attack_state(const Board& board, Color attacker) {
+StyleAttackState style_attack_state(const Board& board, Color attacker, bool before_root = false) {
+  StyleTimer timer(before_root ? &SearchResult::style_before_attack_time_us
+                               : &SearchResult::style_after_attack_time_us);
   StyleAttackState state;
   const Square king = board.find_king(opposite(attacker));
   if (!king.is_valid()) return state;
+
+  {
+    StyleTimer shield_timer(&SearchResult::style_king_shield_time_us);
+    const Color defender = opposite(attacker);
+    const int pawn_step = defender == Color::White ? 1 : -1;
+    for (int file_delta = -1; file_delta <= 1; ++file_delta) {
+      const int file = static_cast<int>(king.file()) + file_delta;
+      if (file < 0 || file >= 8) continue;
+      for (int distance = 1; distance <= 2; ++distance) {
+        const Square shield = at(file, static_cast<int>(king.rank()) + pawn_step * distance);
+        if (shield.is_valid() &&
+            board.piece_at(shield) == Piece{PieceType::Pawn, defender}) ++state.king_shield;
+      }
+    }
+  }
 
   // This deliberately does not call evaluate_king_attack(): style must not
   // count the same immediate HCE king-attack signal twice.
@@ -342,6 +393,7 @@ StyleAttackState style_attack_state(const Board& board, Color attacker) {
 
   Board motif_board = board;
   motif_board.set_side_to_move(attacker);
+  if (active_style_profile != nullptr) ++active_style_profile->result.style_legal_move_generations;
   for (const Move& candidate : generate_legal_moves(motif_board)) {
     if (gives_check(motif_board, candidate) && ++state.checking_motifs == 4) break;
   }
@@ -359,6 +411,38 @@ int attack_reward(const StyleAttackState& before, const StyleAttackState& after,
   return (check ? 8 : 0) + ring * 4 + participants * 4 + motifs * 3 + lines * 3 + threats / 2;
 }
 
+void populate_attack_breakdown(RootMoveInfo& info, const StyleAttackState& before,
+                               const StyleAttackState& after, bool check,
+                               int escape_delta) noexcept {
+  info.attack_check_reward = check ? 8 : 0;
+  info.attack_ring_reward = std::clamp(after.ring_control - before.ring_control, 0, 4) * 4;
+  info.attack_participant_reward =
+      std::clamp(after.ring_participants - before.ring_participants, 0, 3) * 4;
+  info.attack_motif_reward =
+      std::clamp(after.checking_motifs - before.checking_motifs, 0, 3) * 3;
+  info.attack_line_reward = std::clamp(after.open_lines - before.open_lines, 0, 3) * 3;
+  info.attack_threat_reward =
+      std::max(0, after.threats - before.threats) / 2;
+  info.attack_escape_reward = std::clamp(-escape_delta, 0, 3) * 2;
+  info.shield_pawns_removed = std::max(0, before.king_shield - after.king_shield);
+  info.opened_king_lines = std::max(0, after.open_lines - before.open_lines);
+}
+
+int concrete_attack_signals(const StyleAttackState& before,
+                            const StyleAttackState& after, bool check,
+                            int escape_delta) noexcept {
+  int signals = 0;
+  signals += check;
+  signals += escape_delta < 0;
+  signals += after.ring_control > before.ring_control;
+  signals += after.ring_participants > before.ring_participants;
+  signals += after.open_lines > before.open_lines;
+  signals += after.king_shield < before.king_shield;
+  signals += after.checking_motifs > before.checking_motifs;
+  signals += after.threats > before.threats;
+  return signals;
+}
+
 bool destination_can_be_captured(const Board& after, const Move& move, Color mover) {
   Board reply = after;
   reply.set_side_to_move(opposite(mover));
@@ -368,17 +452,197 @@ bool destination_can_be_captured(const Board& after, const Move& move, Color mov
   return false;
 }
 
+SacrificeKind classify_sacrifice(const Board& before, const Move& move,
+                                 const Board& after,
+                                 const StyleAttackState& before_attack,
+                                 const StyleAttackState& after_attack,
+                                 bool check, int escape_delta) noexcept {
+  if (active_style_profile != nullptr) ++active_style_profile->result.style_sacrifice_calculations;
+  const Piece offered = before.piece_at(move.from);
+  const int signals = concrete_attack_signals(before_attack, after_attack, check, escape_delta);
+  if (is_capture(move)) {
+    if (active_style_profile != nullptr) ++active_style_profile->result.style_see_calls;
+    const int see = static_exchange_eval(before, move);
+    if (see >= 0 || signals < 2) return SacrificeKind::None;
+    const Piece captured = before.piece_at(move.to);
+    if (offered.type == PieceType::Rook &&
+        (captured.type == PieceType::Knight || captured.type == PieceType::Bishop)) {
+      return SacrificeKind::ExchangeSacrifice;
+    }
+    if (offered.type == PieceType::Queen) return SacrificeKind::MajorSacrifice;
+    return SacrificeKind::MinorOrPawnSacrifice;
+  }
+  if (is_quiet_move(move) && offered.type != PieceType::Pawn &&
+      offered.type != PieceType::King && piece_value(offered.type) >= 300 &&
+      destination_can_be_captured(after, move, before.side_to_move()) && signals >= 2 &&
+      // A loose queen checking move is not a sacrifice.  Require an actual
+      // shield break or opened king line before it can receive this label.
+      (offered.type != PieceType::Queen ||
+       after_attack.king_shield < before_attack.king_shield ||
+       after_attack.open_lines > before_attack.open_lines)) {
+    return offered.type == PieceType::Queen ? SacrificeKind::MajorSacrifice
+                                             : SacrificeKind::MinorOrPawnSacrifice;
+  }
+  return SacrificeKind::None;
+}
+
+int count_sacrifice_motifs(const Board& board, Color attacker) {
+  StyleTimer motif_timer(&SearchResult::style_sacrifice_motifs_time_us);
+  Board motif_board = board;
+  motif_board.set_side_to_move(attacker);
+  const StyleAttackState before = style_attack_state(motif_board, attacker);
+  int motifs = 0;
+  if (active_style_profile != nullptr) ++active_style_profile->result.style_legal_move_generations;
+  for (const Move& move : generate_legal_moves(motif_board)) {
+    Board after = motif_board;
+    if (active_style_profile != nullptr) ++active_style_profile->result.style_child_boards;
+    after.make_move(move);
+    Board check_probe = motif_board;
+    const bool check = gives_check(check_probe, move);
+    const StyleAttackState after_attack = style_attack_state(after, attacker);
+    const int escapes = count_king_escapes(after, opposite(attacker)) -
+                        count_king_escapes(motif_board, opposite(attacker));
+    const SacrificeKind kind = classify_sacrifice(motif_board, move, after, before,
+                                                  after_attack, check, escapes);
+    // Preparation is only for a *next-move concrete capture* sacrifice.  Do
+    // not let a quiet loose piece or a generic ring-control move manufacture
+    // a motif; that was the source of early-queen false positives.
+    if (is_capture(move) && active_style_profile != nullptr) ++active_style_profile->result.style_see_calls;
+    const bool concrete_capture = is_capture(move) && static_exchange_eval(motif_board, move) < 0 &&
+        (check || after_attack.king_shield < before.king_shield ||
+         after_attack.open_lines > before.open_lines ||
+         kind == SacrificeKind::ExchangeSacrifice);
+    if (kind != SacrificeKind::None && concrete_capture && ++motifs == 4) break;
+  }
+  return motifs;
+}
+
+struct RootStyleContext {
+  const Board& before;
+  Color attacker;
+  StyleAttackState before_attack;
+  int phase;
+  int undeveloped_minors;
+  Square own_king;
+  int before_sacrifice_motifs{-1};
+};
+
+RootStyleContext make_root_style_context(const Board& before) {
+  const Color attacker = before.side_to_move();
+  return {before, attacker, style_attack_state(before, attacker, true), game_phase(before),
+          undeveloped_minor_count(before, attacker), before.find_king(attacker)};
+}
+
+int style_score_from_metadata(const RootStyleContext& context, const Move& move,
+                              const Board& after, const StyleAttackState& after_attack,
+                              bool check, int escape_delta, bool sacrifice_candidate) noexcept {
+  const Board& before = context.before;
+  const StyleAttackState& before_attack = context.before_attack;
+  const int reward = attack_reward(before_attack, after_attack, check);
+  const int congregation = std::clamp(after_attack.congregation - before_attack.congregation, 0, 4);
+  const int escapes = std::clamp(-escape_delta, 0, 3);
+  int style = reward + congregation * 2 + escapes * 2 + (move.is_promotion() ? 8 : 0);
+  const Piece moving = before.piece_at(move.from);
+  const bool opening = context.phase >= 18;
+  if (opening && is_quiet_move(move) && moving.type == PieceType::Pawn &&
+      (move.from.file() == 0 || move.from.file() == 7)) style -= 6;
+  if (opening && is_quiet_move(move) && moving.type == PieceType::Pawn &&
+      (move.from.file() == 5 || move.from.file() == 6) && context.own_king.is_valid() &&
+      context.own_king.file() >= 4 && after_attack.ring_control <= before_attack.ring_control &&
+      after_attack.checking_motifs <= before_attack.checking_motifs) style -= 6;
+  if (is_quiet_move(move) && moving.type != PieceType::Pawn) {
+    const int ring_delta = after_attack.ring_control - before_attack.ring_control;
+    const int participant_delta = after_attack.ring_participants - before_attack.ring_participants;
+    const int congregation_delta = after_attack.congregation - before_attack.congregation;
+    const int motif_delta = after_attack.checking_motifs - before_attack.checking_motifs;
+    const int line_delta = after_attack.open_lines - before_attack.open_lines;
+    const int threat_delta = after_attack.threats - before_attack.threats;
+    int preparation = (ring_delta > 0) + (participant_delta > 0) + (congregation_delta > 0) +
+                      (motif_delta > 0) + (line_delta > 0) + (threat_delta > 0);
+    int bonus = preparation >= 2 ? std::min(10, preparation * 3) : 0;
+    if (moving.type == PieceType::Queen) {
+      if (context.undeveloped_minors >= 2) {
+        const int concrete = (ring_delta >= 2) + (participant_delta >= 1) +
+            (line_delta >= 1) + (threat_delta >= 4) + (motif_delta >= 2);
+        if (concrete < 2) bonus = std::min(bonus, 3);
+        style -= std::min(12, context.undeveloped_minors * 3);
+      }
+      if (preparation < 2) style -= 4;
+    }
+    style += bonus;
+  }
+  if (sacrifice_candidate) style += check ? 8 : 5;
+  return style;
+}
+
+void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
+                                  const Board& after, bool use_style_v3,
+                                  bool calculate_sacrifice_motifs) {
+  const Board& before = context.before;
+  const Color attacker = context.attacker;
+  Board check_probe = before;
+  const bool check = gives_check(check_probe, info.move);
+  StyleAttackState after_attack = style_attack_state(after, attacker);
+  const int escape_delta = count_king_escapes(after, opposite(attacker)) -
+                           count_king_escapes(before, opposite(attacker));
+  populate_attack_breakdown(info, context.before_attack, after_attack, check, escape_delta);
+  info.sacrifice_kind = classify_sacrifice(before, info.move, after, context.before_attack,
+                                           after_attack, check, escape_delta);
+  info.sacrifice_candidate = info.sacrifice_kind != SacrificeKind::None;
+  info.style_score = style_score_from_metadata(context, info.move, after, after_attack,
+                                                check, escape_delta, info.sacrifice_candidate);
+  info.king_break = after_attack.king_shield < context.before_attack.king_shield ||
+                    after_attack.open_lines > context.before_attack.open_lines;
+  info.style_tolerance = AGGRESSION_TOLERANCE_CP;
+  if (use_style_v3 && calculate_sacrifice_motifs && is_quiet_move(info.move)) {
+    if (context.before_sacrifice_motifs < 0)
+      context.before_sacrifice_motifs = count_sacrifice_motifs(before, attacker);
+    after_attack.sacrifice_motifs = count_sacrifice_motifs(after, attacker);
+    info.sacrifice_motif_delta = after_attack.sacrifice_motifs - context.before_sacrifice_motifs;
+    info.sacrifice_preparation = after_attack.sacrifice_motifs > context.before_sacrifice_motifs;
+  }
+  if (!use_style_v3) return;
+  if (info.sacrifice_preparation) {
+    info.style_tolerance = std::max(info.style_tolerance, 45);
+    const int bonus = std::min(28, info.sacrifice_motif_delta * 14);
+    info.style_score += bonus;
+    info.concrete_attack_bonus += bonus;
+  }
+  if (info.king_break) {
+    info.style_tolerance = std::max(info.style_tolerance, 50);
+    const int shield_break = std::max(0, context.before_attack.king_shield - after_attack.king_shield);
+    const int new_line = std::max(0, after_attack.open_lines - context.before_attack.open_lines);
+    const int bonus = std::min(42, shield_break * 22 + new_line * 12 +
+                               (shield_break > 0 && new_line > 0 ? 8 : 0));
+    info.style_score += bonus;
+    info.concrete_attack_bonus += bonus;
+  }
+  if (info.sacrifice_candidate) {
+    info.style_tolerance = std::max(info.style_tolerance, 50);
+    const bool negative_see = is_capture(info.move) && static_exchange_eval(before, info.move) < 0;
+    const int bonus = (negative_see && check) ? 26 :
+                      (negative_see && info.king_break) ? 24 : (check ? 14 : 9);
+    info.style_score += bonus;
+    info.concrete_attack_bonus += bonus;
+  }
+  if (info.sacrifice_kind == SacrificeKind::ExchangeSacrifice) {
+    info.style_tolerance = std::max(info.style_tolerance, 50);
+    // A losing RxN/RxB is difficult to misclassify: require both negative SEE
+    // and independent king-attack signals above.  Give it enough weight to
+    // compete with an otherwise quiet objective move inside the hard 50cp cap.
+    info.style_score += 34;
+    info.concrete_attack_bonus += 34;
+  }
+  info.style_tolerance = std::min(50, info.style_tolerance);
+}
+
 }  // namespace
 
-int evaluate_move_style(const Board& before, const Move& move,
-                        const Board& after) noexcept {
+int evaluate_move_style_from_analysis(const Board& before, const Move& move,
+                                     const Board& after, const StyleAttackState& before_attack,
+                                     const StyleAttackState& after_attack, bool check,
+                                     int escape_delta, bool sacrifice_candidate) noexcept {
   const Color mover = before.side_to_move();
-  Board probe = before;
-  const bool check = gives_check(probe, move);
-  const StyleAttackState before_attack = style_attack_state(before, mover);
-  const StyleAttackState after_attack = style_attack_state(after, mover);
-  const int escape_delta = count_king_escapes(after, opposite(mover)) -
-                           count_king_escapes(before, opposite(mover));
   const int reward = attack_reward(before_attack, after_attack, check);
   const int congregation = std::clamp(after_attack.congregation - before_attack.congregation, 0, 4);
   const int escapes = std::clamp(-escape_delta, 0, 3);
@@ -432,8 +696,23 @@ int evaluate_move_style(const Board& before, const Move& move,
     }
     style += preparation_bonus;
   }
-  if (is_sacrifice_candidate(before, move, after)) style += check ? 8 : 5;
+  if (sacrifice_candidate) style += check ? 8 : 5;
   return style;
+}
+
+int evaluate_move_style(const Board& before, const Move& move,
+                        const Board& after) noexcept {
+  const Color mover = before.side_to_move();
+  Board probe = before;
+  const bool check = gives_check(probe, move);
+  const StyleAttackState before_attack = style_attack_state(before, mover, true);
+  const StyleAttackState after_attack = style_attack_state(after, mover);
+  const int escape_delta = count_king_escapes(after, opposite(mover)) -
+                           count_king_escapes(before, opposite(mover));
+  const bool sacrifice = classify_sacrifice(before, move, after, before_attack,
+                                             after_attack, check, escape_delta) != SacrificeKind::None;
+  return evaluate_move_style_from_analysis(before, move, after, before_attack, after_attack,
+                                           check, escape_delta, sacrifice);
 }
 
 bool is_sacrifice_candidate(const Board& before, const Move& move,
@@ -443,26 +722,16 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
   const bool check = gives_check(probe, move);
   const StyleAttackState before_attack = style_attack_state(before, mover);
   const StyleAttackState after_attack = style_attack_state(after, mover);
-  const int reward = attack_reward(before_attack, after_attack, check);
   const int escape_delta = count_king_escapes(after, opposite(mover)) -
                            count_king_escapes(before, opposite(mover));
-  if (is_capture(move)) {
-    // Captures are sacrifices only when SEE says the offered exchange loses
-    // material and the move produces a concrete king-side payoff.
-    return static_exchange_eval(before, move) < -50 &&
-           (check || reward >= 8 || escape_delta <= -2);
-  }
-  const Piece offered = before.piece_at(move.from);
-  if (is_quiet_move(move) && offered.type != PieceType::Pawn &&
-      offered.type != PieceType::King && piece_value(offered.type) >= 300) {
-    // Quiet offers need both a legal opposing capture and a larger, concrete
-    // attack gain.  This intentionally excludes merely loose developing moves.
-    return destination_can_be_captured(after, move, mover) &&
-           (check || reward >= 12 ||
-            (after_attack.ring_control - before_attack.ring_control >= 2 &&
-             after_attack.checking_motifs > before_attack.checking_motifs));
-  }
-  return false;
+  return classify_sacrifice(before, move, after, before_attack, after_attack,
+                            check, escape_delta) != SacrificeKind::None;
+}
+
+bool is_style_score_safe(int objective_score, int candidate_score,
+                         int tolerance) noexcept {
+  return candidate_score >= objective_score - std::clamp(tolerance,
+                                                          AGGRESSION_TOLERANCE_CP, 50);
 }
 
 int quiescence_impl(Board& board, int alpha, int beta, int ply,
@@ -704,6 +973,7 @@ SearchResult search(const Board& position, int max_depth) {
 SearchResult search(const Board& position, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration) {
   SearchResult result;
+  const auto search_started = std::chrono::steady_clock::now();
   if (limits.max_depth < 1) return result;
   Board root = position;
   TranspositionTable& tt = transposition_table();
@@ -714,33 +984,37 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
-                          limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
+                          limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
+                          limits.deadline_check_interval_nodes};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
   result.best_move = legal.front();
-  // Root moves do not change between iterations.  Style is position-only, so
-  // calculate it once; the more expensive sacrifice/SEE metadata remains lazy.
-  std::vector<RootMoveInfo> root_style_cache;
-  root_style_cache.reserve(legal.size());
-  for (const Move& move : legal) {
-    Board child = root;
-    child.make_move(move);
-    RootMoveInfo cached;
-    cached.move = move;
-    cached.style_score = evaluate_move_style(position, move, child);
-    root_style_cache.push_back(cached);
-    ++result.style_evaluations;
-  }
-  const auto cached_style = [&root_style_cache](const Move& move) {
-    const auto it = std::find_if(root_style_cache.begin(), root_style_cache.end(),
-        [&move](const RootMoveInfo& info) { return info.move == move; });
-    return it->style_score;
-  };
-  // Keep a small, bounded slice of a timed search for the one final root
-  // safety proof.  UCI already has its own transport margin above this.
+  // Reserve scheduling deliberately uses only move fields and king proximity.
+  // Full attack/motif analysis belongs after the objective root scores exist.
+  const Color root_mover = root.side_to_move();
+  const Square enemy_king = root.find_king(opposite(root_mover));
+  const bool has_concrete_style_candidate = limits.use_style_v3 && std::any_of(
+      legal.begin(), legal.end(), [&](const Move& move) {
+        const Piece moving = root.piece_at(move.from);
+        const Piece captured = root.piece_at(move.to);
+        const int proximity = enemy_king.is_valid() ?
+            chebyshev_distance(move.to, enemy_king) : 8;
+        return is_capture(move) || move.is_promotion() ||
+               (moving.type != PieceType::Pawn && moving.type != PieceType::King &&
+                (proximity <= 3 || !captured.is_empty()));
+      });
+  const int requested_reserve = limits.style_verification_reserve_ms >= 0
+      ? limits.style_verification_reserve_ms : 150;
+  // Do not take a large objective-search slice in ordinary positions.  A
+  // small guard still prevents a deadline edge from exposing partial work.
+  const int reserve_ms = limits.has_deadline
+      ? (has_concrete_style_candidate ? requested_reserve : 10) : 0;
+  result.style_verification_reserve_active = limits.has_deadline &&
+      has_concrete_style_candidate && reserve_ms > 0;
+  result.style_verification_reserve_ms = static_cast<std::uint64_t>(reserve_ms);
   const auto objective_deadline = limits.has_deadline
-      ? limits.deadline - std::chrono::milliseconds(10) : limits.deadline;
+      ? limits.deadline - std::chrono::milliseconds(reserve_ms) : limits.deadline;
   std::vector<RootMoveInfo> previous_root;
   std::vector<RootMoveInfo> last_completed;
   int last_objective_best = -MATE_SCORE;
@@ -764,7 +1038,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                             limits.use_tt ? &tt : nullptr, &result,
                             limits.use_see_pruning,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
-                            limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
+                            limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
+                            limits.deadline_check_interval_nodes};
       current.clear();
       best_score = -MATE_SCORE;
       std::optional<Move> root_tt_move;
@@ -849,7 +1124,6 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       }
     }
     if (objective_move == current.end()) break;
-    for (RootMoveInfo& info : current) info.style_score = cached_style(info.move);
     const Move objective_best_move = objective_move->move;
     last_completed = std::move(current);
     last_objective_best = objective_best;
@@ -862,13 +1136,50 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     legal = generate_legal_moves(root);
   }
   if (last_completed.empty()) {
+    result.objective_time_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - search_started).count());
     result.main_nodes = result.nodes - result.qnodes;
     return result;
   }
+  result.objective_time_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - search_started).count());
   auto& current = last_completed;
   const int depth = result.completed_depth;
   const int objective_best = last_objective_best;
-  const int threshold = objective_best - AGGRESSION_TOLERANCE_CP;
+  // A move farther than the hard 50cp cap can never be selected by v3.2.
+  // Analyse only final exact eligible root moves, sharing immutable before
+  // state and a single child board per candidate.
+  const auto metadata_started = std::chrono::steady_clock::now();
+  StyleProfile profile{result};
+  StyleProfile* const previous_profile = active_style_profile;
+  if (limits.profile_style_metadata) active_style_profile = &profile;
+  RootStyleContext style_context = make_root_style_context(position);
+  for (RootMoveInfo& info : current) {
+    const int loss = objective_best - info.search_score;
+    const int maximum_loss = limits.use_style_v3 ? 50 : AGGRESSION_TOLERANCE_CP;
+    const Piece moving = root.piece_at(info.move.from);
+    const int proximity = enemy_king.is_valid() ? chebyshev_distance(info.move.to, enemy_king) : 8;
+    const bool cheap_concrete_move = is_capture(info.move) || info.move.is_promotion() ||
+        moving.type == PieceType::Queen ||
+        (moving.type != PieceType::Pawn && moving.type != PieceType::King && proximity <= 3);
+    // Preserve diagnostics for obviously concrete captures even when an
+    // objective loss makes them ineligible for selection.  Quiet motif work
+    // remains strictly capped by the 50cp selection bound.
+    if ((info.bound != ScoreBound::Exact || loss > maximum_loss) &&
+        !(limits.use_style_v3 && cheap_concrete_move)) continue;
+    Board child = root;
+    if (active_style_profile != nullptr) ++active_style_profile->result.style_child_boards;
+    child.make_move(info.move);
+    populate_root_style_metadata(style_context, info, child, limits.use_style_v3,
+                                 limits.use_style_v3 && loss <= 50);
+    ++result.style_evaluations;
+  }
+  active_style_profile = previous_profile;
+  result.root_style_metadata_time_us += static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - metadata_started).count());
   const Square root_king = root.find_king(root.side_to_move());
   const bool root_in_check = root_king.is_valid() &&
       root.is_square_attacked(root_king, opposite(root.side_to_move()));
@@ -893,7 +1204,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   });
   for (RootMoveInfo& info : current) {
     if (info.bound == ScoreBound::Exact) {
-      info.style_safe = info.search_score >= threshold;
+      info.style_safe = is_style_score_safe(objective_best, info.search_score,
+                                             info.style_tolerance);
       if (info.style_safe) ++result.root_style_verified;
       else ++result.root_style_rejected;
     }
@@ -918,6 +1230,12 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   for (RootMoveInfo& info : current) {
     if (&info == &*objective_move || info.bound == ScoreBound::Exact) continue;
     ++result.root_style_candidates;
+    if (limits.use_style_v3 &&
+        !(info.sacrifice_candidate || info.king_break || info.sacrifice_preparation ||
+          info.style_tolerance > AGGRESSION_TOLERANCE_CP)) {
+      ++result.root_style_prefilter_skips;
+      continue;
+    }
     const bool forced_evasion = is_capture_evasion(info);
     if (!forced_evasion && (info.style_score < objective_move->style_score ||
         (info.style_score == objective_move->style_score &&
@@ -928,7 +1246,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       ++result.root_style_prefilter_skips;
       continue;
     }
-    if (info.bound == ScoreBound::Upper && info.search_score < threshold) {
+    if (info.bound == ScoreBound::Upper &&
+        !is_style_score_safe(objective_best, info.search_score, info.style_tolerance)) {
       ++result.root_style_rejected;
       continue;
     }
@@ -937,11 +1256,18 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   std::sort(candidates.begin(), candidates.end(), [](const RootMoveInfo* a, const RootMoveInfo* b) {
     return a->style_score > b->style_score;
   });
+  constexpr std::size_t kMaxStyleVerificationCandidates = 4;
+  if (candidates.size() > kMaxStyleVerificationCandidates)
+    candidates.resize(kMaxStyleVerificationCandidates);
+  result.root_style_shortlist = candidates.size();
+  const auto verification_started = std::chrono::steady_clock::now();
   SearchContext verification{result.nodes, result.qnodes, limits.has_deadline,
                              limits.deadline, false, limits.use_tt ? &tt : nullptr, &result,
                              limits.use_see_pruning,
                              limits.use_killer_history ? &search_heuristics() : nullptr,
-                             limits.use_null_move, limits.use_lmr, limits.use_pvs};
+                             limits.use_null_move, limits.use_lmr, limits.use_pvs,
+                             limits.eval_mode, 1};
+  result.style_verification_eval_mode = verification.eval_mode;
   for (RootMoveInfo* candidate : candidates) {
     if (candidate->style_score < chosen->style_score) {
       ++result.root_style_prefilter_skips;
@@ -949,14 +1275,24 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     }
     ++result.root_style_verification_searches;
     const std::uint64_t before_verification = result.nodes;
+    const auto candidate_started = std::chrono::steady_clock::now();
     const UndoState undo = root.make_move(candidate->move);
+    const int threshold = objective_best - candidate->style_tolerance;
     const int proof = -negamax_impl(root, depth - 1, -threshold, -threshold + 1, 1, verification);
     root.unmake_move(candidate->move, undo);
+    const auto candidate_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - candidate_started).count());
+    result.style_verification_max_ms = std::max(result.style_verification_max_ms, candidate_ms);
     result.root_style_verification_nodes += result.nodes - before_verification;
-    if (verification.stopped) break;
+    if (verification.stopped) {
+      ++result.root_style_verification_timeouts;
+      break;
+    }
     candidate->style_safe = proof >= threshold;
     if (candidate->style_safe) {
       ++result.root_style_verified;
+      ++result.root_style_verification_proven;
       if (candidate->style_score > chosen->style_score ||
           (candidate->style_score == chosen->style_score &&
            (candidate->search_score > chosen->search_score ||
@@ -968,13 +1304,12 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       }
     } else ++result.root_style_rejected;
   }
+  result.style_verification_time_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - verification_started).count());
   if (!verification.stopped && !mate_found) {
-    for (RootMoveInfo& info : current) if (info.style_safe) {
-      Board child = root;
-      child.make_move(info.move);
-      info.sacrifice_candidate = is_sacrifice_candidate(position, info.move, child);
+    for (RootMoveInfo& info : current) if (info.style_safe)
       info.see_score = move_see(position, info.move, &result);
-    }
     if (root_in_check) {
       for (RootMoveInfo& info : current) {
         if (info.style_safe && is_capture_evasion(info)) {
@@ -983,11 +1318,12 @@ SearchResult search(const Board& position, const SearchLimits& limits,
         }
       }
     }
-    result.best_move = chosen->move;
-  } else {
-    // A partial final proof never exposes an unverified aggressive move.
-    result.best_move = objective_move->move;
   }
+  // `chosen` begins at the completed objective best and can only be replaced
+  // by an exact completed score or a finished threshold proof.  Thus a timed
+  // proof may use the safe completed subset without ever treating an
+  // unfinished candidate as style-safe.
+  result.best_move = chosen->move;
   result.score = objective_best;
   result.root_moves = std::move(current);
   result.main_nodes = result.nodes - result.qnodes;
