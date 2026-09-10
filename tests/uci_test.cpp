@@ -64,19 +64,19 @@ void test_eval_breakdown_uci_output() {
   engine.send_command("position fen 4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1");
   engine.send_command("eval");
   assert((output == std::vector<std::string>{
-      "info string eval material 900",
-      "info string eval pst -4",
-      "info string eval mobility 44",
-      "info string eval pawns 0",
-      "info string eval passed_pawns 0",
-      "info string eval bishop_pair 0",
-      "info string eval rook_activity 0",
-      "info string eval king_safety 5",
-      "info string eval king_attack 1",
-      "info string eval space 9",
-      "info string eval threats 0",
-      "info string eval initiative 10",
-      "info string eval total 965"}));
+      "material 900",
+      "pst -4",
+      "mobility 44",
+      "pawns 0",
+      "passed_pawns 0",
+      "bishop_pair 0",
+      "rook_activity 0",
+      "king_safety 5",
+      "king_attack 1",
+      "space 9",
+      "threats 0",
+      "initiative 10",
+      "total 965"}));
 }
 }
 
