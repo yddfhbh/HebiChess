@@ -6,6 +6,7 @@
 
 #include "chess/eval.hpp"
 #include "chess/search.hpp"
+#include "chess/see.hpp"
 
 using namespace hebichess;
 
@@ -18,6 +19,26 @@ Square sq(char file, int rank) {
 
 bool has_move(const SearchResult& result, Square from, Square to) {
   return result.best_move.from == from && result.best_move.to == to;
+}
+
+Move legal_move(const Board& board, const char* uci) {
+  for (const Move& move : generate_legal_moves(board)) {
+    if (move.from == sq(uci[0], uci[1] - '0') && move.to == sq(uci[2], uci[3] - '0'))
+      return move;
+  }
+  assert(false && "test move must be legal");
+  return {};
+}
+
+int style_for(Board& board, const char* uci) {
+  const Move move = legal_move(board, uci);
+  const std::string before = board.to_fen();
+  const Board position = board;
+  const UndoState undo = board.make_move(move);
+  const int style = evaluate_move_style(position, move, board);
+  board.unmake_move(move, undo);
+  assert(board.to_fen() == before);
+  return style;
 }
 
 void require(bool condition, const char* message) {
@@ -207,6 +228,52 @@ void test_style_and_safety_metadata() {
   assert(AGGRESSION_TOLERANCE_CP == 35);
 }
 
+void test_aggressive_style_v2() {
+  // Development is a useful first attacking step; a/h pawn moves are not.
+  Board opening = Board::initial();
+  const int development = style_for(opening, "g1f3");
+  const int flank_pawn = style_for(opening, "a2a3");
+  require(development > flank_pawn,
+          "opening development must outrank irrelevant flank pawn spam");
+
+  // Nf5 increases control of g7 around the black king and joins the attack.
+  Board preparation = Board::from_fen(
+      "6k1/5ppp/8/8/2BN4/8/5PPP/3Q1RK1 w - - 0 1").value();
+  const std::string preparation_fen = preparation.to_fen();
+  const int attack_prep = style_for(preparation, "d4f5");
+  const int retreat = style_for(preparation, "d4b3");
+  require(attack_prep > retreat,
+          "quiet attacking preparation must outrank an irrelevant retreat");
+  require(preparation.to_fen() == preparation_fen,
+          "style evaluation must restore the preparation board");
+
+  Board ring_control = preparation;
+  const Move nf5 = legal_move(ring_control, "d4f5");
+  const Move nb3 = legal_move(ring_control, "d4b3");
+  ring_control.make_move(nf5);
+  const int nf5_style = evaluate_move_style(preparation, nf5, ring_control);
+  // Rebuild the comparison child so every diagnostic has an explicit move.
+  Board retreat_child = preparation;
+  retreat_child.make_move(nb3);
+  const int nb3_style = evaluate_move_style(preparation, nb3, retreat_child);
+  require(nf5_style > nb3_style,
+          "increased king-ring control must increase style score");
+
+  Board sacrifice = Board::from_fen(
+      "6k1/5ppp/8/8/8/3B4/5PPP/3Q2K1 w - - 0 1").value();
+  const Move bxh7 = legal_move(sacrifice, "d3h7");
+  require(static_exchange_eval(sacrifice, bxh7) < 0,
+          "Bxh7+ must be a negative SEE capture sacrifice");
+  Board sacrifice_after = sacrifice;
+  sacrifice_after.make_move(bxh7);
+  require(is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after),
+          "negative SEE checking sacrifice must be recognized");
+  std::cout << "style v2: Nf5=" << attack_prep << " Nb3=" << retreat
+            << " Bxh7+ SEE=" << static_exchange_eval(sacrifice, bxh7)
+            << " sacrifice=" << is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after)
+            << '\n';
+}
+
 void test_quiescence_and_special_tactics() {
   {
     Board board = Board::initial();
@@ -354,6 +421,8 @@ void test_qe5_hanging_queen_regression() {
     require(qe5_info != result.root_moves.end(), "Qd6-e5+ must be a root candidate");
     require(!qe5_info->style_safe,
             "Qd6-e5+ must never pass the aggression threshold proof");
+    require(qe5_info->style_score >= 20,
+            "Qd6-e5+ remains a high-style move but must not bypass safety");
     require(qe5_info->bound == ScoreBound::Upper ||
                 qe5_info->search_score < result.score - AGGRESSION_TOLERANCE_CP,
             "hanging queen must fail the objective safety gate");
@@ -367,7 +436,10 @@ void test_qe5_hanging_queen_regression() {
               << static_cast<char>('a' + result.best_move.to.file())
               << (result.best_move.to.rank() + 1)
               << " best_score=" << result.score
-              << " qe5_score=" << qe5_info->search_score << '\n';
+              << " qe5_score=" << qe5_info->search_score
+              << " qe5_style=" << qe5_info->style_score
+              << " qe5_safe=" << qe5_info->style_safe
+              << " qe5_sacrifice=" << qe5_info->sacrifice_candidate << '\n';
   }
 
   clear_transposition_table();
@@ -399,6 +471,7 @@ int main() {
   test_opening_development_and_breakdown();
   test_search_and_terminal_positions();
   test_style_and_safety_metadata();
+  test_aggressive_style_v2();
   test_quiescence_and_special_tactics();
   test_pruning_flags_and_tactics();
   test_pvs_and_aspiration_equivalence();
