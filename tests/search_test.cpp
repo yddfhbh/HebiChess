@@ -600,6 +600,10 @@ void test_game1_bxa6_replay_and_v32_reserve() {
   timed.has_deadline = true;
   timed.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
   timed.style_verification_reserve_ms = 125;
+  // A network is intentionally not required for this structural regression:
+  // unavailable NNUE still falls back inside evaluate(), while the proof
+  // context must preserve the caller's selected evaluator mode.
+  timed.eval_mode = EvalMode::NNUE;
   const SearchResult result = search(concrete, timed);
   require(result.completed_depth > 0, "v3.2 must retain a completed objective iteration");
   require(result.style_verification_reserve_active,
@@ -608,6 +612,8 @@ void test_game1_bxa6_replay_and_v32_reserve() {
           "explicit benchmark reserve must be preserved");
   require(result.root_style_shortlist <= 4,
           "v3.2 must bound root verification shortlist to four moves");
+  require(result.style_verification_eval_mode == EvalMode::NNUE,
+          "style threshold verification must inherit limits.eval_mode");
 }
 
 }  // namespace

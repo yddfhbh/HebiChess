@@ -105,6 +105,9 @@ struct SearchResult {
   std::uint64_t style_verification_reserve_ms{0};
   std::uint64_t root_style_shortlist{0};
   bool style_verification_reserve_active{false};
+  // Records the evaluator requested for threshold proofs.  This keeps the
+  // objective/proof evaluator pairing observable in regression tests.
+  EvalMode style_verification_eval_mode{EvalMode::HCE};
   std::uint64_t aspiration_retries{0};
   std::uint64_t aspiration_fail_highs{0};
   std::uint64_t aspiration_fail_lows{0};
@@ -129,6 +132,10 @@ struct SearchLimits {
   int style_verification_reserve_ms{-1};
   bool profile_style_metadata{false};
   EvalMode eval_mode{EvalMode::HCE};
+  // 64 keeps a timed objective search's clock overhead negligible while
+  // bounding deadline observation to a small node batch.  Verification
+  // proofs remain strict regardless of this setting.
+  std::uint64_t deadline_check_interval_nodes{64};
 };
 
 using SearchInfoCallback = std::function<void(int, int, std::uint64_t,

@@ -106,13 +106,17 @@ struct SearchContext {
   bool use_lmr{false};
   bool use_pvs{false};
   EvalMode eval_mode{EvalMode::HCE};
+  // The main search amortizes the clock read across a small node batch.
+  // Root style proofs use a separate, strict policy below.
+  std::uint64_t deadline_check_interval_nodes{1};
+  std::uint64_t deadline_check_calls{0};
 
   bool should_stop() {
     if (stopped) return true;
-    // Timed verification is deliberately bounded by the hard deadline, not
-    // merely sampled every node batch.  Untimed searches retain the cheap
-    // fast path.
-    if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
+    if (!has_deadline) return false;
+    if (deadline_check_interval_nodes > 1 &&
+        ++deadline_check_calls % deadline_check_interval_nodes != 0) return false;
+    if (std::chrono::steady_clock::now() >= deadline) {
       stopped = true;
     }
     return stopped;
@@ -980,7 +984,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.use_tt ? &tt : nullptr, &result,
                           limits.use_see_pruning,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
-                          limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
+                          limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
+                          limits.deadline_check_interval_nodes};
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
     return result;
   }
@@ -1033,7 +1038,8 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                             limits.use_tt ? &tt : nullptr, &result,
                             limits.use_see_pruning,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
-                            limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode};
+                            limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
+                            limits.deadline_check_interval_nodes};
       current.clear();
       best_score = -MATE_SCORE;
       std::optional<Move> root_tt_move;
@@ -1259,7 +1265,9 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                              limits.deadline, false, limits.use_tt ? &tt : nullptr, &result,
                              limits.use_see_pruning,
                              limits.use_killer_history ? &search_heuristics() : nullptr,
-                             limits.use_null_move, limits.use_lmr, limits.use_pvs};
+                             limits.use_null_move, limits.use_lmr, limits.use_pvs,
+                             limits.eval_mode, 1};
+  result.style_verification_eval_mode = verification.eval_mode;
   for (RootMoveInfo* candidate : candidates) {
     if (candidate->style_score < chosen->style_score) {
       ++result.root_style_prefilter_skips;
