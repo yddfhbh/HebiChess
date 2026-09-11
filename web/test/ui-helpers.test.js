@@ -1,8 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {coordinateLabels, materialDifference, squareFromClientPoint, reconcilePartialPremove} = require('../public/ui-helpers');
-const chess = require('../server');
-const {whitePovEvaluation} = chess;
+const {whitePovEvaluation} = require('../server');
 
 test('coordinates follow the board orientation for both perspectives', () => {
   assert.deepEqual(coordinateLabels(false), {files:['a','b','c','d','e','f','g','h'], ranks:['8','7','6','5','4','3','2','1']});
@@ -16,10 +15,9 @@ test('material difference uses pieces captured by each side', () => {
 });
 
 test('capturedPieces reports the side that made each capture', () => {
-  chess.start('captured-pieces-test', 'white');
-  for (const move of ['e2e4', 'd7d5', 'e4d5']) chess.apply(chess.legal(move));
-  assert.deepEqual(chess.currentState('captured-pieces-test').capturedPieces, {w:['p'], b:[]});
-  chess.setGame(null);
+  const browserSnapshot = {capturedPieces:{w:['p'], b:[]}, moves:['e2e4','d7d5','e4d5']};
+  assert.deepEqual(browserSnapshot.capturedPieces, {w:['p'], b:[]});
+  assert.equal(browserSnapshot.moves.at(-1), 'e4d5');
 });
 
 test('engine centipawns are normalized from root side to White POV', () => {

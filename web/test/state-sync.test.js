@@ -41,7 +41,7 @@ test('black start response alone starts the first engine search', () => {
 test('resign response renders terminal state immediately and late active push is ignored', () => {
   const flow = flowHarness();
   const active = snapshot('resign-game', 3, {engineTurn:true});
-  const terminal = snapshot('resign-game', 4, {active:false, result:'0-1', termination:'resignation', engineTurn:false});
+  const terminal = snapshot('resign-game', 4, {active:false, result:'0-1', termination:'resign', engineTurn:false});
   assert.equal(flow.controller.apply(active), true);
   assert.equal(flow.controller.apply(terminal, 'resign-response'), true);
   assert.equal(flow.state.result, '0-1');

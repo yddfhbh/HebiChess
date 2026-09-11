@@ -1,4 +1,4 @@
-/* Immediate visual feedback for live drag drops while the server remains authoritative. */
+/* Immediate visual feedback for live drag drops while the browser GameState remains authoritative. */
 (() => {
   let queuedDropPreview = null;
   let pendingDropPreview = null;

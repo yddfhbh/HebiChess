@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {appendCompletedRecord} = require('../server.js');
 
-const record = {startTime:'2026-09-10T00:00:00.000Z', endTime:'2026-09-10T00:01:00.000Z', playerColor:'w', moves:['e2e4'], result:'0-1', termination:'resignation'};
+const record = {startTime:'2026-09-10T00:00:00.000Z', endTime:'2026-09-10T00:01:00.000Z', playerColor:'w', moves:['e2e4'], result:'0-1', termination:'resign'};
 
 test('completed-game persistence preserves the production array schema', () => {
   const existing = [{...record, moves:[]}];

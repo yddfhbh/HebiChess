@@ -12,14 +12,14 @@
 
   function create({api, getState}) {
     return {
-      move(move) {
-        return api('/api/move', revisionedPayload(getState(), {move}));
+      move(move, snapshot) {
+        return api('/api/move', revisionedPayload(getState(), {move, ...(snapshot ? {snapshot} : {})}));
       },
       resign() {
         return api('/api/resign', revisionedPayload(getState()));
       },
-      engineMove(move, snapshot) {
-        return api('/api/engine-move', revisionedPayload(snapshot, {move}));
+      engineMove(move, snapshot, stateSnapshot) {
+        return api('/api/engine-move', revisionedPayload(snapshot, {move, ...(stateSnapshot ? {snapshot:stateSnapshot} : {})}));
       }
     };
   }

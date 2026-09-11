@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CHESS_SOURCES
-  src/chess/board.cpp src/chess/movegen.cpp src/chess/perft.cpp
+  src/chess/board.cpp src/chess/movegen.cpp src/chess/game_state.cpp src/chess/perft.cpp
   src/chess/eval.cpp src/chess/nnue.cpp src/chess/nnue_features.cpp
   src/chess/search.cpp src/chess/uci.cpp src/chess/zobrist.cpp src/chess/tt.cpp src/chess/see.cpp
   src/chess/uci_engine.cpp
@@ -31,7 +31,7 @@ if(HEBICHESS_BUILD_WASM)
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/web/public/engine"
     SUFFIX ".js"
-    LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=134217728 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessModule -sENVIRONMENT=web,worker -sEXPORTED_FUNCTIONS=['_hebichess_initialize','_hebichess_send_command','_hebichess_take_output'] -sEXPORTED_RUNTIME_METHODS=['ccall']"
+  LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=134217728 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessModule -sENVIRONMENT=web,worker -sEXPORTED_FUNCTIONS=['_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall']"
   )
 endif()
 
@@ -47,7 +47,7 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
     OUTPUT_NAME hebichess-node
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/node-test"
     SUFFIX ".js"
-    LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=134217728 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_hebichess_initialize','_hebichess_send_command','_hebichess_take_output'] -sEXPORTED_RUNTIME_METHODS=['ccall']"
+  LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=134217728 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall']"
   )
 endif()
 
@@ -99,6 +99,12 @@ add_executable(HebiChessSeeBenchmark
 )
 target_include_directories(HebiChessSeeBenchmark PRIVATE src)
 
+add_executable(HebiChessGameStateTest
+  tests/game_state_test.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessGameStateTest PRIVATE src)
+
 enable_testing()
 add_test(
   NAME smoke
@@ -114,3 +120,4 @@ add_test(NAME chess_search COMMAND HebiChessSearchTest)
 add_test(NAME chess_uci COMMAND HebiChessUciTest)
 add_test(NAME chess_zobrist_tt COMMAND HebiChessZobristTtTest)
 add_test(NAME chess_see COMMAND HebiChessSeeTest)
+add_test(NAME chess_game_state COMMAND HebiChessGameStateTest)
