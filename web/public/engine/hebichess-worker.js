@@ -66,6 +66,17 @@ self.onmessage = async ({data:message = {}}) => {
     if (message.type === 'position') {
       const base = message.fen ? `position fen ${message.fen}` : 'position startpos';
       command(message.moves?.length ? `${base} moves ${message.moves.join(' ')}` : base, {gameId:message.gameId});
+    } else if (message.type === 'game-reset') {
+      module.ccall('hebichess_game_reset', null, [], []);
+      self.postMessage({type:'game-state', action:'reset', fen:module.ccall('hebichess_game_fen','string',[],[]), legalMoves:JSON.parse(module.ccall('hebichess_game_legal_moves','string',[],[]))});
+    } else if (message.type === 'game-load-fen') {
+      const ok=module.ccall('hebichess_game_load_fen','number',['string'],[message.fen]);
+      self.postMessage({type:'game-state', action:'load-fen', ok:Boolean(ok), fen:ok?module.ccall('hebichess_game_fen','string',[],[]):null, legalMoves:ok?JSON.parse(module.ccall('hebichess_game_legal_moves','string',[],[])):[]});
+    } else if (message.type === 'game-legal-moves') {
+      self.postMessage({type:'game-state', action:'legal-moves', legalMoves:JSON.parse(module.ccall('hebichess_game_legal_moves','string',[],[]))});
+    } else if (message.type === 'game-apply') {
+      const result=JSON.parse(module.ccall('hebichess_game_apply','string',['string'],[message.move]));
+      self.postMessage({type:'game-state', action:'apply', ...result, legalMoves:result.ok?JSON.parse(module.ccall('hebichess_game_legal_moves','string',[],[])):[]});
     } else if (message.type === 'go') {
       const limits = Number.isFinite(Number(message.depth)) ? `depth ${Math.max(1, Number(message.depth))}` : `movetime ${Math.max(1, Number(message.movetime) || 1)}`;
       command(`go ${limits}`, {gameId:message.gameId, searchId:message.searchId});

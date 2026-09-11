@@ -52,7 +52,7 @@
       hasQueuedPremove: !!premove,
       playerTurn: isPlayer() && !S.result && S.turn === S.playerColor,
       sourceIsOwnPiece: !!selectedSquare && ownPiece(selectedSquare),
-      legalMoves: S.legalMoves || []
+      legalMoves: browserGameState.legalMoves || []
     });
 
     if (decision.action === 'clear') {
@@ -76,7 +76,7 @@
     if (data.result && eventType === 'gameOver') {
       clearInteraction();
       premove = null;
-      S = data;
+      applyServerState(data, eventType);
       viewIndex = -1;
       render();
       showGameOver(data);
@@ -86,7 +86,7 @@
     const wasLive = live();
     const oldLength = S.moves?.length || 0;
     const activeDrag = drag && drag.dragging;
-    S = data;
+    if (!applyServerState(data, eventType)) return;
 
     if (!isPlayer()) {
       clearInteraction();

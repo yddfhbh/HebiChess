@@ -3,249 +3,52 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const root = __dirname;
-const PUBLIC_ROOT = path.join(root, 'public') + path.sep;
-const PORT = Number(process.env.PORT || 3400);
-const DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
+const root = __dirname, PUBLIC_ROOT = path.join(root, 'public') + path.sep;
+const PORT = Number(process.env.PORT || 3400), DATA = path.resolve(root, process.env.DATA_PATH || './data/games.json');
 const PRODUCTION = process.env.NODE_ENV === 'production';
-const MOVETIME = Number(process.env.DEFAULT_SEARCH_MOVETIME_MS || 1500);
-const games = new Map();
-const ownedGames = new Map();
-const clients = new Map();
-let legacyGame = null;
-
+const games = new Map(), ownedGames = new Map(), clients = new Map();
 const files = {'.html':'text/html; charset=utf-8','.css':'text/css','.js':'text/javascript','.wasm':'application/wasm'};
-const copy = board => board.map(row => row.slice());
 const id = () => crypto.randomUUID();
-const whitePovEvaluation = (scoreCp, rootSide) => (rootSide === 'b' ? -scoreCp : scoreCp) / 100;
-function cookie(req, res) {
-  const match = (req.headers.cookie || '').match(/hebichess_session=([^;]+)/);
-  if (match) return match[1];
-  const value = id();
-  res.setHeader('Set-Cookie', `hebichess_session=${value}; Path=/; HttpOnly; SameSite=Lax${PRODUCTION ? '; Secure' : ''}`);
-  return value;
+function cookie(req, res) { const match=(req.headers.cookie||'').match(/hebichess_session=([^;]+)/); if(match)return match[1]; const value=id(); res.setHeader('Set-Cookie',`hebichess_session=${value}; Path=/; HttpOnly; SameSite=Lax${PRODUCTION?'; Secure':''}`); return value; }
+function boardStart() { return ['rnbqkbnr','pppppppp','........','........','........','........','PPPPPPPP','RNBQKBNR'].map(row=>row.split('')); }
+function initialSnapshot() { return {fen:'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',moves:[],san:[],result:null,termination:null,lastMove:null,history:[]}; }
+function whitePovEvaluation(scoreCp, rootSide) { return (rootSide==='b'?-scoreCp:scoreCp)/100; }
+function completedRecord(target,result,termination,endedAt) { return {startTime:target.startedAt,endTime:endedAt,playerColor:target.playerColor,moves:target.snapshot.moves,result,termination}; }
+function appendCompletedRecord(existing,record) {
+  if(Array.isArray(existing))return [...existing,record];
+  if(!existing||typeof existing!=='object')throw new TypeError('unsupported games.json schema');
+  for(const key of ['games','completedGames','history','records']) { if(Array.isArray(existing[key]))return {...existing,[key]:[...existing[key],record]}; if(existing[key]&&typeof existing[key]==='object'&&!Array.isArray(existing[key]))return {...existing,[key]:{...existing[key],[record.gameId||record.endTime]:record}}; }
+  if(existing.gameId||existing.startTime||existing.endTime)return [existing,record]; return {...existing,completedGames:[record]};
 }
-function boardStart() { return ['rnbqkbnr','pppppppp','........','........','........','........','PPPPPPPP','RNBQKBNR'].map(row => row.split('')); }
-function inside(row, col) { return row >= 0 && row < 8 && col >= 0 && col < 8; }
-function color(piece) { return piece === '.' ? null : piece === piece.toUpperCase() ? 'w' : 'b'; }
-function square(row, col) { return 'abcdefgh'[col] + (8 - row); }
-function parse(value) { return /^[a-h][1-8]$/.test(value) ? [8 - Number(value[1]), value.charCodeAt(0) - 97] : null; }
-function boardFen(board) { return board.map(row => { let out = '', empty = 0; for (const piece of row) { if (piece === '.') empty++; else { if (empty) out += empty, empty = 0; out += piece; } } return out + (empty || ''); }).join('/'); }
-function positionKey(board, turn, castles, ep) { return `${boardFen(board)} ${turn} ${castles || '-'} ${ep || '-'}`; }
-function attacks(board, row, col, by) {
-  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-    const piece = board[y][x], type = piece.toLowerCase();
-    if (color(piece) !== by) continue;
-    const dr = row - y, dc = col - x, ar = Math.abs(dr), ac = Math.abs(dc);
-    if (type === 'p' && dr === (by === 'w' ? -1 : 1) && ac === 1) return true;
-    if (type === 'n' && ((ar === 2 && ac === 1) || (ar === 1 && ac === 2))) return true;
-    if (type === 'k' && ar <= 1 && ac <= 1) return true;
-    const diagonal = type === 'b' || type === 'q';
-    const straight = type === 'r' || type === 'q';
-    if ((diagonal && ar === ac && ar > 0) || (straight && ((ar === 0) !== (ac === 0)) && ar + ac > 0)) {
-      const sy = Math.sign(dr), sx = Math.sign(dc); let yy = y + sy, xx = x + sx, clear = true;
-      while (yy !== row || xx !== col) { if (board[yy][xx] !== '.') clear = false; yy += sy; xx += sx; }
-      if (clear) return true;
-    }
-  }
-  return false;
+function persistCompleted(target,result,termination,endedAt) { fs.mkdirSync(path.dirname(DATA),{recursive:true}); let existing=[]; try{existing=JSON.parse(fs.readFileSync(DATA,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;} const record=completedRecord(target,result,termination,endedAt); fs.writeFileSync(DATA,JSON.stringify(appendCompletedRecord(existing,record),null,2)); return record; }
+function stateFor(session,target) {
+  if(!target)return {active:false,role:'lobby',isPlayer:false,gameId:null,result:null,termination:null};
+  const s=target.snapshot, isPlayer=session===target.playerSessionId;
+  return {active:target.active,gameId:target.id,revision:target.revision,role:isPlayer?'player':'spectator',isPlayer,playerColor:target.playerColor,board:s.board||boardStart(),currentFen:s.fen||initialSnapshot().fen,moves:s.moves||[],san:s.san||[],history:s.history||[],turn:(s.fen||' w ').split(' ')[1]||'w',engineThinking:target.engineThinking,result:s.result??s.result??null,termination:target.termination??s.termination??null,lastMove:s.lastMove??s.lastMove??null,checkSquare:s.checkSquare||null,depth:target.depth||0,evaluation:target.evaluation||0,nodes:target.nodes||0,capturedPieces:s.capturedPieces||{w:[],b:[]},startedAt:target.startedAt,createdAt:target.createdAt,updatedAt:target.updatedAt};
 }
-function inCheck(board, side) {
-  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return attacks(board, row, col, side === 'w' ? 'b' : 'w');
-  return true;
+function emit(target,type) { for(const [response,client] of clients) if(client.gameId===target.id || (client.gameId==null&&client.sessionId===target.playerSessionId)) response.write(`event: ${type}\ndata: ${JSON.stringify(stateFor(client.sessionId,target))}\n\n`); }
+function end(target,result,termination) { if(!target||target.result)return; target.result=result; target.termination=termination; target.snapshot.result=result; target.snapshot.termination=termination; target.engineThinking=false; target.active=false; target.revision++; target.updatedAt=new Date().toISOString(); persistCompleted(target,result,termination,target.updatedAt); if(ownedGames.get(target.playerSessionId)===target.id)ownedGames.delete(target.playerSessionId); emit(target,'gameOver'); emit(target,'state'); }
+function start(session,colorChoice) { const owned=games.get(ownedGames.get(session)); if(owned?.active)return false; if(owned)ownedGames.delete(session); const playerColor=colorChoice==='black'?'b':colorChoice==='white'?'w':Math.random()<.5?'w':'b'; const now=new Date().toISOString(),snapshot=initialSnapshot(); const target={id:id(),active:true,playerSessionId:session,playerColor,revision:0,snapshot,engineThinking:playerColor==='b',result:null,termination:null,depth:0,evaluation:0,nodes:0,createdAt:now,updatedAt:now,startedAt:now}; games.set(target.id,target); ownedGames.set(session,target.id); emit(target,'state'); return target; }
+function requestedGame(session,requestedId) { return requestedId?games.get(requestedId):games.get(ownedGames.get(session)); }
+function applySnapshot(target,input) { const snapshot=input.snapshot||input.state; if(!snapshot||typeof snapshot!=='object')return false; if(typeof snapshot.fen!=='string'||!Array.isArray(snapshot.moves)||!Array.isArray(snapshot.san))return false; const {legalMoves: _serverLegalMoves, ...browserSnapshot}=snapshot; target.snapshot={...target.snapshot,...browserSnapshot,gameId:target.id}; target.lastMove=snapshot.lastMove||null; target.active=true; target.engineThinking=Boolean(input.engineThinking??target.engineThinking); target.revision++; target.updatedAt=new Date().toISOString(); return true; }
+function stale(response,target,receivedRevision){return json(response,409,{error:'stale state',stale:true,gameId:target.id,expectedRevision:target.revision,receivedRevision});}
+function body(req){return new Promise((resolve,reject)=>{let text='';req.on('data',d=>text+=d);req.on('end',()=>{try{resolve(JSON.parse(text||'{}'));}catch{reject(Error('invalid json'));}});});}
+function json(response,status,data){response.writeHead(status,{'Content-Type':'application/json'});response.end(JSON.stringify(data));}
+function snapshotTurn(target) { return (target.snapshot.fen||' w ').split(/\s+/)[1]||'w'; }
+function mutation(req,response,session,kind) { return body(req).then(value=>{ const target=requestedGame(session,value.gameId); if(!target)return json(response,409,{error:'no active game'}); if(session!==target.playerSessionId)return json(response,403,{error:'spectator'}); if(target.result||!target.active)return json(response,409,{error:'game over'}); if(!Number.isInteger(value.revision)||value.revision!==target.revision)return stale(response,target,value.revision); if(kind==='move'&& (target.engineThinking||snapshotTurn(target)!==target.playerColor))return json(response,409,{error:'not your turn'}); if(kind==='engine'&&(!target.engineThinking||snapshotTurn(target)===target.playerColor))return json(response,409,{error:'not engine turn'}); if(!applySnapshot(target,value))return json(response,422,{error:'browser snapshot required'}); emit(target,'move'); if(target.snapshot.result){target.result=target.snapshot.result;target.termination=target.snapshot.termination;end(target,target.result,target.termination);} else if(kind==='move'){target.engineThinking=true;emit(target,'engineThinking');} else target.engineThinking=false; return json(response,200,stateFor(session,target)); }); }
+function handle(req,response,session) { const url=new URL(req.url,'http://localhost');
+  if(url.pathname==='/events'){const gameId=url.searchParams.get('gameId')||url.searchParams.get('game'); response.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});clients.set(response,{sessionId:session,gameId});response.write(`event: state\ndata: ${JSON.stringify(stateFor(session,gameId?games.get(gameId):games.get(ownedGames.get(session))))}\n\n`);req.on('close',()=>clients.delete(response));return;}
+  if(url.pathname==='/api/state')return json(response,200,stateFor(session,url.searchParams.get('gameId')||url.searchParams.get('game')?games.get(url.searchParams.get('gameId')||url.searchParams.get('game')):games.get(ownedGames.get(session))));
+  if(req.method==='POST'&&url.pathname==='/api/start')return body(req).then(v=>{const target=start(session,v.color||'random');return target?json(response,200,stateFor(session,target)):json(response,409,{error:'active game'});});
+  if(req.method==='POST'&&url.pathname==='/api/move')return mutation(req,response,session,'move');
+  if(req.method==='POST'&&url.pathname==='/api/engine-move')return mutation(req,response,session,'engine');
+  if(req.method==='POST'&&url.pathname==='/api/resign')return body(req).then(v=>{const target=requestedGame(session,v.gameId);if(!target||session!==target.playerSessionId)return json(response,403,{error:'not player'});if(target.result||!target.active)return json(response,409,{error:'game over'});if(!Number.isInteger(v.revision)||v.revision!==target.revision)return stale(response,target,v.revision);end(target,target.playerColor==='w'?'0-1':'1-0','resign');return json(response,200,{ok:true,gameId:target.id,revision:target.revision,state:stateFor(session,target)});});
+  if(!PRODUCTION&&url.pathname==='/engine-test'){const filePath=path.join(root,'public','engine-test.html');if(!fs.existsSync(filePath))return json(response,404,{error:'not found'});response.writeHead(200,{'Content-Type':files['.html']});return fs.createReadStream(filePath).pipe(response);}
+  if(!PRODUCTION&&url.pathname==='/test-data/wasm-parity-100.fen'){const filePath=path.resolve(root,'../tests/data/wasm-parity-100.fen');if(!fs.existsSync(filePath))return json(response,404,{error:'not found'});response.writeHead(200,{'Content-Type':'text/plain; charset=utf-8'});return fs.createReadStream(filePath).pipe(response);}
+  if(!PRODUCTION&&url.pathname==='/test-data/wasm-parity-100.fen'){const filePath=path.resolve(root,'../tests/data/wasm-parity-100.fen');if(!fs.existsSync(filePath))return json(response,404,{error:'not found'});response.writeHead(200,{'Content-Type':'text/plain; charset=utf-8'});return fs.createReadStream(filePath).pipe(response);}
+  if(url.pathname==='/'||url.pathname.startsWith('/public/')){const file=url.pathname==='/'?'index.html':url.pathname.slice(8),filePath=path.join(root,'public',file);if(!filePath.startsWith(PUBLIC_ROOT)||!fs.existsSync(filePath))return json(response,404,{error:'not found'});response.writeHead(200,{'Content-Type':files[path.extname(filePath)]||'text/plain'});return fs.createReadStream(filePath).pipe(response);}
+  return json(response,404,{error:'not found'});
 }
-function applyToBoard(board, move, side) {
-  const next = copy(board), from = parse(move.from), to = parse(move.to), piece = next[from[0]][from[1]];
-  next[from[0]][from[1]] = '.';
-  next[to[0]][to[1]] = move.promotion ? (side === 'w' ? move.promotion.toUpperCase() : move.promotion.toLowerCase()) : piece;
-  if (move.enPassant) next[side === 'w' ? to[0] + 1 : to[0] - 1][to[1]] = '.';
-  if (move.castle === 'K' || move.castle === 'k') next[to[0]][5] = next[to[0]][7], next[to[0]][7] = '.';
-  if (move.castle === 'Q' || move.castle === 'q') next[to[0]][3] = next[to[0]][0], next[to[0]][0] = '.';
-  return next;
-}
-function pseudo(board, side, castles = '-', ep = '-') {
-  const out = [];
-  for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) {
-    const piece = board[row][col], type = piece.toLowerCase(); if (color(piece) !== side) continue;
-    const add = (rr, cc, promotion = null, extra = {}) => { if (!inside(rr, cc) || color(board[rr][cc]) === side) return; out.push({from:square(row, col), to:square(rr, cc), promotion, ...extra}); };
-    const pawnAdd = (rr, cc, extra = {}) => { if (rr === 0 || rr === 7) for (const promotion of ['q','r','b','n']) add(rr, cc, promotion, extra); else add(rr, cc, null, extra); };
-    if (type === 'p') {
-      const direction = side === 'w' ? -1 : 1;
-      if (inside(row + direction, col) && board[row + direction][col] === '.') { pawnAdd(row + direction, col); if ((side === 'w' ? row === 6 : row === 1) && board[row + 2 * direction][col] === '.') add(row + 2 * direction, col); }
-      for (const targetCol of [col - 1, col + 1]) if (inside(row + direction, targetCol)) {
-        const target = square(row + direction, targetCol);
-        if (color(board[row + direction][targetCol]) === (side === 'w' ? 'b' : 'w')) pawnAdd(row + direction, targetCol);
-        else if (target === ep) pawnAdd(row + direction, targetCol, {enPassant:true});
-      }
-    } else if (type === 'n') for (const [dr, dc] of [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]) add(row + dr, col + dc);
-    else if (type === 'k') {
-      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if (dr || dc) add(row + dr, col + dc);
-      if (side === 'w' && row === 7 && col === 4) {
-        if (castles.includes('K') && board[7][7] === 'R' && board[7][5] === '.' && board[7][6] === '.' && !inCheck(board, side) && !attacks(board, 7, 5, 'b') && !attacks(board, 7, 6, 'b')) out.push({from:'e1',to:'g1',castle:'K'});
-        if (castles.includes('Q') && board[7][0] === 'R' && board[7][1] === '.' && board[7][2] === '.' && board[7][3] === '.' && !inCheck(board, side) && !attacks(board, 7, 3, 'b') && !attacks(board, 7, 2, 'b')) out.push({from:'e1',to:'c1',castle:'Q'});
-      }
-      if (side === 'b' && row === 0 && col === 4) {
-        if (castles.includes('k') && board[0][7] === 'r' && board[0][5] === '.' && board[0][6] === '.' && !inCheck(board, side) && !attacks(board, 0, 5, 'w') && !attacks(board, 0, 6, 'w')) out.push({from:'e8',to:'g8',castle:'k'});
-        if (castles.includes('q') && board[0][0] === 'r' && board[0][1] === '.' && board[0][2] === '.' && board[0][3] === '.' && !inCheck(board, side) && !attacks(board, 0, 3, 'w') && !attacks(board, 0, 2, 'w')) out.push({from:'e8',to:'c8',castle:'q'});
-      }
-    } else {
-      const directions = type === 'b' ? [[1,1],[1,-1],[-1,1],[-1,-1]] : type === 'r' ? [[1,0],[-1,0],[0,1],[0,-1]] : [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
-      for (const [dr, dc] of directions) { let rr = row + dr, cc = col + dc; while (inside(rr, cc)) { if (board[rr][cc] === '.') add(rr, cc); else { if (color(board[rr][cc]) !== side) add(rr, cc); break; } rr += dr; cc += dc; } }
-    }
-  }
-  return out.filter(move => !inCheck(applyToBoard(board, move, side), side));
-}
-function uci(move) { return move.from + move.to + (move.promotion || ''); }
-function sanFor(board, move, side, castles, ep) {
-  const piece = board[parse(move.from)[0]][parse(move.from)[1]], type = piece.toLowerCase();
-  if (move.castle) return move.castle.toUpperCase() === 'K' ? 'O-O' : 'O-O-O';
-  const capture = Boolean(board[parse(move.to)[0]][parse(move.to)[1]] !== '.' || move.enPassant);
-  let san = type === 'p' ? (capture ? move.from[0] : '') : type === 'n' ? 'N' : type === 'b' ? 'B' : type === 'r' ? 'R' : type === 'q' ? 'Q' : 'K';
-  if (type !== 'p') {
-    const peers = pseudo(board, side, castles, ep).filter(candidate => candidate.to === move.to && candidate.from !== move.from && board[parse(candidate.from)[0]][parse(candidate.from)[1]].toLowerCase() === type);
-    if (peers.length) san += peers.some(candidate => candidate.from[0] === move.from[0]) ? move.from[1] : move.from[0];
-  }
-  if (capture) san += 'x'; san += move.to; if (move.promotion) san += `=${move.promotion.toUpperCase()}`;
-  const next = applyToBoard(board, move, side), nextSide = side === 'w' ? 'b' : 'w', replies = pseudo(next, nextSide, castles, ep);
-  if (!replies.length && inCheck(next, nextSide)) san += '#'; else if (inCheck(next, nextSide)) san += '+';
-  return san;
-}
-function updateCastles(castles, move, piece, captured) {
-  let rights = castles;
-  if (piece === 'K') rights = rights.replace(/[KQ]/g, ''); if (piece === 'k') rights = rights.replace(/[kq]/g, '');
-  if (move.from === 'a1' || move.to === 'a1') rights = rights.replace('Q', ''); if (move.from === 'h1' || move.to === 'h1') rights = rights.replace('K', '');
-  if (move.from === 'a8' || move.to === 'a8') rights = rights.replace('q', ''); if (move.from === 'h8' || move.to === 'h8') rights = rights.replace('k', '');
-  return rights || '-';
-}
-function apply(move, target = legacyGame) {
-  const from = parse(move.from), to = parse(move.to), piece = target.board[from[0]][from[1]], captured = target.board[to[0]][to[1]], side = target.turn;
-  const san = sanFor(target.board, move, side, target.castles, target.ep);
-  target.board = applyToBoard(target.board, move, side); target.castles = updateCastles(target.castles, move, piece, captured);
-  target.ep = Math.abs(from[0] - to[0]) === 2 && piece.toLowerCase() === 'p' ? square((from[0] + to[0]) / 2, from[1]) : '-';
-  target.halfmove = piece.toLowerCase() === 'p' || captured !== '.' || move.enPassant ? 0 : target.halfmove + 1;
-  target.turn = side === 'w' ? 'b' : 'w'; target.moves.push(uci(move)); target.san.push(san); target.lastMove = uci(move);
-  const key = positionKey(target.board, target.turn, target.castles, target.ep); target.positionHistory.push(key); target.repetitions[key] = (target.repetitions[key] || 0) + 1;
-  target.history.push({uci: uci(move), san, board: copy(target.board), turn: target.turn, lastMove: target.lastMove, checkSquare:inCheck(target.board, target.turn) ? square(...findKing(target.board, target.turn)) : null});
-  target.revision++;
-}
-function legal(value, target = legacyGame) {
-  const promotion = value[4] ? value[4].toLowerCase() : null;
-  return target && pseudo(target.board, target.turn, target.castles, target.ep).find(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && (promotion ? move.promotion === promotion : !move.promotion)) || null;
-}
-function promotionRequired(value, target = legacyGame) { return target && value.length === 4 && pseudo(target.board, target.turn, target.castles, target.ep).some(move => move.from === value.slice(0, 2) && move.to === value.slice(2, 4) && move.promotion); }
-function capturedPieces(target = legacyGame) {
-  const initial = {P:8,N:2,B:2,R:2,Q:1,p:8,n:2,b:2,r:2,q:1}, current = {};
-  for (const row of target.board) for (const piece of row) if (piece !== '.') current[piece] = (current[piece] || 0) + 1;
-  const taken = {w:[],b:[]}; for (const [piece, amount] of Object.entries(initial)) for (let i = Math.max(0, amount - (current[piece] || 0)); i; i--) taken[piece === piece.toUpperCase() ? 'b' : 'w'].push(piece.toLowerCase());
-  return taken;
-}
-function insufficientMaterial(board = legacyGame.board) {
-  const pieces = []; for (const row of board) for (const piece of row) if (piece !== '.' && piece.toLowerCase() !== 'k') pieces.push(piece.toLowerCase());
-  return pieces.length === 0 || (pieces.length === 1 && (pieces[0] === 'b' || pieces[0] === 'n'));
-}
-function drawReason(target = legacyGame) {
-  const key = target.positionHistory[target.positionHistory.length - 1];
-  if (target.repetitions[key] >= 3) return 'threefold repetition';
-  if (target.halfmove >= 100) return '50-move rule';
-  if (insufficientMaterial(target.board)) return 'insufficient material';
-  return null;
-}
-function currentState(sessionId, gameId) {
-  const target = gameId ? games.get(gameId) : (ownedGames.get(sessionId) ? games.get(ownedGames.get(sessionId)) : fallbackGame());
-  if (!target) return {active:false, role:'spectator', isPlayer:false, gameId:gameId || null, result:null, termination:null};
-  const isPlayer = sessionId === target.playerSessionId;
-  return {active:target.active, gameId:target.id, revision:target.revision, role:isPlayer?'player':'spectator', isPlayer, playerColor:target.playerColor, board:target.board, currentFen:`${boardFen(target.board)} ${target.turn} ${target.castles} ${target.ep} ${target.halfmove} ${Math.floor(target.moves.length / 2) + 1}`, moves:target.moves, san:target.san, history:target.history.map(item => ({uci:item.uci, san:item.san, board:item.board, turn:item.turn, lastMove:item.lastMove, checkSquare:item.checkSquare || null})), turn:target.turn, engineThinking:target.engineThinking, result:target.result, termination:target.termination, lastMove:target.lastMove, checkSquare:inCheck(target.board, target.turn) ? square(...findKing(target.board, target.turn)) : null, depth:target.depth, evaluation:target.evaluation, nodes:target.nodes || 0, capturedPieces:capturedPieces(target), legalMoves:pseudo(target.board, target.turn, target.castles, target.ep).map(uci), startedAt:target.startedAt, createdAt:target.createdAt, updatedAt:target.updatedAt};
-}
-function findKing(board, side) { for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (board[row][col] === (side === 'w' ? 'K' : 'k')) return [row, col]; return [0, 0]; }
-function emit(target, type, data = null) { for (const [response, client] of clients) { if (client.gameId !== target.id && !(client.gameId == null && client.sessionId === target.playerSessionId)) continue; const payload = data || currentState(client.sessionId, target.id); response.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } }
-function completedRecord(target, result, termination, endedAt) {
-  return {startTime:target.startedAt, endTime:endedAt, playerColor:target.playerColor, moves:target.moves, result, termination};
-}
-function appendCompletedRecord(existing, record) {
-  if (Array.isArray(existing)) return [...existing, record];
-  if (!existing || typeof existing !== 'object') throw new TypeError('unsupported games.json schema');
-  for (const key of ['games', 'completedGames', 'history', 'records']) {
-    if (Array.isArray(existing[key])) return {...existing, [key]:[...existing[key], record]};
-    if (existing[key] && typeof existing[key] === 'object' && !Array.isArray(existing[key])) {
-      return {...existing, [key]:{...existing[key], [record.gameId || record.endTime]:record}};
-    }
-  }
-  if (existing.gameId || existing.startTime || existing.endTime) return [existing, record];
-  return {...existing, completedGames:[record]};
-}
-function persistCompleted(target, result, termination, endedAt) {
-  fs.mkdirSync(path.dirname(DATA), {recursive:true});
-  let existing = [];
-  try { existing = JSON.parse(fs.readFileSync(DATA, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const record = completedRecord(target, result, termination, endedAt);
-  const persisted = appendCompletedRecord(existing, record);
-  fs.writeFileSync(DATA, JSON.stringify(persisted, null, 2));
-  return record;
-}
-function end(target, result, termination) {
-  if (!target || target.result) return;
-  target.result = result; target.termination = termination; target.engineThinking = false; target.active = false; target.revision++; target.updatedAt = new Date().toISOString();
-  const endedAt = new Date().toISOString();
-  const record = persistCompleted(target, result, termination, endedAt);
-  if (ownedGames.get(target.playerSessionId) === target.id) ownedGames.delete(target.playerSessionId);
-  emit(target, 'gameOver');
-  emit(target, 'state');
-  return record;
-}
-function terminalAfterMove(target = legacyGame) { const moves = pseudo(target.board, target.turn, target.castles, target.ep); if (!moves.length) return inCheck(target.board, target.turn) ? [target.turn === 'w' ? '0-1' : '1-0', 'checkmate'] : ['1/2-1/2', 'stalemate']; const draw = drawReason(target); return draw ? ['1/2-1/2', draw] : null; }
-function start(session, colorChoice) {
-  const ownedId = ownedGames.get(session), owned = ownedId && games.get(ownedId);
-  if (owned?.active) return false;
-  if (ownedId) ownedGames.delete(session);
-  const playerColor = colorChoice === 'random' ? (Math.random() < .5 ? 'w' : 'b') : colorChoice === 'black' ? 'b' : 'w';
-  const board = boardStart(), key = positionKey(board, 'w', 'KQkq', '-');
-  const now = new Date().toISOString(), target = {id:id(), active:true, playerSessionId:session, playerColor, board, castles:'KQkq', ep:'-', halfmove:0, moves:[], san:[], turn:'w', engineThinking:playerColor === 'b', result:null, termination:null, lastMove:null, depth:0, evaluation:0, nodes:0, revision:0, createdAt:now, updatedAt:now, startedAt:now, repetitions:{[key]:1}, positionHistory:[key], history:[{uci:null, san:null, board:copy(board), turn:'w', lastMove:null, checkSquare:null}]};
-  games.set(target.id, target); ownedGames.set(session, target.id); legacyGame = target; emit(target, 'state'); return target;
-}
-function body(req) { return new Promise((resolve, reject) => { let text = ''; req.on('data', data => text += data); req.on('end', () => { try { resolve(JSON.parse(text || '{}')); } catch { reject(new Error('invalid json')); } }); }); }
-function json(response, status, data) { response.writeHead(status, {'Content-Type':'application/json'}); response.end(JSON.stringify(data)); }
-function staleState(response, target, receivedRevision) {
-  const data = {error:'stale state', stale:true, gameId:target.id, expectedRevision:target.revision, receivedRevision};
-  if (!PRODUCTION || process.env.HEBICHESS_REVISION_DEBUG === '1') console.warn(`[revision] game=${target.id} expected=${target.revision} received=${receivedRevision}`);
-  return json(response, 409, data);
-}
-function fallbackGame() { const active = [...games.values()].filter(target => target.active); return active.length === 1 ? active[0] : null; }
-function requestedGame(session, requestedId) { return (requestedId && games.get(requestedId)) || games.get(ownedGames.get(session)) || fallbackGame(); }
-function handle(req, response, session) {
-  const url = new URL(req.url, 'http://localhost');
-  if (url.pathname === '/events') { const targetId = url.searchParams.get('gameId') || url.searchParams.get('game'); response.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'}); clients.set(response, {sessionId:session, gameId:targetId}); response.write(`event: state\ndata: ${JSON.stringify(currentState(session, targetId))}\n\n`); req.on('close', () => clients.delete(response)); return; }
-  if (url.pathname === '/api/state') return json(response, 200, currentState(session, url.searchParams.get('gameId') || url.searchParams.get('game')));
-  if (req.method === 'POST' && url.pathname === '/api/start') return body(req).then(value => { const target = start(session, value.color || 'random'); return target ? json(response, 200, currentState(session, target.id)) : json(response, 409, {error:'active game'}); });
-  if (req.method === 'POST' && url.pathname === '/api/move') return body(req).then(value => {
-    const target = requestedGame(session, value.gameId);
-    if (!target) return json(response, 409, {error:'no active game'});
-    if (session !== target.playerSessionId) return json(response, 403, {error:'spectator'});
-    if (target.result || !target.active) return json(response, 409, {error:'game over'});
-    if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision);
-    if (target.engineThinking || target.turn !== target.playerColor) return json(response, 409, {error:'not your turn'});
-    const requested = value.move || ''; if (promotionRequired(requested, target)) return json(response, 422, {error:'promotion required', promotionRequired:true});
-    const move = legal(requested, target); if (!move) return json(response, 422, {error:'illegal move'});
-    apply(move, target); target.engineThinking = false; target.updatedAt = new Date().toISOString(); emit(target, 'move'); const terminal = terminalAfterMove(target);
-    if (terminal) end(target, ...terminal); else { target.engineThinking = true; emit(target, 'engineThinking'); }
-    return json(response, 200, currentState(session, target.id));
-  });
-  if (req.method === 'POST' && url.pathname === '/api/engine-move') return body(req).then(value => {
-    const target = games.get(value.gameId); if (!target) return json(response, 409, {error:'no active game'});
-    if (session !== target.playerSessionId) return json(response, 403, {error:'not owner'});
-    if (target.result || !target.active) return json(response, 409, {error:'game over'});
-    if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision);
-    if (!target.engineThinking || target.turn === target.playerColor) return json(response, 409, {error:'not engine turn'});
-    const move = legal(value.move || '', target); if (!move) return json(response, 422, {error:'illegal engine move'});
-    apply(move, target); target.engineThinking = false; target.updatedAt = new Date().toISOString(); emit(target, 'move'); const terminal = terminalAfterMove(target);
-    if (terminal) end(target, ...terminal); else { target.engineThinking = false; }
-    return json(response, 200, currentState(session, target.id));
-  });
-  if (req.method === 'POST' && url.pathname === '/api/resign') return body(req).then(value => { const target = requestedGame(session, value.gameId); if (!target || session !== target.playerSessionId) return json(response, 403, {error:'not player'}); if (!Number.isInteger(value.revision) || value.revision !== target.revision) return staleState(response, target, value.revision); end(target, target.playerColor === 'w' ? '0-1' : '1-0', 'resignation'); return json(response, 200, {ok:true, gameId:target.id, revision:target.revision, state:currentState(session, target.id)}); });
-  if (!PRODUCTION && url.pathname === '/engine-test') { const filePath = path.join(root, 'public', 'engine-test.html'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files['.html']}); return fs.createReadStream(filePath).pipe(response); }
-  if (!PRODUCTION && url.pathname === '/test-data/wasm-parity-100.fen') { const filePath = path.resolve(root, '../tests/data/wasm-parity-100.fen'); if (!fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':'text/plain; charset=utf-8'}); return fs.createReadStream(filePath).pipe(response); }
-  if (url.pathname === '/' || url.pathname.startsWith('/public/')) { const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(8), filePath = path.join(root, 'public', file); if (!filePath.startsWith(PUBLIC_ROOT) || !fs.existsSync(filePath)) return json(response, 404, {error:'not found'}); response.writeHead(200, {'Content-Type':files[path.extname(filePath)] || 'text/plain'}); return fs.createReadStream(filePath).pipe(response); }
-  return json(response, 404, {error:'not found'});
-}
-const server = http.createServer((req, response) => { const session = cookie(req, response); Promise.resolve(handle(req, response, session)).catch(error => { if (!response.headersSent) json(response, 500, {error:error.message}); }); });
-if (require.main === module) server.listen(PORT, '127.0.0.1', () => console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
-module.exports = {server, start, currentState, state:currentState, legal, apply, emit, pseudo, positionKey, drawReason, insufficientMaterial, terminalAfterMove, boardStart, whitePovEvaluation, appendCompletedRecord, setGame(value) { legacyGame = value; }, getGame:() => legacyGame, getGames:() => games};
+const server=http.createServer((req,response)=>{const session=cookie(req,response);Promise.resolve(handle(req,response,session)).catch(error=>{if(!response.headersSent)json(response,500,{error:error.message});});});
+if(require.main===module)server.listen(PORT,'127.0.0.1',()=>console.log(`HebiChess web listening on http://127.0.0.1:${PORT}`));
+module.exports={server,start,currentState:(s,g)=>stateFor(s,g?games.get(g):games.get(ownedGames.get(s))),state:(s,g)=>stateFor(s,g?games.get(g):games.get(ownedGames.get(s))),appendCompletedRecord,boardStart,whitePovEvaluation,getGames:()=>games};
