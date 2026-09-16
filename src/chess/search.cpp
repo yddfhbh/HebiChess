@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <optional>
 
+#include "chess/nnue.hpp"
 #include "chess/see.hpp"
 
 namespace hebichess {
@@ -117,6 +119,12 @@ struct SearchContext {
   // Root style proofs use a separate, strict policy below.
   std::uint64_t deadline_check_interval_nodes{1};
   std::uint64_t deadline_check_calls{0};
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+  // Test-only: false makes NNUE evaluations follow the old board rebuild
+  // path, so the same search can be compared against the wired path.
+  bool use_nnue_accumulator{true};
+  NnueSearchAccumulatorCounters* nnue_counters{nullptr};
+#endif
 
   bool should_stop() {
     if (stopped) return true;
@@ -129,6 +137,55 @@ struct SearchContext {
     return stopped;
   }
 };
+
+int evaluate_search_position(const Board& board, SearchContext& context,
+                             const NnueAccumulator* accumulator,
+                             bool qsearch) {
+  if (accumulator != nullptr) {
+    const auto raw = evaluate_nnue_network_raw_from_accumulator(board, *accumulator);
+    if (raw.has_value()) {
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+      if (context.nnue_counters != nullptr) {
+        ++context.nnue_counters->eval_from_accumulator_count;
+        if (qsearch) ++context.nnue_counters->qsearch_eval_from_accumulator_count;
+      }
+#endif
+      return static_cast<int>(std::lround(*raw));
+    }
+  }
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+  if (context.nnue_counters != nullptr && context.eval_mode == EvalMode::NNUE &&
+      nnue_network_available()) {
+    ++context.nnue_counters->legacy_full_eval_count;
+  }
+#endif
+  return evaluate(board, context.eval_mode).value_or(evaluate_hce(board));
+}
+
+const NnueAccumulator* make_child_accumulator(
+    const Board& parent, const Move& move, const NnueAccumulator* parent_accumulator,
+    NnueAccumulator& child_accumulator, SearchContext& context, bool qsearch) {
+  if (parent_accumulator == nullptr ||
+      !update_nnue_accumulator(parent, move, *parent_accumulator, child_accumulator)) {
+    return nullptr;
+  }
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+  if (context.nnue_counters != nullptr) {
+    ++context.nnue_counters->incremental_update_count;
+    if (qsearch) ++context.nnue_counters->qsearch_incremental_update_count;
+    if (parent.piece_at(move.from).type == PieceType::King)
+      ++context.nnue_counters->king_perspective_refresh_count;
+    if (move.flag == MoveFlag::Capture || move.flag == MoveFlag::PromotionCapture)
+      ++context.nnue_counters->capture_incremental_update_count;
+    if (move.flag == MoveFlag::CastleKingSide || move.flag == MoveFlag::CastleQueenSide)
+      ++context.nnue_counters->castling_incremental_update_count;
+    if (move.is_promotion()) ++context.nnue_counters->promotion_incremental_update_count;
+    if (move.flag == MoveFlag::EnPassant)
+      ++context.nnue_counters->en_passant_incremental_update_count;
+  }
+#endif
+  return &child_accumulator;
+}
 
 bool gives_check(Board& board, const Move& move) noexcept {
   if (active_style_profile != nullptr) ++active_style_profile->result.style_gives_check_calls;
@@ -742,7 +799,8 @@ bool is_style_score_safe(int objective_score, int candidate_score,
 }
 
 int quiescence_impl(Board& board, int alpha, int beta, int ply,
-                    SearchContext& context) {
+                    SearchContext& context,
+                    const NnueAccumulator* accumulator = nullptr) {
   if (context.should_stop()) return 0;
   auto& nodes = context.nodes;
   auto& qnodes = context.qnodes;
@@ -760,9 +818,16 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
                                       std::nullopt, true);
     int best = -MATE_SCORE;
     for (const OrderedMove& item : evasions) {
+      std::optional<NnueAccumulator> child_accumulator;
+      const NnueAccumulator* child = nullptr;
+      if (accumulator != nullptr) {
+        child_accumulator.emplace();
+        child = make_child_accumulator(board, item.move, accumulator,
+                                       *child_accumulator, context, true);
+      }
       const UndoState undo = board.make_move(item.move);
       const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
-                                         context);
+                                         context, child);
       board.unmake_move(item.move, undo);
       if (context.stopped) return 0;
       best = std::max(best, score);
@@ -772,7 +837,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return best;
   }
 
-  const int stand_pat = evaluate(board, context.eval_mode).value_or(evaluate_hce(board));
+  const int stand_pat = evaluate_search_position(board, context, accumulator, true);
   if (stand_pat >= beta) return beta;
   alpha = std::max(alpha, stand_pat);
 
@@ -802,9 +867,16 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       if (context.result != nullptr) ++context.result->qdelta_prunes;
       continue;
     }
+    std::optional<NnueAccumulator> child_accumulator;
+    const NnueAccumulator* child = nullptr;
+    if (accumulator != nullptr) {
+      child_accumulator.emplace();
+      child = make_child_accumulator(board, move, accumulator,
+                                     *child_accumulator, context, true);
+    }
     const UndoState undo = board.make_move(move);
     const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
-                                       context);
+                                       context, child);
     board.unmake_move(move, undo);
     if (context.stopped) return 0;
     alpha = std::max(alpha, score);
@@ -814,9 +886,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 }
 
 int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
-                 SearchContext& context, bool was_null_move = false) {
+                 SearchContext& context, const NnueAccumulator* accumulator = nullptr,
+                 bool was_null_move = false) {
   if (context.should_stop()) return 0;
-  if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context);
+  if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context, accumulator);
   const int original_alpha = alpha;
   const int original_beta = beta;
   std::optional<Move> tt_move;
@@ -852,8 +925,12 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     if (context.result != nullptr) ++context.result->null_attempts;
     const int reduction = depth <= 5 ? 2 : 3;
     const NullUndoState undo = board.make_null_move();
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+    if (accumulator != nullptr && context.nnue_counters != nullptr)
+      ++context.nnue_counters->null_move_accumulator_reuse_count;
+#endif
     const int score = -negamax_impl(board, depth - 1 - reduction,
-                                    -beta, -beta + 1, ply + 1, context, true);
+                                    -beta, -beta + 1, ply + 1, context, accumulator, true);
     board.unmake_null_move(undo);
     if (context.stopped) return 0;
     if (score >= beta) {
@@ -883,6 +960,13 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
         !in_check && is_quiet_move(move) && !killer_move && !high_history &&
         !gives_check(board, move);
     const bool pvs_candidate = context.use_pvs && move_index > 0;
+    std::optional<NnueAccumulator> child_accumulator;
+    const NnueAccumulator* child = nullptr;
+    if (accumulator != nullptr) {
+      child_accumulator.emplace();
+      child = make_child_accumulator(board, move, accumulator,
+                                     *child_accumulator, context, false);
+    }
     const UndoState undo = board.make_move(move);
     int score = 0;
     const auto search_child = [&](int child_depth, bool zero_window) {
@@ -890,9 +974,9 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
         ++context.result->pvs_zero_window_searches;
       if (zero_window)
         return -negamax_impl(board, child_depth, -alpha - 1, -alpha,
-                             ply + 1, context);
+                             ply + 1, context, child);
       return -negamax_impl(board, child_depth, -beta, -alpha, ply + 1,
-                           context);
+                           context, child);
     };
     if (lmr_candidate) {
       if (context.result != nullptr) ++context.result->lmr_attempts;
@@ -977,12 +1061,31 @@ SearchResult search(const Board& position, int max_depth) {
   return search(position, limits);
 }
 
-SearchResult search(const Board& position, const SearchLimits& limits,
-                    const SearchInfoCallback& on_iteration) {
+SearchResult search_impl(const Board& position, const SearchLimits& limits,
+                         const SearchInfoCallback& on_iteration
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+                         , bool test_use_nnue_accumulator,
+                         NnueSearchAccumulatorCounters* nnue_counters
+#endif
+                         ) {
   SearchResult result;
   const auto search_started = std::chrono::steady_clock::now();
   if (limits.max_depth < 1) return result;
   Board root = position;
+  const bool use_nnue_accumulator = limits.eval_mode == EvalMode::NNUE &&
+      nnue_network_available()
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+      && test_use_nnue_accumulator
+#endif
+      ;
+  std::optional<NnueAccumulator> root_accumulator;
+  if (use_nnue_accumulator) {
+    root_accumulator.emplace();
+    if (!refresh_nnue_accumulator(root, *root_accumulator)) root_accumulator.reset();
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+    else if (nnue_counters != nullptr) ++nnue_counters->root_full_refresh_count;
+#endif
+  }
   TranspositionTable& tt = transposition_table();
   std::vector<Move> legal = generate_legal_moves(root);
   if (legal.empty()) {
@@ -993,7 +1096,12 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
                           limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                           limits.deadline_check_interval_nodes};
-    result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context);
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+    context.use_nnue_accumulator = test_use_nnue_accumulator;
+    context.nnue_counters = nnue_counters;
+#endif
+    result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context,
+                                root_accumulator ? &*root_accumulator : nullptr);
     return result;
   }
   result.best_move = legal.front();
@@ -1047,6 +1155,10 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
                             limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                             limits.deadline_check_interval_nodes};
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+      context.use_nnue_accumulator = test_use_nnue_accumulator;
+      context.nnue_counters = nnue_counters;
+#endif
       current.clear();
       best_score = -MATE_SCORE;
       std::optional<Move> root_tt_move;
@@ -1069,23 +1181,30 @@ SearchResult search(const Board& position, const SearchLimits& limits,
       for (std::size_t move_index = 0; move_index < root_order.size(); ++move_index) {
         const Move& move = root_order[move_index].move;
         if (context.should_stop()) break;
+        std::optional<NnueAccumulator> child_accumulator;
+        const NnueAccumulator* child = nullptr;
+        if (root_accumulator.has_value()) {
+          child_accumulator.emplace();
+          child = make_child_accumulator(root, move, &*root_accumulator,
+                                         *child_accumulator, context, false);
+        }
         const UndoState undo = root.make_move(move);
         int score = 0;
         const bool zero_window = limits.use_pvs && move_index > 0;
         ScoreBound bound = ScoreBound::Exact;
         if (zero_window) {
           ++result.pvs_zero_window_searches;
-          score = -negamax_impl(root, depth - 1, -alpha - 1, -alpha, 1, context);
+          score = -negamax_impl(root, depth - 1, -alpha - 1, -alpha, 1, context, child);
           if (!context.stopped && score > alpha && score < beta) {
             ++result.pvs_researches;
-            score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+            score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context, child);
           } else if (score <= alpha) {
             bound = ScoreBound::Upper;
           } else {
             bound = ScoreBound::Lower;
           }
         } else {
-          score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context);
+          score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context, child);
           if (score >= beta) bound = ScoreBound::Lower;
         }
         root.unmake_move(move, undo);
@@ -1276,6 +1395,10 @@ SearchResult search(const Board& position, const SearchLimits& limits,
                              limits.use_killer_history ? &search_heuristics() : nullptr,
                              limits.use_null_move, limits.use_lmr, limits.use_pvs,
                              limits.eval_mode, 1};
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+  verification.use_nnue_accumulator = test_use_nnue_accumulator;
+  verification.nnue_counters = nnue_counters;
+#endif
   result.style_verification_eval_mode = verification.eval_mode;
   for (RootMoveInfo* candidate : candidates) {
     if (candidate->style_score < chosen->style_score) {
@@ -1285,9 +1408,17 @@ SearchResult search(const Board& position, const SearchLimits& limits,
     ++result.root_style_verification_searches;
     const std::uint64_t before_verification = result.nodes;
     const auto candidate_started = std::chrono::steady_clock::now();
+    std::optional<NnueAccumulator> child_accumulator;
+    const NnueAccumulator* child = nullptr;
+    if (root_accumulator.has_value()) {
+      child_accumulator.emplace();
+      child = make_child_accumulator(root, candidate->move, &*root_accumulator,
+                                     *child_accumulator, verification, false);
+    }
     const UndoState undo = root.make_move(candidate->move);
     const int threshold = objective_best - candidate->style_tolerance;
-    const int proof = -negamax_impl(root, depth - 1, -threshold, -threshold + 1, 1, verification);
+    const int proof = -negamax_impl(root, depth - 1, -threshold, -threshold + 1, 1,
+                                    verification, child);
     root.unmake_move(candidate->move, undo);
     const auto candidate_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1338,6 +1469,31 @@ SearchResult search(const Board& position, const SearchLimits& limits,
   result.main_nodes = result.nodes - result.qnodes;
   return result;
 }
+
+SearchResult search(const Board& position, const SearchLimits& limits,
+                    const SearchInfoCallback& on_iteration) {
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+  return search_impl(position, limits, on_iteration, true, nullptr);
+#else
+  return search_impl(position, limits, on_iteration);
+#endif
+}
+
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+NnueSearchTestResult search_nnue_incremental_for_test(const Board& board,
+                                                       const SearchLimits& limits) {
+  NnueSearchTestResult result;
+  result.search = search_impl(board, limits, {}, true, &result.counters);
+  return result;
+}
+
+NnueSearchTestResult search_nnue_legacy_for_test(const Board& board,
+                                                  const SearchLimits& limits) {
+  NnueSearchTestResult result;
+  result.search = search_impl(board, limits, {}, false, &result.counters);
+  return result;
+}
+#endif
 
 void clear_transposition_table() noexcept { transposition_table().clear(); }
 

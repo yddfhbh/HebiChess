@@ -156,4 +156,36 @@ SearchResult search(const Board& board, const SearchLimits& limits,
 void clear_transposition_table() noexcept;
 void clear_search_heuristics() noexcept;
 
+#if defined(HEBICHESS_NNUE_SEARCH_TEST)
+// These entry points and counters exist only in the dedicated native test
+// binary.  They keep the legacy full-rebuild path available for direct search
+// equivalence checks without adding a production diagnostic switch.
+struct NnueSearchAccumulatorCounters {
+  std::uint64_t root_full_refresh_count{0};
+  std::uint64_t incremental_update_count{0};
+  std::uint64_t king_perspective_refresh_count{0};
+  std::uint64_t eval_from_accumulator_count{0};
+  std::uint64_t legacy_full_eval_count{0};
+  std::uint64_t null_move_accumulator_reuse_count{0};
+  std::uint64_t qsearch_incremental_update_count{0};
+  std::uint64_t qsearch_eval_from_accumulator_count{0};
+  // Targeted-search coverage.  These remain test-binary-only so a special
+  // move can be shown to have crossed the wired accumulator boundary.
+  std::uint64_t capture_incremental_update_count{0};
+  std::uint64_t castling_incremental_update_count{0};
+  std::uint64_t promotion_incremental_update_count{0};
+  std::uint64_t en_passant_incremental_update_count{0};
+};
+
+struct NnueSearchTestResult {
+  SearchResult search{};
+  NnueSearchAccumulatorCounters counters{};
+};
+
+NnueSearchTestResult search_nnue_incremental_for_test(const Board& board,
+                                                       const SearchLimits& limits);
+NnueSearchTestResult search_nnue_legacy_for_test(const Board& board,
+                                                  const SearchLimits& limits);
+#endif
+
 }  // namespace hebichess

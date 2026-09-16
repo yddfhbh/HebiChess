@@ -120,6 +120,14 @@ target_include_directories(HebiChessNnueIncrementalAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueIncrementalAccumulatorTest
   PRIVATE HEBICHESS_NNUE_TEST_PROFILE=1)
 
+add_executable(HebiChessNnueSearchAccumulatorTest
+  tests/nnue_search_accumulator_test.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNnueSearchAccumulatorTest PRIVATE src)
+target_compile_definitions(HebiChessNnueSearchAccumulatorTest
+  PRIVATE HEBICHESS_NNUE_SEARCH_TEST=1)
+
 add_executable(HebiChessGameStateTest
   tests/game_state_test.cpp
   ${CHESS_SOURCES}
@@ -147,6 +155,7 @@ set_tests_properties(chess_nnue_clip_precompute PROPERTIES
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 add_test(NAME chess_nnue_incremental_accumulator COMMAND HebiChessNnueIncrementalAccumulatorTest)
+add_test(NAME chess_nnue_search_accumulator COMMAND HebiChessNnueSearchAccumulatorTest)
 add_test(
   NAME chess_search_baseline
   COMMAND ${CMAKE_COMMAND}
