@@ -282,6 +282,47 @@ std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept {
   add(extract_nnue_features(board, Color::Black), black);
   const auto& stm = board.side_to_move() == Color::White ? white : black;
   const auto& opp = board.side_to_move() == Color::White ? black : white;
+  float clipped_stm[kAccumulator];
+  float clipped_opp[kAccumulator];
+  for (std::size_t i = 0; i < kAccumulator; ++i) {
+    clipped_stm[i] = clipped_relu(stm[i]);
+    clipped_opp[i] = clipped_relu(opp[i]);
+  }
+  std::vector<float> h1(n.hidden1_dimensions);
+  for (std::size_t o = 0; o < n.hidden1_dimensions; ++o) {
+    float sum = n.hidden1_bias[o]; const float* row = n.hidden1.data() + o * 2 * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_stm[i];
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_opp[i];
+    h1[o] = clipped_relu(sum);
+  }
+  std::vector<float> h2(n.hidden2_dimensions);
+  for (std::size_t o = 0; o < n.hidden2_dimensions; ++o) {
+    float sum = n.hidden2_bias[o]; const float* row = n.hidden2.data() + o * n.hidden1_dimensions;
+    for (std::size_t i = 0; i < n.hidden1_dimensions; ++i) sum += row[i] * h1[i];
+    h2[o] = final_hidden_relu(sum, n.final_hidden_activation);
+  }
+  float score = n.output_bias;
+  for (std::size_t i = 0; i < n.hidden2_dimensions; ++i) score += n.output[i] * h2[i];
+  score *= n.output_scale;
+  if (!std::isfinite(score)) return std::nullopt;
+  return score;
+}
+
+#if defined(HEBICHESS_NNUE_TEST_REFERENCE)
+std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept {
+  const auto& maybe = loaded_network(); if (!maybe) return std::nullopt;
+  const Network& n = *maybe;
+  std::vector<float> white = n.transform_bias, black = n.transform_bias;
+  const auto add = [&](const NnueFeatures& features, std::vector<float>& accumulator) {
+    for (std::size_t f = 0; f < features.size; ++f) {
+      const float* row = n.transform.data() + static_cast<std::size_t>(features.indices[f]) * kAccumulator;
+      for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
+    }
+  };
+  add(extract_nnue_features(board, Color::White), white);
+  add(extract_nnue_features(board, Color::Black), black);
+  const auto& stm = board.side_to_move() == Color::White ? white : black;
+  const auto& opp = board.side_to_move() == Color::White ? black : white;
   std::vector<float> h1(n.hidden1_dimensions);
   for (std::size_t o = 0; o < n.hidden1_dimensions; ++o) {
     float sum = n.hidden1_bias[o]; const float* row = n.hidden1.data() + o * 2 * kAccumulator;
@@ -301,6 +342,7 @@ std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept {
   if (!std::isfinite(score)) return std::nullopt;
   return score;
 }
+#endif
 
 std::optional<int> evaluate_nnue_network(const Board& board) noexcept {
   const auto score = evaluate_nnue_network_raw(board);

@@ -105,6 +105,13 @@ add_executable(HebiChessSearchBaseline
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
 
+add_executable(HebiChessNnueClipPrecomputeTest
+  tests/nnue_clip_precompute_test.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNnueClipPrecomputeTest PRIVATE src)
+target_compile_definitions(HebiChessNnueClipPrecomputeTest PRIVATE HEBICHESS_NNUE_TEST_REFERENCE=1)
+
 add_executable(HebiChessGameStateTest
   tests/game_state_test.cpp
   ${CHESS_SOURCES}
@@ -127,6 +134,10 @@ add_test(NAME chess_uci COMMAND HebiChessUciTest)
 add_test(NAME chess_zobrist_tt COMMAND HebiChessZobristTtTest)
 add_test(NAME chess_see COMMAND HebiChessSeeTest)
 add_test(NAME chess_game_state COMMAND HebiChessGameStateTest)
+add_test(NAME chess_nnue_clip_precompute COMMAND HebiChessNnueClipPrecomputeTest)
+set_tests_properties(chess_nnue_clip_precompute PROPERTIES
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
 add_test(
   NAME chess_search_baseline
   COMMAND ${CMAKE_COMMAND}

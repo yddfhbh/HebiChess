@@ -16,6 +16,10 @@ bool load_nnue_network_bytes(const std::uint8_t* bytes, std::size_t size, std::s
 bool nnue_network_available() noexcept;
 // Float diagnostic used by parity tooling. Search uses the rounded int API.
 std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept;
+#if defined(HEBICHESS_NNUE_TEST_REFERENCE)
+// Test-only legacy implementation for direct old-versus-new raw-score parity.
+std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept;
+#endif
 std::optional<int> evaluate_nnue_network(const Board& board) noexcept;
 void clear_nnue_network() noexcept;
 
