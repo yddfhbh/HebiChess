@@ -1,14 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {spawn} = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const port = 3417;
 const testData = path.join(os.tmpdir(), `hebichess-web-test-${process.pid}.json`);
-let child;
-test.before(async()=>{child=spawn(process.execPath,['server.js'],{cwd:__dirname+'/..',env:{...process.env,PORT:String(port),HEBICHESS_BINARY:'../build/HebiChess',DEFAULT_SEARCH_MOVETIME_MS:'1',DATA_PATH:testData}});await new Promise((resolve,reject)=>{child.stdout.on('data',d=>{if(d.toString().includes('listening'))resolve()});child.on('error',reject)})});
-test.after(()=>{child.kill();try{fs.unlinkSync(testData)}catch(error){if(error.code!=='ENOENT')throw error}});
+const previousDataPath = process.env.DATA_PATH;
+process.env.DATA_PATH = testData;
+const {server} = require('../server');
+if (previousDataPath === undefined) delete process.env.DATA_PATH;
+else process.env.DATA_PATH = previousDataPath;
+let port;
+test.before(async()=>{await new Promise((resolve,reject)=>{const failed=error=>reject(error);server.once('error',failed);server.listen(0,'127.0.0.1',()=>{server.off('error',failed);port=server.address().port;resolve();});});});
+test.after(async()=>{server.closeAllConnections?.();await new Promise(resolve=>server.close(resolve));try{fs.unlinkSync(testData)}catch(error){if(error.code!=='ENOENT')throw error}});
 async function call(path,body,cookie){const r=await fetch(`http://127.0.0.1:${port}${path}`,{method:body?'POST':'GET',headers:{'content-type':'application/json',...(cookie?{cookie}: {})},body:body&&JSON.stringify(body)});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=raw}return {status:r.status,data,cookie:r.headers.get('set-cookie')?.split(';')[0]||cookie}}
 function session(value){return `hebichess_session=${value}`}
 function sse(cookie){return fetch(`http://127.0.0.1:${port}/events`,{headers:{cookie}})}

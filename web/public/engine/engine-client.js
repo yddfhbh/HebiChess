@@ -3,32 +3,36 @@
     ? new URL('hebichess-worker.js', document.currentScript.src).href
     : '/public/engine/hebichess-worker.js';
   class HebiChessEngineClient {
-    constructor(workerUrl=defaultWorkerUrl) { this.workerUrl=workerUrl; this.gameId=0; this.searchId=0; this.positionKey=undefined; this.handlers={info(){},output(){},error(){},diagnostic(){},gameState(){}}; this.gamePending=null; }
+    constructor(workerUrl=defaultWorkerUrl) { this.workerUrl=workerUrl; this.gameId=0; this.searchId=0; this.positionKey=undefined; this.nnueState='hce-ready'; this.evalMode='HCE'; this.handlers={info(){},output(){},error(){},diagnostic(){},gameState(){},nnueState(){}}; this.gamePending=null; this.nnuePending=null; this.evalModePending=null; this.rawPending=new Map(); this.rawRequestId=0; }
     async initialize() {
-      this._cancelPending('engine worker replaced');
-      this.worker?.terminate(); this.worker=new Worker(this.workerUrl); this.positionKey=undefined; this.handlers.diagnostic({step:'worker created',at:performance.now()});
-      return new Promise((resolve,reject) => { this.worker.onerror=e=>reject(Error(e.message || 'worker initialization failed')); this.worker.onmessage=e=>{const m=e.data;if(m.type==='ready')resolve();else this._receive(m)}; this.worker.postMessage({type:'init'}); });
+      this._cancelPending('engine worker replaced'); this._rejectNnue(Error('engine worker replaced')); this._rejectEvalMode(Error('engine worker replaced')); this._rejectRaw(Error('engine worker replaced'));
+      this.worker?.terminate(); this.worker=new Worker(this.workerUrl); this.positionKey=undefined; this.nnueState='hce-ready'; this.evalMode='HCE'; this.handlers.diagnostic({step:'worker created',at:performance.now()});
+      return new Promise((resolve,reject) => { this.worker.onerror=e=>reject(Error(e.message || 'worker initialization failed')); this.worker.onmessage=e=>{const m=e.data;if(m.type==='ready'){this.nnueState=m.nnueState||'hce-ready';this.evalMode=m.evalMode||'HCE';resolve();}else this._receive(m)}; this.worker.postMessage({type:'init'}); });
     }
-    onOutput(handler) { this.handlers.output=handler; } onInfo(handler) { this.handlers.info=handler; } onError(handler) { this.handlers.error=handler; } onDiagnostic(handler) { this.handlers.diagnostic=handler; } onGameState(handler) { this.handlers.gameState=handler; }
+    onOutput(handler) { this.handlers.output=handler; } onInfo(handler) { this.handlers.info=handler; } onError(handler) { this.handlers.error=handler; } onDiagnostic(handler) { this.handlers.diagnostic=handler; } onGameState(handler) { this.handlers.gameState=handler; } onNnueState(handler) { this.handlers.nnueState=handler; }
+    loadNnue(options={}) { if(this.nnueState==='nnue-ready')return Promise.resolve({state:this.nnueState}); if(this.nnuePending)return this.nnuePending.promise; let resolve,reject; const promise=new Promise((ok,no)=>{resolve=ok;reject=no}); this.nnuePending={promise,resolve,reject}; this.worker.postMessage({type:'load-nnue',...options}); return promise; }
+    setEvalMode(mode) { const normalized=String(mode).toUpperCase(); if(normalized!=='HCE'&&normalized!=='NNUE')return Promise.reject(Error(`unsupported EvalMode ${mode}`)); if(normalized==='NNUE'&&this.nnueState!=='nnue-ready')return Promise.reject(Error(`EvalMode NNUE requested while state is ${this.nnueState}; load and wait for NNUE first`)); let resolve,reject; const promise=new Promise((ok,no)=>{resolve=ok;reject=no}); this.evalModePending={resolve,reject}; this.worker.postMessage({type:'set-eval-mode',mode:normalized}); return promise; }
+    rawNnueEvaluate(fen) { if(this.nnueState!=='nnue-ready')return Promise.reject(Error(`NNUE raw evaluation requested while state is ${this.nnueState}`)); const requestId=++this.rawRequestId; return new Promise((resolve,reject)=>{this.rawPending.set(requestId,{resolve,reject});this.worker.postMessage({type:'nnue-evaluate',requestId,fen});}); }
     position({fen,moves=[],gameId:serverGameId}={}) { this._cancelPending('search superseded by position'); const key=serverGameId ?? Symbol('position'); if(key!==this.positionKey){ this.positionKey=key; this.gameId++; this.searchId=0; this.worker.postMessage({type:'command',gameId:this.gameId,searchId:0,command:'ucinewgame'}); } this.worker.postMessage({type:'position',gameId:this.gameId,searchId:0,fen,moves}); return this.gameId; }
     sendCommand(command) { this.worker.postMessage({type:'command',gameId:this.gameId,searchId:this.searchId,command}); }
-    go(limits) { this._cancelPending('search superseded by newer search'); const gameId=this.gameId,searchId=++this.searchId; const request=typeof limits==='number'?{movetime:limits}:({...limits}); return new Promise((resolve,reject)=>{this.pending={gameId,searchId,resolve,reject};this.worker.postMessage({type:'go',gameId,searchId,...request})}); }
+    go(limits) { if(this.evalMode==='NNUE'&&this.nnueState!=='nnue-ready')return Promise.reject(Error('NNUE search blocked: model is not ready')); this._cancelPending('search superseded by newer search'); const gameId=this.gameId,searchId=++this.searchId; const request=typeof limits==='number'?{movetime:limits}:({...limits}); return new Promise((resolve,reject)=>{this.pending={gameId,searchId,resolve,reject};this.worker.postMessage({type:'go',gameId,searchId,...request})}); }
     _gameRequest(message) { if(this.gamePending)this.gamePending.reject(Error('game-state request superseded')); return new Promise((resolve,reject)=>{this.gamePending={resolve,reject};this.worker.postMessage(message);}); }
-    gameReset() { return this._gameRequest({type:'game-reset'}); }
-    gameLoadFen(fen) { return this._gameRequest({type:'game-load-fen',fen}); }
-    gameLegalMoves() { return this._gameRequest({type:'game-legal-moves'}); }
-    gameApply(move) { return this._gameRequest({type:'game-apply',move}); }
+    gameReset() { return this._gameRequest({type:'game-reset'}); } gameLoadFen(fen) { return this._gameRequest({type:'game-load-fen',fen}); } gameLegalMoves() { return this._gameRequest({type:'game-legal-moves'}); } gameApply(move) { return this._gameRequest({type:'game-apply',move}); }
     _cancelPending(reason) { if (!this.pending) return; const pending=this.pending; this.pending=null; const error=Error(reason); error.name='AbortError'; pending.reject(error); }
+    _rejectNnue(error) { if(this.nnuePending){this.nnuePending.reject(error);this.nnuePending=null;} } _rejectEvalMode(error) { if(this.evalModePending){this.evalModePending.reject(error);this.evalModePending=null;} } _rejectRaw(error) { for(const pending of this.rawPending.values())pending.reject(error);this.rawPending.clear(); }
     _receive(message) {
       if (message.type==='game-state') { this.handlers.gameState?.(message); if(this.gamePending){const p=this.gamePending;this.gamePending=null;p.resolve(message);} return; }
       if (message.type==='diagnostic') { this.handlers.diagnostic(message); return; }
-      if (message.type==='error') { this.handlers.error(message); if(this.pending?.gameId===message.gameId&&this.pending?.searchId===message.searchId){const pending=this.pending;this.pending=null;pending.reject(Error(message.message));} return; }
+      if (message.type==='nnue-state') { this.nnueState=message.state; this.handlers.nnueState?.(message); if(message.state==='nnue-ready'&&this.nnuePending){this.nnuePending.resolve(message);this.nnuePending=null;} if(message.state==='nnue-load-failed')this._rejectNnue(Error(message.error||'NNUE loading failed')); return; }
+      if (message.type==='eval-mode') { this.evalMode=message.mode; if(this.evalModePending){this.evalModePending.resolve(message);this.evalModePending=null;} return; }
+      if (message.type==='nnue-evaluation') { const pending=this.rawPending.get(message.requestId); if(pending){this.rawPending.delete(message.requestId);pending.resolve(message.value);} return; }
+      if (message.type==='error') { this.handlers.error(message); if(this.pending?.gameId===message.gameId&&this.pending?.searchId===message.searchId){const pending=this.pending;this.pending=null;pending.reject(Error(message.message));} const raw=this.rawPending.get(message.requestId);if(raw){this.rawPending.delete(message.requestId);raw.reject(Error(message.message));} if(this.evalModePending)this._rejectEvalMode(Error(message.message)); return; }
       if (message.gameId != null && (message.gameId !== this.gameId || (message.searchId != null && message.searchId !== this.searchId))) { this.handlers.diagnostic({step:'stale message discarded',message,at:performance.now()}); return; }
       if (message.type==='bestmove' && this.pending) { this.handlers.diagnostic({step:'bestmove received',at:performance.now(),...message}); this.pending.resolve(message.move); this.pending=null; }
       else if (message.type==='info') this.handlers.info(message); else this.handlers.output(message);
     }
     stop() { this.sendCommand('stop'); this._cancelPending('engine search stopped'); }
-    terminate() { this._cancelPending('engine terminated'); this.worker?.terminate(); this.worker=null; }
+    terminate() { this._cancelPending('engine terminated'); this._rejectNnue(Error('engine terminated')); this._rejectEvalMode(Error('engine terminated')); this._rejectRaw(Error('engine terminated')); this.worker?.terminate(); this.worker=null; }
   }
   global.HebiChessEngineClient=HebiChessEngineClient;
 })(self);

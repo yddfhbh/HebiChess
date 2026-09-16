@@ -1,6 +1,11 @@
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 
+#include "chess/nnue.hpp"
 #include "chess/uci_engine.hpp"
 #include "chess/game_state.hpp"
 
@@ -71,6 +76,35 @@ const char* hebichess_game_status() {
 }
 
 const char* hebichess_take_output() {
+  return output.c_str();
+}
+
+int hebichess_nnue_load_bytes(const std::uint8_t* bytes, std::size_t size) {
+  output.clear();
+  std::string error;
+  if (!hebichess::load_nnue_network_bytes(bytes, size, error)) {
+    output = "info string error " + error + "\n";
+    return 0;
+  }
+  output = "info string NNUE network loaded browser binary\n";
+  return 1;
+}
+
+void hebichess_nnue_clear() {
+  hebichess::clear_nnue_network();
+  output = "info string NNUE network cleared\n";
+}
+
+const char* hebichess_nnue_evaluate_fen_raw(const char* fen) {
+  output.clear();
+  if (!fen) { output = "error empty FEN"; return output.c_str(); }
+  const auto board = hebichess::Board::from_fen(fen);
+  if (!board) { output = "error invalid FEN"; return output.c_str(); }
+  const auto score = hebichess::evaluate_nnue_network_raw(*board);
+  if (!score) { output = "error NNUE unavailable"; return output.c_str(); }
+  std::ostringstream value;
+  value << std::setprecision(std::numeric_limits<float>::max_digits10) << *score;
+  output = value.str();
   return output.c_str();
 }
 

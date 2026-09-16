@@ -61,3 +61,9 @@ test('all player moves fail closed through a browser snapshot', () => {
   assert.match(app, /const submitPlayerMove=gameMutations\.move\.bind\(gameMutations\)/);
   assert.match(app, /gameMutations\.move=async \(move,snapshot\)=>submitPlayerMove\(move,snapshot\|\|await browserSnapshot\(move\)\)/);
 });
+
+test('NNUE selection is explicit and fails closed without changing the HCE default', () => {
+  assert.match(app, /get\('eval'\)\?\.toUpperCase\(\)==='NNUE'\?'NNUE':'HCE'/);
+  assert.match(app, /await requestedNnueLoad;await client\.setEvalMode\('NNUE'\)/);
+  assert.match(app, /NNUE를 사용할 수 없습니다/);
+});

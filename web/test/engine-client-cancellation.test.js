@@ -80,3 +80,20 @@ test('same server game position sync keeps the engine generation and skips ucine
   assert.equal(worker.messages.filter(message=>message.type==='command').length,initialCommandCount+2);
   engine.terminate();
 });
+
+test('NNUE selection fails closed until the asynchronous model load is ready',async()=>{
+  const {engine,worker}=await client();
+  await assert.rejects(engine.setEvalMode('NNUE'),/load and wait for NNUE first/);
+  const loading=engine.loadNnue();
+  assert.equal(worker.messages.at(-1).type,'load-nnue');
+  worker.send({type:'nnue-state',state:'nnue-load-failed',error:'checksum mismatch'});
+  await assert.rejects(loading,/checksum mismatch/);
+  worker.send({type:'nnue-state',state:'nnue-ready'});
+  const selected=engine.setEvalMode('NNUE');
+  assert.equal(worker.messages.at(-1).type,'set-eval-mode');
+  assert.equal(worker.messages.at(-1).mode,'NNUE');
+  worker.send({type:'eval-mode',mode:'NNUE',nnueState:'nnue-ready'});
+  await selected;
+  assert.equal(engine.evalMode,'NNUE');
+  engine.terminate();
+});
