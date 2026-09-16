@@ -1,0 +1,11 @@
+# Phase 6-1 direct-search baseline suite.  Format: name<TAB>full FEN.
+# Reuses the tracked canonical corpus tests/data/wasm-parity-100.fen.
+# critical-phase4-index-{9,12,13} are zero-based indices in the historical
+# 24-position Phase 4 NNUE search fixture (source entries 38, 56, and 62).
+startpos	rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+quiet-middlegame	rn1qk3/2p1p1b1/pp3npr/3p1p1p/P2P2P1/RPN4b/1BP1PP1P/1Q2KBNR w Kq - 1 12
+tactical-middlegame	rn1q1k2/4p2r/ppp2npb/5p2/P2Pp3/BPN5/R1P1KPbP/1Q3BNR w - - 2 18
+king-attack	2r1n1k1/3np2r/1ppq4/p1BNb1pQ/P1BPp3/1P6/2P2PbP/1R2K1NR w - - 14 30
+critical-phase4-index-9	2r1n1k1/3nq1br/1pp1p3/p5p1/PN1Pp2P/1P1B4/2P2Pb1/2R1K1NR w - - 4 36
+critical-phase4-index-12	1Nr1n1k1/8/1pp1p3/p1P4r/PP1Pp1pq/2R2bb1/4B3/2K3NR w - - 3 54
+critical-phase4-index-13	1Nrq2k1/2n2r2/1pp1B3/p1P5/PP1Pp1p1/2R2b2/8/1K2b1NR w - - 5 60
