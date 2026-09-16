@@ -55,3 +55,9 @@ test('history plies are individually clickable and historical check comes from s
   assert.match(html, /id="first"/);
   assert.match(html, /id="latest-small"/);
 });
+
+
+test('all player moves fail closed through a browser snapshot', () => {
+  assert.match(app, /const submitPlayerMove=gameMutations\.move\.bind\(gameMutations\)/);
+  assert.match(app, /gameMutations\.move=async \(move,snapshot\)=>submitPlayerMove\(move,snapshot\|\|await browserSnapshot\(move\)\)/);
+});

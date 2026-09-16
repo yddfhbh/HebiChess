@@ -6,8 +6,24 @@
   function clearOptimisticDrop() {
     if (!pendingDropPreview) return;
     pendingDropPreview.sourcePiece?.style.removeProperty('visibility');
+    pendingDropPreview.destinationPiece?.style.removeProperty('visibility');
     pendingDropPreview.preview?.remove();
     pendingDropPreview = null;
+  }
+
+  function clearImmediateMoveMarkers() {
+    document.querySelectorAll(
+      '.selected,.legal,.capture,.drag-legal,.drag-capture,.drag-target'
+    ).forEach(element => {
+      element.classList.remove(
+        'selected',
+        'legal',
+        'capture',
+        'drag-legal',
+        'drag-capture',
+        'drag-target'
+      );
+    });
   }
 
   function showOptimisticDrop(preview) {
@@ -18,13 +34,20 @@
     if (!destinationSquare) return;
 
     const sourcePiece = sourceSquare?.querySelector?.('.piece') || null;
+    const destinationPiece = destinationSquare.querySelector?.('.piece') || null;
+
     if (sourcePiece) sourcePiece.style.visibility = 'hidden';
+    if (destinationPiece) destinationPiece.style.visibility = 'hidden';
 
     const overlay = document.createElement('div');
     overlay.className = 'drop-preview';
     overlay.innerHTML = pieceSvg(preview.piece);
     destinationSquare.appendChild(overlay);
-    pendingDropPreview = {sourcePiece, preview:overlay};
+    pendingDropPreview = {
+      sourcePiece,
+      destinationPiece,
+      preview:overlay
+    };
   }
 
   const previousEndDrag = endDrag;
@@ -56,9 +79,25 @@
       queuedDropPreview = null;
       return;
     }
-    if (queuedDropPreview && move.startsWith(queuedDropPreview.from + queuedDropPreview.to)) {
-      showOptimisticDrop(queuedDropPreview);
+    let preview = null;
+
+    if (
+      queuedDropPreview &&
+      move.startsWith(queuedDropPreview.from + queuedDropPreview.to)
+    ) {
+      preview = queuedDropPreview;
+    } else if (typeof move === 'string' && move.length >= 4 && move.length === 4) {
+      const from = move.slice(0, 2);
+      const to = move.slice(2, 4);
+      const piece = pieceAt(from);
+
+      if (piece && piece !== '.') {
+        preview = {from, to, piece};
+      }
     }
+
+    if (preview) showOptimisticDrop(preview);
+    clearImmediateMoveMarkers();
     queuedDropPreview = null;
 
     console.debug?.('[Phase2][drop-latency] delegating move to canonical sendMove', {move});

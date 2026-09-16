@@ -30,6 +30,6 @@ test('drag pointer position is retained across board rerenders', () => {
 });
 
 test('interaction assets use the current cache version', () => {
-  assert.match(html, /interaction-fixes\.js\?v=20260909f/);
+  assert.match(html, /interaction-fixes\.js\?v=20260915a/);
   assert.match(html, /interaction-fixes\.css\?v=20260909f/);
 });

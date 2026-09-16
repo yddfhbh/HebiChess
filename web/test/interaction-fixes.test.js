@@ -7,7 +7,7 @@ const css = fs.readFileSync('public/interaction-fixes.css', 'utf8');
 const html = fs.readFileSync('public/index.html', 'utf8');
 
 test('interaction hardening assets are loaded after the main client', () => {
-  assert.match(html, /app\.js\?v=20260911r1[\s\S]*interaction-fixes\.js\?v=20260909f/);
+  assert.match(html, /app\.js\?v=20260916a[\s\S]*interaction-fixes\.js\?v=20260915a/);
   assert.match(html, /interaction-fixes\.css\?v=20260909f/);
 });
 
@@ -16,6 +16,15 @@ test('partial premove reconciliation refreshes live selection before rendering',
   assert.match(js, /selectedInteractionMode = 'live'/);
   assert.match(js, /legalDestinations = decision\.legalDestinations/);
   assert.match(js, /maybePremove\(\)/);
+});
+
+
+test('turn-return selection waits for fresh GameState hydration', () => {
+  assert.match(js, /receive = async function receiveInteractionSafe/);
+  assert.match(js, /const interactionKey = browserStateKey\(S\)/);
+  assert.match(js, /await hydrateBrowserGameState\(S\)/);
+  assert.match(js, /browserStateKey\(S\) !== interactionKey/);
+  assert.match(js, /reconcilePartialSelection\(\)/);
 });
 
 test('drag drop uses board geometry instead of elementFromPoint', () => {

@@ -71,7 +71,7 @@
     }
   }
 
-  receive = function receiveInteractionSafe(data, eventType) {
+  receive = async function receiveInteractionSafe(data, eventType) {
     if (!data.active && S.result) return;
     if (data.result && eventType === 'gameOver') {
       clearInteraction();
@@ -91,6 +91,9 @@
     if (!isPlayer()) {
       clearInteraction();
     } else if (data.active && data.turn === data.playerColor) {
+      const interactionKey = browserStateKey(S);
+      const hydrated = await hydrateBrowserGameState(S);
+      if (!hydrated || browserStateKey(S) !== interactionKey) return;
       reconcilePartialSelection();
     }
 
