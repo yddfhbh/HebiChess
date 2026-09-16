@@ -1,6 +1,10 @@
 #include "chess/nnue.hpp"
 
 #include <algorithm>
+#include <array>
+#if defined(HEBICHESS_NNUE_TEST_PROFILE)
+#include <chrono>
+#endif
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -14,7 +18,7 @@ namespace {
 constexpr std::uint32_t kV1Version = 1;
 constexpr std::uint32_t kV2Version = 2;
 constexpr std::uint32_t kV3Version = 3;
-constexpr std::uint32_t kAccumulator = 256;
+constexpr std::uint32_t kAccumulator = kNnueAccumulatorDimensions;
 constexpr std::uint32_t kV1Hidden1 = 32, kV1Hidden2 = 32;
 constexpr std::uint32_t kV2Hidden1 = 128, kV2Hidden2 = 128;
 constexpr std::uint32_t kOutput = 1;
@@ -243,6 +247,72 @@ bool load_nnue_network_bytes_impl(const std::uint8_t* bytes, std::size_t size,
   return true;
 }
 
+using AccumulatorArray = std::array<float, kAccumulator>;
+
+void add_features_to_accumulator(const Network& network,
+                                 const NnueFeatures& features,
+                                 AccumulatorArray& accumulator) noexcept {
+  for (std::size_t f = 0; f < features.size; ++f) {
+    const float* row = network.transform.data() +
+        static_cast<std::size_t>(features.indices[f]) * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
+  }
+}
+
+void refresh_perspective_accumulator(const Network& network, const Board& board,
+                                     Color perspective,
+                                     AccumulatorArray& accumulator) noexcept {
+  std::copy_n(network.transform_bias.begin(), kAccumulator, accumulator.begin());
+  add_features_to_accumulator(network, extract_nnue_features(board, perspective),
+                              accumulator);
+}
+
+void add_feature_delta(const Network& network, AccumulatorArray& accumulator,
+                       Square perspective_king, Piece piece, Square square,
+                       Color perspective, float sign) noexcept {
+  if (piece.is_empty()) return;
+  const std::uint32_t feature = nnue_feature_index(perspective_king, piece,
+                                                   square, perspective);
+  const float* row = network.transform.data() +
+      static_cast<std::size_t>(feature) * kAccumulator;
+  for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += sign * row[i];
+}
+
+std::optional<float> evaluate_from_accumulator(const Network& network,
+                                               const Board& board,
+                                               const NnueAccumulator& accumulator) noexcept {
+  const auto& stm = board.side_to_move() == Color::White ? accumulator.white
+                                                          : accumulator.black;
+  const auto& opp = board.side_to_move() == Color::White ? accumulator.black
+                                                          : accumulator.white;
+  float clipped_stm[kAccumulator];
+  float clipped_opp[kAccumulator];
+  for (std::size_t i = 0; i < kAccumulator; ++i) {
+    clipped_stm[i] = clipped_relu(stm[i]);
+    clipped_opp[i] = clipped_relu(opp[i]);
+  }
+  std::vector<float> h1(network.hidden1_dimensions);
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    float sum = network.hidden1_bias[o];
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_stm[i];
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_opp[i];
+    h1[o] = clipped_relu(sum);
+  }
+  std::vector<float> h2(network.hidden2_dimensions);
+  for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
+    float sum = network.hidden2_bias[o];
+    const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
+    for (std::size_t i = 0; i < network.hidden1_dimensions; ++i) sum += row[i] * h1[i];
+    h2[o] = final_hidden_relu(sum, network.final_hidden_activation);
+  }
+  float score = network.output_bias;
+  for (std::size_t i = 0; i < network.hidden2_dimensions; ++i) score += network.output[i] * h2[i];
+  score *= network.output_scale;
+  if (!std::isfinite(score)) return std::nullopt;
+  return score;
+}
+
 }  // namespace
 
 bool load_nnue_network(const std::string& path, std::string& error) {
@@ -268,45 +338,204 @@ bool load_nnue_network_bytes(const std::uint8_t* bytes, std::size_t size, std::s
 bool nnue_network_available() noexcept { return loaded_network().has_value(); }
 void clear_nnue_network() noexcept { loaded_network().reset(); }
 
-std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept {
-  const auto& maybe = loaded_network(); if (!maybe) return std::nullopt;
-  const Network& n = *maybe;
-  std::vector<float> white = n.transform_bias, black = n.transform_bias;
-  const auto add = [&](const NnueFeatures& features, std::vector<float>& accumulator) {
-    for (std::size_t f = 0; f < features.size; ++f) {
-      const float* row = n.transform.data() + static_cast<std::size_t>(features.indices[f]) * kAccumulator;
-      for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
-    }
-  };
-  add(extract_nnue_features(board, Color::White), white);
-  add(extract_nnue_features(board, Color::Black), black);
-  const auto& stm = board.side_to_move() == Color::White ? white : black;
-  const auto& opp = board.side_to_move() == Color::White ? black : white;
-  float clipped_stm[kAccumulator];
-  float clipped_opp[kAccumulator];
-  for (std::size_t i = 0; i < kAccumulator; ++i) {
-    clipped_stm[i] = clipped_relu(stm[i]);
-    clipped_opp[i] = clipped_relu(opp[i]);
-  }
-  std::vector<float> h1(n.hidden1_dimensions);
-  for (std::size_t o = 0; o < n.hidden1_dimensions; ++o) {
-    float sum = n.hidden1_bias[o]; const float* row = n.hidden1.data() + o * 2 * kAccumulator;
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_stm[i];
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_opp[i];
-    h1[o] = clipped_relu(sum);
-  }
-  std::vector<float> h2(n.hidden2_dimensions);
-  for (std::size_t o = 0; o < n.hidden2_dimensions; ++o) {
-    float sum = n.hidden2_bias[o]; const float* row = n.hidden2.data() + o * n.hidden1_dimensions;
-    for (std::size_t i = 0; i < n.hidden1_dimensions; ++i) sum += row[i] * h1[i];
-    h2[o] = final_hidden_relu(sum, n.final_hidden_activation);
-  }
-  float score = n.output_bias;
-  for (std::size_t i = 0; i < n.hidden2_dimensions; ++i) score += n.output[i] * h2[i];
-  score *= n.output_scale;
-  if (!std::isfinite(score)) return std::nullopt;
-  return score;
+bool refresh_nnue_accumulator(const Board& board, NnueAccumulator& accumulator) noexcept {
+  const auto& maybe = loaded_network(); if (!maybe) return false;
+  refresh_perspective_accumulator(*maybe, board, Color::White, accumulator.white);
+  refresh_perspective_accumulator(*maybe, board, Color::Black, accumulator.black);
+  return true;
 }
+
+bool update_nnue_accumulator(const Board& parent, const Move& move,
+                             const NnueAccumulator& parent_accumulator,
+                             NnueAccumulator& child_accumulator) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe) return false;
+  const Network& network = *maybe;
+  const Piece moving = parent.piece_at(move.from);
+  if (moving.is_empty()) return false;
+
+  Piece captured = parent.piece_at(move.to);
+  Square captured_square = move.to;
+  if (move.flag == MoveFlag::EnPassant) {
+    captured_square = Square::from_file_rank(move.to.file(), move.from.rank());
+    captured = parent.piece_at(captured_square);
+  }
+  Piece placed = moving;
+  if (move.is_promotion()) placed.type = move.promotion;
+
+  child_accumulator = parent_accumulator;
+  std::optional<Board> child_board;
+  const auto refresh_child_perspective = [&](Color perspective,
+                                             AccumulatorArray& accumulator) {
+    if (!child_board.has_value()) {
+      child_board = parent;
+      child_board->make_move(move);
+    }
+    refresh_perspective_accumulator(network, *child_board, perspective, accumulator);
+  };
+  const auto update_perspective = [&](Color perspective,
+                                      AccumulatorArray& accumulator) -> bool {
+    if (moving.type == PieceType::King && moving.color == perspective) {
+      refresh_child_perspective(perspective, accumulator);
+      return true;
+    }
+    const Square perspective_king = parent.find_king(perspective);
+    if (!perspective_king.is_valid()) return false;
+    add_feature_delta(network, accumulator, perspective_king, moving, move.from,
+                      perspective, -1.0F);
+    add_feature_delta(network, accumulator, perspective_king, captured, captured_square,
+                      perspective, -1.0F);
+    add_feature_delta(network, accumulator, perspective_king, placed, move.to,
+                      perspective, 1.0F);
+    if (move.flag == MoveFlag::CastleKingSide || move.flag == MoveFlag::CastleQueenSide) {
+      const std::uint8_t rook_from_file = move.flag == MoveFlag::CastleKingSide ? 7 : 0;
+      const std::uint8_t rook_to_file = move.flag == MoveFlag::CastleKingSide ? 5 : 3;
+      const Square rook_from = Square::from_file_rank(rook_from_file, move.from.rank());
+      const Square rook_to = Square::from_file_rank(rook_to_file, move.from.rank());
+      const Piece rook = parent.piece_at(rook_from);
+      add_feature_delta(network, accumulator, perspective_king, rook, rook_from,
+                        perspective, -1.0F);
+      add_feature_delta(network, accumulator, perspective_king, rook, rook_to,
+                        perspective, 1.0F);
+    }
+    return true;
+  };
+  return update_perspective(Color::White, child_accumulator.white) &&
+         update_perspective(Color::Black, child_accumulator.black);
+}
+
+std::optional<float> evaluate_nnue_network_raw_from_accumulator(
+    const Board& board, const NnueAccumulator& accumulator) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe) return std::nullopt;
+  return evaluate_from_accumulator(*maybe, board, accumulator);
+}
+
+std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept {
+  NnueAccumulator accumulator;
+  if (!refresh_nnue_accumulator(board, accumulator)) return std::nullopt;
+  return evaluate_nnue_network_raw_from_accumulator(board, accumulator);
+}
+
+#if defined(HEBICHESS_NNUE_TEST_PROFILE)
+namespace {
+
+struct NnueEvaluatorStageScratch {
+  NnueAccumulator accumulator{};
+  AccumulatorArray clipped_white{};
+  AccumulatorArray clipped_black{};
+  std::array<float, kV2Hidden1> hidden1_sums{};
+  std::array<float, kV2Hidden1> hidden1{};
+  std::array<float, kV2Hidden2> hidden2{};
+};
+
+double profile_us_per_evaluation(const std::chrono::steady_clock::duration& elapsed,
+                                 std::size_t boards, std::size_t repeats) noexcept {
+  return std::chrono::duration<double, std::micro>(elapsed).count() /
+      static_cast<double>(boards * repeats);
+}
+
+}  // namespace
+
+std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
+    const std::vector<Board>& boards, std::size_t repeats) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe || boards.empty() || repeats == 0) return std::nullopt;
+  const Network& network = *maybe;
+  std::vector<NnueEvaluatorStageScratch> scratch(boards.size());
+  volatile float sink = 0.0F;
+
+  float stage_sum = 0.0F;
+  const auto rebuild_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (std::size_t index = 0; index < boards.size(); ++index) {
+      refresh_perspective_accumulator(network, boards[index], Color::White,
+                                      scratch[index].accumulator.white);
+      refresh_perspective_accumulator(network, boards[index], Color::Black,
+                                      scratch[index].accumulator.black);
+      stage_sum += scratch[index].accumulator.white[0] + scratch[index].accumulator.black[0];
+    }
+  }
+  const auto rebuild_elapsed = std::chrono::steady_clock::now() - rebuild_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto clip_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (NnueEvaluatorStageScratch& value : scratch) {
+      for (std::size_t i = 0; i < kAccumulator; ++i) {
+        value.clipped_white[i] = clipped_relu(value.accumulator.white[i]);
+        value.clipped_black[i] = clipped_relu(value.accumulator.black[i]);
+      }
+      stage_sum += value.clipped_white[0] + value.clipped_black[0];
+    }
+  }
+  const auto clip_elapsed = std::chrono::steady_clock::now() - clip_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto hidden1_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (std::size_t index = 0; index < boards.size(); ++index) {
+      NnueEvaluatorStageScratch& value = scratch[index];
+      const bool white_to_move = boards[index].side_to_move() == Color::White;
+      const float* stm = white_to_move ? value.clipped_white.data() : value.clipped_black.data();
+      const float* opp = white_to_move ? value.clipped_black.data() : value.clipped_white.data();
+      for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+        float sum = network.hidden1_bias[o];
+        const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+        for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * stm[i];
+        for (std::size_t i = 0; i < kAccumulator; ++i)
+          sum += row[kAccumulator + i] * opp[i];
+        value.hidden1_sums[o] = sum;
+      }
+      stage_sum += value.hidden1_sums[0];
+    }
+  }
+  const auto hidden1_elapsed = std::chrono::steady_clock::now() - hidden1_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto hidden2_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (NnueEvaluatorStageScratch& value : scratch) {
+      for (std::size_t i = 0; i < network.hidden1_dimensions; ++i)
+        value.hidden1[i] = clipped_relu(value.hidden1_sums[i]);
+      for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
+        float sum = network.hidden2_bias[o];
+        const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
+        for (std::size_t i = 0; i < network.hidden1_dimensions; ++i)
+          sum += row[i] * value.hidden1[i];
+        value.hidden2[o] = final_hidden_relu(sum, network.final_hidden_activation);
+      }
+      stage_sum += value.hidden2[0];
+    }
+  }
+  const auto hidden2_elapsed = std::chrono::steady_clock::now() - hidden2_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto output_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (NnueEvaluatorStageScratch& value : scratch) {
+      float score = network.output_bias;
+      for (std::size_t i = 0; i < network.hidden2_dimensions; ++i)
+        score += network.output[i] * value.hidden2[i];
+      stage_sum += score * network.output_scale;
+    }
+  }
+  const auto output_elapsed = std::chrono::steady_clock::now() - output_started;
+  sink = sink + stage_sum;
+  (void)sink;
+
+  return NnueEvaluatorStageProfile{
+      profile_us_per_evaluation(rebuild_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(clip_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(hidden1_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(hidden2_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(output_elapsed, boards.size(), repeats)};
+}
+#endif
 
 #if defined(HEBICHESS_NNUE_TEST_REFERENCE)
 std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept {

@@ -11,21 +11,28 @@ std::uint8_t orient(Square square, Color perspective) noexcept {
 
 }  // namespace
 
+std::uint32_t nnue_feature_index(Square perspective_king, Piece piece,
+                                 Square piece_square,
+                                 Color perspective) noexcept {
+  const std::uint32_t king_square = orient(perspective_king, perspective);
+  // Own color is 0, opponent color is 1. Piece types are Pawn=0..King=5.
+  const std::uint32_t color = piece.color == perspective ? 0U : 1U;
+  const std::uint32_t type = static_cast<std::uint32_t>(piece.type) - 1U;
+  const std::uint32_t colored_type = color * 6U + type;
+  return ((king_square * 12U + colored_type) * 64U) +
+         orient(piece_square, perspective);
+}
+
 NnueFeatures extract_nnue_features(const Board& board, Color perspective) noexcept {
   NnueFeatures result;
   const Square king = board.find_king(perspective);
   if (!king.is_valid()) return result;
-  const std::uint32_t king_square = orient(king, perspective);
   for (std::uint8_t raw = 0; raw < Square::kSquareCount; ++raw) {
     const Square square = Square::from_index(raw);
     const Piece piece = board.piece_at(square);
     if (piece.is_empty()) continue;
-    // Own color is 0, opponent color is 1. Piece types are Pawn=0..King=5.
-    const std::uint32_t color = piece.color == perspective ? 0U : 1U;
-    const std::uint32_t type = static_cast<std::uint32_t>(piece.type) - 1U;
-    const std::uint32_t colored_type = color * 6U + type;
-    result.indices[result.size++] = ((king_square * 12U + colored_type) * 64U) +
-                                    orient(square, perspective);
+    result.indices[result.size++] = nnue_feature_index(king, piece, square,
+                                                        perspective);
   }
   return result;
 }
