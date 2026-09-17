@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <array>
-#if defined(HEBICHESS_NNUE_TEST_PROFILE)
+#if defined(HEBICHESS_NNUE_DIAGNOSTICS) || defined(HEBICHESS_NNUE_TEST_PROFILE)
 #include <chrono>
 #endif
 #include <cmath>
@@ -18,7 +18,7 @@ namespace {
 constexpr std::uint32_t kV1Version = 1;
 constexpr std::uint32_t kV2Version = 2;
 constexpr std::uint32_t kV3Version = 3;
-constexpr std::uint32_t kAccumulator = kNnueAccumulatorDimensions;
+constexpr std::uint32_t kAccumulator = 256;
 constexpr std::uint32_t kV1Hidden1 = 32, kV1Hidden2 = 32;
 constexpr std::uint32_t kV2Hidden1 = 128, kV2Hidden2 = 128;
 constexpr std::uint32_t kOutput = 1;
@@ -72,22 +72,26 @@ struct Network {
   std::vector<float> hidden2_bias;
   std::vector<float> output;
   float output_bias{0.0F};
+#if defined(HEBICHESS_NNUE_HIDDEN1_LAYOUT) && HEBICHESS_NNUE_HIDDEN1_LAYOUT != 0
+  // Test-only transposition of hidden1 weights.  The serialized model stays
+  // unchanged in `hidden1`; this cache is derived after strict parsing.
+  std::vector<float> hidden1_prepacked;
+#endif
 };
 
 std::optional<Network>& loaded_network() { static std::optional<Network> value; return value; }
 
-// The normal engine build uses the accepted four-output dense loop.
-// Benchmark-only targets override this at compile time; there is no runtime
-// switch in the engine, UCI, or WASM surface.
-#ifndef HEBICHESS_NNUE_HIDDEN1_VARIANT
-#define HEBICHESS_NNUE_HIDDEN1_VARIANT 4
+// Original4 is the accepted production layout.  The packed forms are compiled
+// only into dedicated diagnostics, never selected through UCI or a runtime
+// option.
+#ifndef HEBICHESS_NNUE_HIDDEN1_LAYOUT
+#define HEBICHESS_NNUE_HIDDEN1_LAYOUT 0
 #endif
 
-static_assert(HEBICHESS_NNUE_HIDDEN1_VARIANT == 1 ||
-                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 2 ||
-                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 4 ||
-                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 8,
-              "hidden1 dense variant must be legacy, 2, 4, or 8 outputs");
+static_assert(HEBICHESS_NNUE_HIDDEN1_LAYOUT == 0 ||
+                  HEBICHESS_NNUE_HIDDEN1_LAYOUT == 4 ||
+                  HEBICHESS_NNUE_HIDDEN1_LAYOUT == 8,
+              "hidden1 layout must be Original4 (0), Prepacked4 (4), or Prepacked8 (8)");
 
 std::uint64_t parameter_count(std::uint32_t hidden1, std::uint32_t hidden2) noexcept {
   return static_cast<std::uint64_t>(kNnueInputDimensions) * kAccumulator + kAccumulator +
@@ -256,132 +260,25 @@ bool load_nnue_network_bytes_impl(const std::uint8_t* bytes, std::size_t size,
   std::memcpy(&network.output_bias, payload + offset, sizeof(network.output_bias));
   offset += sizeof(network.output_bias);
   if (offset != payload_size) { error = "NNUE invalid parameter layout"; return false; }
+#if HEBICHESS_NNUE_HIDDEN1_LAYOUT != 0
+  constexpr std::size_t kPackedOutputs = HEBICHESS_NNUE_HIDDEN1_LAYOUT;
+  const std::size_t groups = static_cast<std::size_t>(hidden1) / kPackedOutputs;
+  network.hidden1_prepacked.resize(groups * 2 * kAccumulator * kPackedOutputs);
+  for (std::size_t group = 0; group < groups; ++group) {
+    for (std::size_t half = 0; half < 2; ++half) {
+      for (std::size_t input = 0; input < kAccumulator; ++input) {
+        float* destination = network.hidden1_prepacked.data() +
+            ((group * 2 * kAccumulator + half * kAccumulator + input) * kPackedOutputs);
+        for (std::size_t lane = 0; lane < kPackedOutputs; ++lane) {
+          const std::size_t output = group * kPackedOutputs + lane;
+          destination[lane] = network.hidden1[(output * 2 + half) * kAccumulator + input];
+        }
+      }
+    }
+  }
+#endif
   loaded_network() = std::move(network);
   return true;
-}
-
-using AccumulatorArray = std::array<float, kAccumulator>;
-
-// Keep every neuron's floating-point accumulation order identical to the
-// original implementation: first stm[0..255], then opp[0..255].  The
-// interleaved forms only expose independent output accumulators to the
-// compiler, allowing it to reuse each clipped input load.
-#if defined(__GNUC__) && !defined(__clang__)
-#define HEBICHESS_NNUE_NO_FP_CONTRACT __attribute__((optimize("fp-contract=off")))
-#else
-#define HEBICHESS_NNUE_NO_FP_CONTRACT
-#endif
-void hidden1_dense_legacy(const Network& network, const float* stm,
-                          const float* opp, float* sums,
-                          std::size_t first_output = 0) noexcept {
-  for (std::size_t o = first_output; o < network.hidden1_dimensions; ++o) {
-    float sum = network.hidden1_bias[o];
-    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * stm[i];
-    for (std::size_t i = 0; i < kAccumulator; ++i)
-      sum += row[kAccumulator + i] * opp[i];
-    sums[o] = sum;
-  }
-}
-
-template <std::size_t Outputs>
-HEBICHESS_NNUE_NO_FP_CONTRACT
-void hidden1_dense_interleaved(const Network& network, const float* stm,
-                               const float* opp, float* sums) noexcept {
-  std::size_t o = 0;
-  for (; o + Outputs <= network.hidden1_dimensions; o += Outputs) {
-    std::array<float, Outputs> partial{};
-    std::array<const float*, Outputs> rows{};
-    for (std::size_t lane = 0; lane < Outputs; ++lane) {
-      partial[lane] = network.hidden1_bias[o + lane];
-      rows[lane] = network.hidden1.data() + (o + lane) * 2 * kAccumulator;
-    }
-    for (std::size_t i = 0; i < kAccumulator; ++i) {
-      const float input = stm[i];
-      for (std::size_t lane = 0; lane < Outputs; ++lane)
-        partial[lane] += rows[lane][i] * input;
-    }
-    for (std::size_t i = 0; i < kAccumulator; ++i) {
-      const float input = opp[i];
-      for (std::size_t lane = 0; lane < Outputs; ++lane)
-        partial[lane] += rows[lane][kAccumulator + i] * input;
-    }
-    for (std::size_t lane = 0; lane < Outputs; ++lane) sums[o + lane] = partial[lane];
-  }
-  hidden1_dense_legacy(network, stm, opp, sums, o);
-}
-
-void hidden1_dense(const Network& network, const float* stm, const float* opp,
-                   float* sums) noexcept {
-#if HEBICHESS_NNUE_HIDDEN1_VARIANT == 1
-  hidden1_dense_legacy(network, stm, opp, sums);
-#elif HEBICHESS_NNUE_HIDDEN1_VARIANT == 2
-  hidden1_dense_interleaved<2>(network, stm, opp, sums);
-#elif HEBICHESS_NNUE_HIDDEN1_VARIANT == 4
-  hidden1_dense_interleaved<4>(network, stm, opp, sums);
-#else
-  hidden1_dense_interleaved<8>(network, stm, opp, sums);
-#endif
-}
-#undef HEBICHESS_NNUE_NO_FP_CONTRACT
-
-void add_features_to_accumulator(const Network& network,
-                                 const NnueFeatures& features,
-                                 AccumulatorArray& accumulator) noexcept {
-  for (std::size_t f = 0; f < features.size; ++f) {
-    const float* row = network.transform.data() +
-        static_cast<std::size_t>(features.indices[f]) * kAccumulator;
-    for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
-  }
-}
-
-void refresh_perspective_accumulator(const Network& network, const Board& board,
-                                     Color perspective,
-                                     AccumulatorArray& accumulator) noexcept {
-  std::copy_n(network.transform_bias.begin(), kAccumulator, accumulator.begin());
-  add_features_to_accumulator(network, extract_nnue_features(board, perspective),
-                              accumulator);
-}
-
-void add_feature_delta(const Network& network, AccumulatorArray& accumulator,
-                       Square perspective_king, Piece piece, Square square,
-                       Color perspective, float sign) noexcept {
-  if (piece.is_empty()) return;
-  const std::uint32_t feature = nnue_feature_index(perspective_king, piece,
-                                                   square, perspective);
-  const float* row = network.transform.data() +
-      static_cast<std::size_t>(feature) * kAccumulator;
-  for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += sign * row[i];
-}
-
-std::optional<float> evaluate_from_accumulator(const Network& network,
-                                               const Board& board,
-                                               const NnueAccumulator& accumulator) noexcept {
-  const auto& stm = board.side_to_move() == Color::White ? accumulator.white
-                                                          : accumulator.black;
-  const auto& opp = board.side_to_move() == Color::White ? accumulator.black
-                                                          : accumulator.white;
-  float clipped_stm[kAccumulator];
-  float clipped_opp[kAccumulator];
-  for (std::size_t i = 0; i < kAccumulator; ++i) {
-    clipped_stm[i] = clipped_relu(stm[i]);
-    clipped_opp[i] = clipped_relu(opp[i]);
-  }
-  std::vector<float> h1(network.hidden1_dimensions);
-  hidden1_dense(network, clipped_stm, clipped_opp, h1.data());
-  for (float& value : h1) value = clipped_relu(value);
-  std::vector<float> h2(network.hidden2_dimensions);
-  for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
-    float sum = network.hidden2_bias[o];
-    const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
-    for (std::size_t i = 0; i < network.hidden1_dimensions; ++i) sum += row[i] * h1[i];
-    h2[o] = final_hidden_relu(sum, network.final_hidden_activation);
-  }
-  float score = network.output_bias;
-  for (std::size_t i = 0; i < network.hidden2_dimensions; ++i) score += network.output[i] * h2[i];
-  score *= network.output_scale;
-  if (!std::isfinite(score)) return std::nullopt;
-  return score;
 }
 
 }  // namespace
@@ -409,8 +306,145 @@ bool load_nnue_network_bytes(const std::uint8_t* bytes, std::size_t size, std::s
 bool nnue_network_available() noexcept { return loaded_network().has_value(); }
 void clear_nnue_network() noexcept { loaded_network().reset(); }
 
+namespace {
+
+// Every output preserves the historical floating-point addition order:
+// stm[0..255], then opp[0..255].  Original4 merely exposes four independent
+// sums.  Prepacked variants change only the weight-address layout.
+template <std::size_t Outputs>
+void hidden1_original4(const Network& network, const float* stm, const float* opp,
+                       float* sums) noexcept {
+  std::size_t output = 0;
+  for (; output + Outputs <= network.hidden1_dimensions; output += Outputs) {
+    std::array<float, Outputs> partial{};
+    std::array<const float*, Outputs> rows{};
+    for (std::size_t lane = 0; lane < Outputs; ++lane) {
+      partial[lane] = network.hidden1_bias[output + lane];
+      rows[lane] = network.hidden1.data() + (output + lane) * 2 * kAccumulator;
+    }
+    for (std::size_t input = 0; input < kAccumulator; ++input) {
+      const float value = stm[input];
+      for (std::size_t lane = 0; lane < Outputs; ++lane)
+        partial[lane] += rows[lane][input] * value;
+    }
+    for (std::size_t input = 0; input < kAccumulator; ++input) {
+      const float value = opp[input];
+      for (std::size_t lane = 0; lane < Outputs; ++lane)
+        partial[lane] += rows[lane][kAccumulator + input] * value;
+    }
+    for (std::size_t lane = 0; lane < Outputs; ++lane) sums[output + lane] = partial[lane];
+  }
+  // Current supported networks have hidden1 widths divisible by four, but
+  // retain a scalar tail to keep this helper structurally total.
+  for (; output < network.hidden1_dimensions; ++output) {
+    float sum = network.hidden1_bias[output];
+    const float* row = network.hidden1.data() + output * 2 * kAccumulator;
+    for (std::size_t input = 0; input < kAccumulator; ++input) sum += row[input] * stm[input];
+    for (std::size_t input = 0; input < kAccumulator; ++input)
+      sum += row[kAccumulator + input] * opp[input];
+    sums[output] = sum;
+  }
+}
+
+#if HEBICHESS_NNUE_HIDDEN1_LAYOUT != 0
+template <std::size_t Outputs>
+void hidden1_prepacked(const Network& network, const float* stm, const float* opp,
+                       float* sums) noexcept {
+  const std::size_t groups = network.hidden1_dimensions / Outputs;
+  for (std::size_t group = 0; group < groups; ++group) {
+    std::array<float, Outputs> partial{};
+    const std::size_t output = group * Outputs;
+    for (std::size_t lane = 0; lane < Outputs; ++lane)
+      partial[lane] = network.hidden1_bias[output + lane];
+    const float* packed = network.hidden1_prepacked.data() +
+        group * 2 * kAccumulator * Outputs;
+    for (std::size_t input = 0; input < kAccumulator; ++input) {
+      const float* weights = packed + input * Outputs;
+      for (std::size_t lane = 0; lane < Outputs; ++lane) partial[lane] += weights[lane] * stm[input];
+    }
+    packed += kAccumulator * Outputs;
+    for (std::size_t input = 0; input < kAccumulator; ++input) {
+      const float* weights = packed + input * Outputs;
+      for (std::size_t lane = 0; lane < Outputs; ++lane) partial[lane] += weights[lane] * opp[input];
+    }
+    for (std::size_t lane = 0; lane < Outputs; ++lane) sums[output + lane] = partial[lane];
+  }
+}
+#endif
+
+void hidden1_active(const Network& network, const float* stm, const float* opp,
+                    float* sums) noexcept {
+#if HEBICHESS_NNUE_HIDDEN1_LAYOUT == 0
+  hidden1_original4<4>(network, stm, opp, sums);
+#elif HEBICHESS_NNUE_HIDDEN1_LAYOUT == 4
+  hidden1_prepacked<4>(network, stm, opp, sums);
+#else
+  hidden1_prepacked<8>(network, stm, opp, sums);
+#endif
+}
+
+float finish_from_hidden1(const Network& network, std::vector<float>& hidden1) noexcept {
+  for (float& value : hidden1) value = clipped_relu(value);
+  std::vector<float> hidden2(network.hidden2_dimensions);
+  for (std::size_t output = 0; output < network.hidden2_dimensions; ++output) {
+    float sum = network.hidden2_bias[output];
+    const float* row = network.hidden2.data() + output * network.hidden1_dimensions;
+    for (std::size_t input = 0; input < network.hidden1_dimensions; ++input)
+      sum += row[input] * hidden1[input];
+    hidden2[output] = final_hidden_relu(sum, network.final_hidden_activation);
+  }
+  float score = network.output_bias;
+  for (std::size_t input = 0; input < network.hidden2_dimensions; ++input)
+    score += network.output[input] * hidden2[input];
+  return score * network.output_scale;
+}
+
+using AccumulatorArray = std::array<float, kAccumulator>;
+
+void add_features_to_accumulator(const Network& network, const NnueFeatures& features,
+                                 AccumulatorArray& accumulator) noexcept {
+  for (std::size_t feature = 0; feature < features.size; ++feature) {
+    const float* row = network.transform.data() +
+        static_cast<std::size_t>(features.indices[feature]) * kAccumulator;
+    for (std::size_t input = 0; input < kAccumulator; ++input) accumulator[input] += row[input];
+  }
+}
+
+void refresh_perspective_accumulator(const Network& network, const Board& board,
+                                     Color perspective, AccumulatorArray& accumulator) noexcept {
+  std::copy_n(network.transform_bias.begin(), kAccumulator, accumulator.begin());
+  add_features_to_accumulator(network, extract_nnue_features(board, perspective), accumulator);
+}
+
+void add_feature_delta(const Network& network, AccumulatorArray& accumulator,
+                       Square perspective_king, Piece piece, Square square,
+                       Color perspective, float sign) noexcept {
+  if (piece.is_empty()) return;
+  const std::uint32_t feature = nnue_feature_index(perspective_king, piece, square, perspective);
+  const float* row = network.transform.data() + static_cast<std::size_t>(feature) * kAccumulator;
+  for (std::size_t input = 0; input < kAccumulator; ++input) accumulator[input] += sign * row[input];
+}
+
+std::optional<float> evaluate_from_accumulator(const Network& network, const Board& board,
+                                               const NnueAccumulator& accumulator) noexcept {
+  const auto& stm = board.side_to_move() == Color::White ? accumulator.white : accumulator.black;
+  const auto& opp = board.side_to_move() == Color::White ? accumulator.black : accumulator.white;
+  std::array<float, kAccumulator> clipped_stm, clipped_opp;
+  for (std::size_t input = 0; input < kAccumulator; ++input) {
+    clipped_stm[input] = clipped_relu(stm[input]);
+    clipped_opp[input] = clipped_relu(opp[input]);
+  }
+  std::vector<float> h1(network.hidden1_dimensions);
+  hidden1_active(network, clipped_stm.data(), clipped_opp.data(), h1.data());
+  const float score = finish_from_hidden1(network, h1);
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+}  // namespace
+
 bool refresh_nnue_accumulator(const Board& board, NnueAccumulator& accumulator) noexcept {
-  const auto& maybe = loaded_network(); if (!maybe) return false;
+  const auto& maybe = loaded_network();
+  if (!maybe) return false;
   refresh_perspective_accumulator(*maybe, board, Color::White, accumulator.white);
   refresh_perspective_accumulator(*maybe, board, Color::Black, accumulator.black);
   return true;
@@ -489,189 +523,129 @@ std::optional<float> evaluate_nnue_network_raw(const Board& board) noexcept {
 }
 
 #if defined(HEBICHESS_NNUE_TEST_PROFILE)
-namespace {
-
-struct NnueEvaluatorStageScratch {
-  NnueAccumulator accumulator{};
-  AccumulatorArray clipped_white{};
-  AccumulatorArray clipped_black{};
-  std::array<float, kV2Hidden1> hidden1_sums{};
-  std::array<float, kV2Hidden1> hidden1{};
-  std::array<float, kV2Hidden2> hidden2{};
-};
-
-double profile_us_per_evaluation(const std::chrono::steady_clock::duration& elapsed,
-                                 std::size_t boards, std::size_t repeats) noexcept {
-  return std::chrono::duration<double, std::micro>(elapsed).count() /
-      static_cast<double>(boards * repeats);
-}
-
-}  // namespace
-
 std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
     const std::vector<Board>& boards, std::size_t repeats) noexcept {
   const auto& maybe = loaded_network();
   if (!maybe || boards.empty() || repeats == 0) return std::nullopt;
   const Network& network = *maybe;
-  std::vector<NnueEvaluatorStageScratch> scratch(boards.size());
+  std::vector<NnueAccumulator> accumulators(boards.size());
+  std::vector<std::array<float, kAccumulator>> clipped_stm(boards.size()), clipped_opp(boards.size());
+  std::vector<std::vector<float>> hidden1(boards.size(), std::vector<float>(network.hidden1_dimensions));
   volatile float sink = 0.0F;
+  const auto per_eval_us = [&](const auto& started) {
+    return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count() /
+        static_cast<double>(boards.size() * repeats);
+  };
 
-  float stage_sum = 0.0F;
   const auto rebuild_started = std::chrono::steady_clock::now();
   for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
     for (std::size_t index = 0; index < boards.size(); ++index) {
-      refresh_perspective_accumulator(network, boards[index], Color::White,
-                                      scratch[index].accumulator.white);
-      refresh_perspective_accumulator(network, boards[index], Color::Black,
-                                      scratch[index].accumulator.black);
-      stage_sum += scratch[index].accumulator.white[0] + scratch[index].accumulator.black[0];
+      refresh_perspective_accumulator(network, boards[index], Color::White, accumulators[index].white);
+      refresh_perspective_accumulator(network, boards[index], Color::Black, accumulators[index].black);
+      sink += accumulators[index].white[0];
     }
   }
-  const auto rebuild_elapsed = std::chrono::steady_clock::now() - rebuild_started;
-  sink = sink + stage_sum;
+  const double rebuild_us = per_eval_us(rebuild_started);
 
-  stage_sum = 0.0F;
   const auto clip_started = std::chrono::steady_clock::now();
   for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
-    for (NnueEvaluatorStageScratch& value : scratch) {
-      for (std::size_t i = 0; i < kAccumulator; ++i) {
-        value.clipped_white[i] = clipped_relu(value.accumulator.white[i]);
-        value.clipped_black[i] = clipped_relu(value.accumulator.black[i]);
+    for (std::size_t index = 0; index < boards.size(); ++index) {
+      const auto& stm = boards[index].side_to_move() == Color::White ? accumulators[index].white : accumulators[index].black;
+      const auto& opp = boards[index].side_to_move() == Color::White ? accumulators[index].black : accumulators[index].white;
+      for (std::size_t input = 0; input < kAccumulator; ++input) {
+        clipped_stm[index][input] = clipped_relu(stm[input]);
+        clipped_opp[index][input] = clipped_relu(opp[input]);
       }
-      stage_sum += value.clipped_white[0] + value.clipped_black[0];
+      sink += clipped_stm[index][0];
     }
   }
-  const auto clip_elapsed = std::chrono::steady_clock::now() - clip_started;
-  sink = sink + stage_sum;
+  const double clip_us = per_eval_us(clip_started);
 
-  stage_sum = 0.0F;
   const auto hidden1_started = std::chrono::steady_clock::now();
   for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
     for (std::size_t index = 0; index < boards.size(); ++index) {
-      NnueEvaluatorStageScratch& value = scratch[index];
-      const bool white_to_move = boards[index].side_to_move() == Color::White;
-      const float* stm = white_to_move ? value.clipped_white.data() : value.clipped_black.data();
-      const float* opp = white_to_move ? value.clipped_black.data() : value.clipped_white.data();
-      hidden1_dense(network, stm, opp, value.hidden1_sums.data());
-      stage_sum += value.hidden1_sums[0];
+      hidden1_active(network, clipped_stm[index].data(), clipped_opp[index].data(), hidden1[index].data());
+      sink += hidden1[index][0];
     }
   }
-  const auto hidden1_elapsed = std::chrono::steady_clock::now() - hidden1_started;
-  sink = sink + stage_sum;
+  const double hidden1_us = per_eval_us(hidden1_started);
 
-  stage_sum = 0.0F;
-  const auto hidden2_started = std::chrono::steady_clock::now();
+  const auto finish_started = std::chrono::steady_clock::now();
   for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
-    for (NnueEvaluatorStageScratch& value : scratch) {
-      for (std::size_t i = 0; i < network.hidden1_dimensions; ++i)
-        value.hidden1[i] = clipped_relu(value.hidden1_sums[i]);
-      for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
-        float sum = network.hidden2_bias[o];
-        const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
-        for (std::size_t i = 0; i < network.hidden1_dimensions; ++i)
-          sum += row[i] * value.hidden1[i];
-        value.hidden2[o] = final_hidden_relu(sum, network.final_hidden_activation);
-      }
-      stage_sum += value.hidden2[0];
-    }
+    for (std::size_t index = 0; index < boards.size(); ++index) sink += finish_from_hidden1(network, hidden1[index]);
   }
-  const auto hidden2_elapsed = std::chrono::steady_clock::now() - hidden2_started;
-  sink = sink + stage_sum;
-
-  stage_sum = 0.0F;
-  const auto output_started = std::chrono::steady_clock::now();
-  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
-    for (NnueEvaluatorStageScratch& value : scratch) {
-      float score = network.output_bias;
-      for (std::size_t i = 0; i < network.hidden2_dimensions; ++i)
-        score += network.output[i] * value.hidden2[i];
-      stage_sum += score * network.output_scale;
-    }
-  }
-  const auto output_elapsed = std::chrono::steady_clock::now() - output_started;
-  sink = sink + stage_sum;
+  const double finish_us = per_eval_us(finish_started);
   (void)sink;
-
-  return NnueEvaluatorStageProfile{
-      profile_us_per_evaluation(rebuild_elapsed, boards.size(), repeats),
-      profile_us_per_evaluation(clip_elapsed, boards.size(), repeats),
-      profile_us_per_evaluation(hidden1_elapsed, boards.size(), repeats),
-      profile_us_per_evaluation(hidden2_elapsed, boards.size(), repeats),
-      profile_us_per_evaluation(output_elapsed, boards.size(), repeats)};
+  return NnueEvaluatorStageProfile{rebuild_us, clip_us, hidden1_us, finish_us, 0.0};
 }
 #endif
 
 #if defined(HEBICHESS_NNUE_TEST_REFERENCE)
-namespace {
-
-std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_impl(
-    const Board& board, bool selected_variant) noexcept {
+std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept {
   const auto& maybe = loaded_network();
   if (!maybe) return std::nullopt;
   const Network& network = *maybe;
-  NnueAccumulator accumulator;
-  refresh_perspective_accumulator(network, board, Color::White, accumulator.white);
-  refresh_perspective_accumulator(network, board, Color::Black, accumulator.black);
-  const auto& stm = board.side_to_move() == Color::White ? accumulator.white : accumulator.black;
-  const auto& opp = board.side_to_move() == Color::White ? accumulator.black : accumulator.white;
-  AccumulatorArray clipped_stm{};
-  AccumulatorArray clipped_opp{};
-  for (std::size_t i = 0; i < kAccumulator; ++i) {
-    clipped_stm[i] = clipped_relu(stm[i]);
-    clipped_opp[i] = clipped_relu(opp[i]);
-  }
-  std::vector<float> values(network.hidden1_dimensions);
-  if (selected_variant)
-    hidden1_dense(network, clipped_stm.data(), clipped_opp.data(), values.data());
-  else
-    hidden1_dense_legacy(network, clipped_stm.data(), clipped_opp.data(), values.data());
-  return values;
-}
-
-}  // namespace
-
-std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_active_for_test(
-    const Board& board) noexcept {
-  return evaluate_nnue_hidden1_pre_impl(board, true);
-}
-
-std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_legacy_for_test(
-    const Board& board) noexcept {
-  return evaluate_nnue_hidden1_pre_impl(board, false);
-}
-
-std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept {
-  const auto& maybe = loaded_network(); if (!maybe) return std::nullopt;
-  const Network& n = *maybe;
-  std::vector<float> white = n.transform_bias, black = n.transform_bias;
+  std::vector<float> white = network.transform_bias, black = network.transform_bias;
   const auto add = [&](const NnueFeatures& features, std::vector<float>& accumulator) {
-    for (std::size_t f = 0; f < features.size; ++f) {
-      const float* row = n.transform.data() + static_cast<std::size_t>(features.indices[f]) * kAccumulator;
-      for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
+    for (std::size_t feature = 0; feature < features.size; ++feature) {
+      const float* row = network.transform.data() + static_cast<std::size_t>(features.indices[feature]) * kAccumulator;
+      for (std::size_t input = 0; input < kAccumulator; ++input) accumulator[input] += row[input];
     }
   };
   add(extract_nnue_features(board, Color::White), white);
   add(extract_nnue_features(board, Color::Black), black);
   const auto& stm = board.side_to_move() == Color::White ? white : black;
   const auto& opp = board.side_to_move() == Color::White ? black : white;
-  std::vector<float> h1(n.hidden1_dimensions);
-  for (std::size_t o = 0; o < n.hidden1_dimensions; ++o) {
-    float sum = n.hidden1_bias[o]; const float* row = n.hidden1.data() + o * 2 * kAccumulator;
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_relu(stm[i]);
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_relu(opp[i]);
-    h1[o] = clipped_relu(sum);
+  std::vector<float> h1(network.hidden1_dimensions);
+  for (std::size_t output = 0; output < network.hidden1_dimensions; ++output) {
+    float sum = network.hidden1_bias[output];
+    const float* row = network.hidden1.data() + output * 2 * kAccumulator;
+    for (std::size_t input = 0; input < kAccumulator; ++input) sum += row[input] * clipped_relu(stm[input]);
+    for (std::size_t input = 0; input < kAccumulator; ++input)
+      sum += row[kAccumulator + input] * clipped_relu(opp[input]);
+    h1[output] = clipped_relu(sum);
   }
-  std::vector<float> h2(n.hidden2_dimensions);
-  for (std::size_t o = 0; o < n.hidden2_dimensions; ++o) {
-    float sum = n.hidden2_bias[o]; const float* row = n.hidden2.data() + o * n.hidden1_dimensions;
-    for (std::size_t i = 0; i < n.hidden1_dimensions; ++i) sum += row[i] * h1[i];
-    h2[o] = final_hidden_relu(sum, n.final_hidden_activation);
+  std::vector<float> h2(network.hidden2_dimensions);
+  for (std::size_t output = 0; output < network.hidden2_dimensions; ++output) {
+    float sum = network.hidden2_bias[output];
+    const float* row = network.hidden2.data() + output * network.hidden1_dimensions;
+    for (std::size_t input = 0; input < network.hidden1_dimensions; ++input) sum += row[input] * h1[input];
+    h2[output] = final_hidden_relu(sum, network.final_hidden_activation);
   }
-  float score = n.output_bias;
-  for (std::size_t i = 0; i < n.hidden2_dimensions; ++i) score += n.output[i] * h2[i];
-  score *= n.output_scale;
-  if (!std::isfinite(score)) return std::nullopt;
-  return score;
+  float score = network.output_bias;
+  for (std::size_t input = 0; input < network.hidden2_dimensions; ++input) score += network.output[input] * h2[input];
+  score *= network.output_scale;
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+#endif
+
+#if defined(HEBICHESS_NNUE_VARIANT_TEST)
+std::optional<NnueVariantParity> nnue_variant_parity_for_test(const Board& board) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe) return std::nullopt;
+  const Network& network = *maybe;
+  NnueAccumulator accumulator;
+  if (!refresh_nnue_accumulator(board, accumulator)) return std::nullopt;
+  const auto& stm = board.side_to_move() == Color::White ? accumulator.white : accumulator.black;
+  const auto& opp = board.side_to_move() == Color::White ? accumulator.black : accumulator.white;
+  std::array<float, kAccumulator> clipped_stm, clipped_opp;
+  for (std::size_t input = 0; input < kAccumulator; ++input) {
+    clipped_stm[input] = clipped_relu(stm[input]);
+    clipped_opp[input] = clipped_relu(opp[input]);
+  }
+  std::vector<float> active(network.hidden1_dimensions), original4(network.hidden1_dimensions);
+  hidden1_active(network, clipped_stm.data(), clipped_opp.data(), active.data());
+  hidden1_original4<4>(network, clipped_stm.data(), clipped_opp.data(), original4.data());
+  NnueVariantParity parity;
+  for (std::size_t output = 0; output < active.size(); ++output)
+    parity.hidden1_max_abs_diff = std::max(parity.hidden1_max_abs_diff,
+                                           std::abs(active[output] - original4[output]));
+  const float active_raw = finish_from_hidden1(network, active);
+  const float original4_raw = finish_from_hidden1(network, original4);
+  parity.raw_max_abs_diff = std::abs(active_raw - original4_raw);
+  parity.active_cp = static_cast<int>(std::lround(active_raw));
+  parity.original4_cp = static_cast<int>(std::lround(original4_raw));
+  return parity;
 }
 #endif
 
@@ -680,5 +654,245 @@ std::optional<int> evaluate_nnue_network(const Board& board) noexcept {
   if (!score) return std::nullopt;
   return static_cast<int>(std::lround(*score));
 }
+
+#ifdef HEBICHESS_NNUE_DIAGNOSTICS
+namespace {
+
+constexpr std::size_t kDiagnosticMaxHidden = kV2Hidden1;
+
+template <class Accumulator>
+void diagnostic_add_features(const Network& network, const NnueFeatures& features,
+                             Accumulator& accumulator) noexcept {
+  for (std::size_t f = 0; f < features.size; ++f) {
+    const float* row = network.transform.data() +
+        static_cast<std::size_t>(features.indices[f]) * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) accumulator[i] += row[i];
+  }
+}
+
+float diagnostic_finish_score(const Network& network, const float* h2) noexcept {
+  float score = network.output_bias;
+  for (std::size_t i = 0; i < network.hidden2_dimensions; ++i)
+    score += network.output[i] * h2[i];
+  return score * network.output_scale;
+}
+
+float diagnostic_dense_sum_repeated_clip(const float* row, const float* stm,
+                                          const float* opp, float bias) noexcept {
+  // This is deliberately a two-span loop.  It is algebraically identical to
+  // Legacy, retains its addition order, but makes the dense spans explicit.
+  float sum = bias;
+  const float* stm_row = row;
+  const float* opp_row = row + kAccumulator;
+  for (std::size_t i = 0; i < kAccumulator; ++i)
+    sum += stm_row[i] * clipped_relu(stm[i]);
+  for (std::size_t i = 0; i < kAccumulator; ++i)
+    sum += opp_row[i] * clipped_relu(opp[i]);
+  return sum;
+}
+
+float diagnostic_dense_sum_clipped(const float* row, const float* stm,
+                                   const float* opp, float bias) noexcept {
+  float sum = bias;
+  const float* stm_row = row;
+  const float* opp_row = row + kAccumulator;
+  for (std::size_t i = 0; i < kAccumulator; ++i) sum += stm_row[i] * stm[i];
+  for (std::size_t i = 0; i < kAccumulator; ++i) sum += opp_row[i] * opp[i];
+  return sum;
+}
+
+template <class H1>
+void diagnostic_hidden2(const Network& network, const H1& h1, float* h2) noexcept {
+  for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
+    float sum = network.hidden2_bias[o];
+    const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
+    for (std::size_t i = 0; i < network.hidden1_dimensions; ++i) sum += row[i] * h1[i];
+    h2[o] = final_hidden_relu(sum, network.final_hidden_activation);
+  }
+}
+
+std::optional<float> diagnostic_legacy(const Board& board, const Network& network) noexcept {
+  // Matches the pre-2A dynamic evaluator structure: four per-evaluation
+  // vectors and clipped_relu performed in every hidden-1 dot product.
+  std::vector<float> white = network.transform_bias, black = network.transform_bias;
+  diagnostic_add_features(network, extract_nnue_features(board, Color::White), white);
+  diagnostic_add_features(network, extract_nnue_features(board, Color::Black), black);
+  const auto& stm = board.side_to_move() == Color::White ? white : black;
+  const auto& opp = board.side_to_move() == Color::White ? black : white;
+  std::vector<float> h1(network.hidden1_dimensions);
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    float sum = network.hidden1_bias[o];
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_relu(stm[i]);
+    for (std::size_t i = 0; i < kAccumulator; ++i)
+      sum += row[kAccumulator + i] * clipped_relu(opp[i]);
+    h1[o] = clipped_relu(sum);
+  }
+  std::vector<float> h2(network.hidden2_dimensions);
+  diagnostic_hidden2(network, h1, h2.data());
+  const float score = diagnostic_finish_score(network, h2.data());
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+std::optional<float> diagnostic_allocation_only(const Board& board,
+                                                 const Network& network) noexcept {
+  // No braces: every scratch element is copied or overwritten before read.
+  std::array<float, kAccumulator> white;
+  std::array<float, kAccumulator> black;
+  std::copy_n(network.transform_bias.data(), kAccumulator, white.data());
+  std::copy_n(network.transform_bias.data(), kAccumulator, black.data());
+  diagnostic_add_features(network, extract_nnue_features(board, Color::White), white);
+  diagnostic_add_features(network, extract_nnue_features(board, Color::Black), black);
+  const float* stm = board.side_to_move() == Color::White ? white.data() : black.data();
+  const float* opp = board.side_to_move() == Color::White ? black.data() : white.data();
+  std::array<float, kDiagnosticMaxHidden> h1;
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    float sum = network.hidden1_bias[o];
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_relu(stm[i]);
+    for (std::size_t i = 0; i < kAccumulator; ++i)
+      sum += row[kAccumulator + i] * clipped_relu(opp[i]);
+    h1[o] = clipped_relu(sum);
+  }
+  std::array<float, kDiagnosticMaxHidden> h2;
+  diagnostic_hidden2(network, h1, h2.data());
+  const float score = diagnostic_finish_score(network, h2.data());
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+std::optional<float> diagnostic_clip_precompute_only(const Board& board,
+                                                      const Network& network) noexcept {
+  // Keep Legacy's allocations; only move the two accumulator clip passes out
+  // of the hidden-1 loop.
+  std::vector<float> white = network.transform_bias, black = network.transform_bias;
+  diagnostic_add_features(network, extract_nnue_features(board, Color::White), white);
+  diagnostic_add_features(network, extract_nnue_features(board, Color::Black), black);
+  const auto& stm = board.side_to_move() == Color::White ? white : black;
+  const auto& opp = board.side_to_move() == Color::White ? black : white;
+  std::array<float, kAccumulator> clipped_stm;
+  std::array<float, kAccumulator> clipped_opp;
+  for (std::size_t i = 0; i < kAccumulator; ++i) {
+    clipped_stm[i] = clipped_relu(stm[i]);
+    clipped_opp[i] = clipped_relu(opp[i]);
+  }
+  std::vector<float> h1(network.hidden1_dimensions);
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    float sum = network.hidden1_bias[o];
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_stm[i];
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_opp[i];
+    h1[o] = clipped_relu(sum);
+  }
+  std::vector<float> h2(network.hidden2_dimensions);
+  diagnostic_hidden2(network, h1, h2.data());
+  const float score = diagnostic_finish_score(network, h2.data());
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+std::optional<float> diagnostic_dense_loop_only(const Board& board,
+                                                 const Network& network) noexcept {
+  // Keep Legacy's allocations and repeated clips.  Only the hidden-1 dense
+  // loop is expressed through the cleaned, explicit two-span helper.
+  std::vector<float> white = network.transform_bias, black = network.transform_bias;
+  diagnostic_add_features(network, extract_nnue_features(board, Color::White), white);
+  diagnostic_add_features(network, extract_nnue_features(board, Color::Black), black);
+  const auto& stm = board.side_to_move() == Color::White ? white : black;
+  const auto& opp = board.side_to_move() == Color::White ? black : white;
+  std::vector<float> h1(network.hidden1_dimensions);
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    h1[o] = clipped_relu(diagnostic_dense_sum_repeated_clip(row, stm.data(), opp.data(),
+                                                              network.hidden1_bias[o]));
+  }
+  std::vector<float> h2(network.hidden2_dimensions);
+  diagnostic_hidden2(network, h1, h2.data());
+  const float score = diagnostic_finish_score(network, h2.data());
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+std::optional<float> diagnostic_combined_current(const Board& board,
+                                                  const Network& network) noexcept {
+  std::array<float, kAccumulator> white;
+  std::array<float, kAccumulator> black;
+  std::copy_n(network.transform_bias.data(), kAccumulator, white.data());
+  std::copy_n(network.transform_bias.data(), kAccumulator, black.data());
+  diagnostic_add_features(network, extract_nnue_features(board, Color::White), white);
+  diagnostic_add_features(network, extract_nnue_features(board, Color::Black), black);
+  const float* stm = board.side_to_move() == Color::White ? white.data() : black.data();
+  const float* opp = board.side_to_move() == Color::White ? black.data() : white.data();
+  std::array<float, kAccumulator> clipped_stm;
+  std::array<float, kAccumulator> clipped_opp;
+  for (std::size_t i = 0; i < kAccumulator; ++i) {
+    clipped_stm[i] = clipped_relu(stm[i]);
+    clipped_opp[i] = clipped_relu(opp[i]);
+  }
+  std::array<float, kDiagnosticMaxHidden> h1;
+  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
+    float sum = network.hidden1_bias[o];
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    h1[o] = clipped_relu(diagnostic_dense_sum_clipped(row, clipped_stm.data(),
+                                                        clipped_opp.data(), sum));
+  }
+  std::array<float, kDiagnosticMaxHidden> h2;
+  diagnostic_hidden2(network, h1, h2.data());
+  const float score = diagnostic_finish_score(network, h2.data());
+  return std::isfinite(score) ? std::optional<float>(score) : std::nullopt;
+}
+
+}  // namespace
+
+NnueDiagnosticScratchArrays nnue_diagnostic_scratch_arrays() noexcept {
+  return {kAccumulator, sizeof(std::array<float, kAccumulator>),
+          kAccumulator, sizeof(std::array<float, kAccumulator>),
+          kDiagnosticMaxHidden, sizeof(std::array<float, kDiagnosticMaxHidden>),
+          kDiagnosticMaxHidden, sizeof(std::array<float, kDiagnosticMaxHidden>),
+          kAccumulator, sizeof(std::array<float, kAccumulator>),
+          kAccumulator, sizeof(std::array<float, kAccumulator>)};
+}
+
+std::optional<float> evaluate_nnue_network_raw_diagnostic(
+    const Board& board, NnueDiagnosticVariant variant) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe) return std::nullopt;
+  switch (variant) {
+    case NnueDiagnosticVariant::Legacy: return diagnostic_legacy(board, *maybe);
+    case NnueDiagnosticVariant::AllocationOnly: return diagnostic_allocation_only(board, *maybe);
+    case NnueDiagnosticVariant::ClipPrecomputeOnly: return diagnostic_clip_precompute_only(board, *maybe);
+    case NnueDiagnosticVariant::DenseLoopOnly: return diagnostic_dense_loop_only(board, *maybe);
+    case NnueDiagnosticVariant::CombinedCurrent: return diagnostic_combined_current(board, *maybe);
+  }
+  return std::nullopt;
+}
+
+NnueDiagnosticAllocationTiming nnue_diagnostic_measure_allocations(
+    std::size_t iterations) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe || iterations == 0) return {0.0, 0.0};
+  const Network& network = *maybe;
+  volatile std::size_t sink = 0;
+  const auto reserve_started = std::chrono::steady_clock::now();
+  for (std::size_t i = 0; i < iterations; ++i) {
+    std::vector<float> white; white.reserve(kAccumulator);
+    std::vector<float> black; black.reserve(kAccumulator);
+    std::vector<float> h1; h1.reserve(network.hidden1_dimensions);
+    std::vector<float> h2; h2.reserve(network.hidden2_dimensions);
+    sink = sink + white.capacity() + black.capacity() + h1.capacity() + h2.capacity();
+  }
+  const auto reserve_elapsed = std::chrono::steady_clock::now() - reserve_started;
+  const auto setup_started = std::chrono::steady_clock::now();
+  for (std::size_t i = 0; i < iterations; ++i) {
+    std::vector<float> white = network.transform_bias;
+    std::vector<float> black = network.transform_bias;
+    std::vector<float> h1(network.hidden1_dimensions);
+    std::vector<float> h2(network.hidden2_dimensions);
+    sink = sink + static_cast<std::size_t>(white[0] + black[0] + h1[0] + h2[0]);
+  }
+  const auto setup_elapsed = std::chrono::steady_clock::now() - setup_started;
+  (void)sink;
+  const double divisor = static_cast<double>(iterations);
+  return {std::chrono::duration<double, std::micro>(reserve_elapsed).count() / divisor,
+          std::chrono::duration<double, std::micro>(setup_elapsed).count() / divisor};
+}
+#endif
 
 }  // namespace hebichess

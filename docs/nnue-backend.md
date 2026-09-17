@@ -76,3 +76,40 @@ rejects export.
 
 Do not put root style or aggression terms into these features: network output
 remains objective and root policy stays separate.
+
+## Phase 6-3C-2 layout diagnostics
+
+The normal native and browser builds are pinned to `Original4`.  They expose
+no UCI option, environment variable, or browser toggle for layout selection.
+`Prepacked4` and `Prepacked8` are test-only derived hidden1 weight layouts;
+the `.hebinnue` bytes and parser are unchanged.
+
+The same source tree builds these native diagnostic targets on Linux, Windows,
+and macOS:
+
+```
+HebiChessSearchBaselineOriginal4
+HebiChessSearchBaselinePrepacked4
+HebiChessSearchBaselinePrepacked8
+```
+
+For example, a Windows Release build can use:
+
+```
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release --target HebiChessSearchBaselineOriginal4 HebiChessSearchBaselinePrepacked4 HebiChessSearchBaselinePrepacked8
+build\\Release\\HebiChessSearchBaselineOriginal4.exe --network frozen.hebinnue --depth 5 --time-ms 0 --output original4.json --summary original4.txt
+```
+
+Every target accepts `--depth`, `--time-ms`, `--network`, `--output`, and
+`--summary` (plus optional `--fixture` and `--rounds`).  Its JSON includes
+best move, score, nodes, qnodes, NPS, and active-versus-Original4 hidden1/raw
+and centipawn parity.  `--time-ms 0` means an unbounded fixed-depth run.
+
+For Node WASM evaluator A/B, configure with
+`-DHEBICHESS_BUILD_WASM_NNUE_LAYOUT_VARIANTS=ON` through `emcmake cmake` and
+build `HebiChessWasmNnueOriginal4`, `HebiChessWasmNnuePrepacked4`, and
+`HebiChessWasmNnuePrepacked8`.  The artifacts go under
+`build-wasm/nnue-layouts`, never `web/public`.  Run
+`scripts/benchmark-wasm-nnue-layouts.js` with the model, FEN fixture, and the
+three generated `.js` paths to compare raw evaluator throughput and checksums.

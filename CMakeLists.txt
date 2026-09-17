@@ -18,6 +18,8 @@ add_executable(HebiChess
 )
 
 target_include_directories(HebiChess PRIVATE src)
+# Explicitly pin the normal native engine to the accepted portable layout.
+target_compile_definitions(HebiChess PRIVATE HEBICHESS_NNUE_HIDDEN1_LAYOUT=0)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 if(HEBICHESS_BUILD_WASM)
@@ -26,7 +28,8 @@ if(HEBICHESS_BUILD_WASM)
   endif()
   add_executable(HebiChessWasm src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasm PRIVATE src)
-  target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1)
+  target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1
+    HEBICHESS_NNUE_HIDDEN1_LAYOUT=0)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/web/public/engine"
@@ -42,13 +45,39 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
   endif()
   add_executable(HebiChessWasmNodeTest src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasmNodeTest PRIVATE src)
-  target_compile_definitions(HebiChessWasmNodeTest PRIVATE HEBICHESS_WASM=1)
+  target_compile_definitions(HebiChessWasmNodeTest PRIVATE HEBICHESS_WASM=1
+    HEBICHESS_NNUE_HIDDEN1_LAYOUT=0)
   set_target_properties(HebiChessWasmNodeTest PROPERTIES
     OUTPUT_NAME hebichess-node
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/node-test"
     SUFFIX ".js"
   LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
   )
+endif()
+
+# Test-only WASM evaluator A/B binaries.  They are emitted outside web/public,
+# have no production route, and are selected solely at compile time.
+option(HEBICHESS_BUILD_WASM_NNUE_LAYOUT_VARIANTS
+  "Build test-only Original4/Prepacked4/Prepacked8 Node WASM evaluators" OFF)
+if(HEBICHESS_BUILD_WASM_NNUE_LAYOUT_VARIANTS)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "HEBICHESS_BUILD_WASM_NNUE_LAYOUT_VARIANTS requires Emscripten")
+  endif()
+  function(add_wasm_nnue_layout_variant suffix layout export_name)
+    add_executable(HebiChessWasmNnue${suffix} src/wasm_bridge.cpp ${CHESS_SOURCES})
+    target_include_directories(HebiChessWasmNnue${suffix} PRIVATE src)
+    target_compile_definitions(HebiChessWasmNnue${suffix} PRIVATE
+      HEBICHESS_WASM=1 HEBICHESS_NNUE_HIDDEN1_LAYOUT=${layout})
+    set_target_properties(HebiChessWasmNnue${suffix} PROPERTIES
+      OUTPUT_NAME "hebichess-nnue-${suffix}"
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/nnue-layouts"
+      SUFFIX ".js"
+      LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=${export_name} -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
+    )
+  endfunction()
+  add_wasm_nnue_layout_variant(Original4 0 createHebiChessNnueOriginal4Module)
+  add_wasm_nnue_layout_variant(Prepacked4 4 createHebiChessNnuePrepacked4Module)
+  add_wasm_nnue_layout_variant(Prepacked8 8 createHebiChessNnuePrepacked8Module)
 endif()
 
 add_executable(HebiChessTypesTest
@@ -105,14 +134,6 @@ add_executable(HebiChessSearchBaseline
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
 
-add_executable(HebiChessSearchBaselineLegacy
-  tests/search_baseline.cpp
-  ${CHESS_SOURCES}
-)
-target_include_directories(HebiChessSearchBaselineLegacy PRIVATE src)
-target_compile_definitions(HebiChessSearchBaselineLegacy PRIVATE
-  HEBICHESS_NNUE_HIDDEN1_VARIANT=1)
-
 add_executable(HebiChessNnueClipPrecomputeTest
   tests/nnue_clip_precompute_test.cpp
   ${CHESS_SOURCES}
@@ -128,44 +149,6 @@ target_include_directories(HebiChessNnueIncrementalAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueIncrementalAccumulatorTest
   PRIVATE HEBICHESS_NNUE_TEST_PROFILE=1)
 
-# Phase 6-3A architecture-neutral hidden1 A/B harness.  Each executable is
-# independently compiled, so the selected dense loop is a compile-time choice
-# only; the production engine has no setting or diagnostic toggle.
-function(add_nnue_hidden1_dense_variant suffix interleave)
-  add_executable(HebiChessNnueHidden1Dense${suffix}
-    tests/nnue_hidden1_dense_benchmark.cpp
-    ${CHESS_SOURCES}
-  )
-  target_include_directories(HebiChessNnueHidden1Dense${suffix} PRIVATE src)
-  target_compile_definitions(HebiChessNnueHidden1Dense${suffix} PRIVATE
-    HEBICHESS_NNUE_TEST_PROFILE=1
-    HEBICHESS_NNUE_TEST_REFERENCE=1
-    HEBICHESS_NNUE_HIDDEN1_VARIANT=${interleave}
-  )
-endfunction()
-
-add_nnue_hidden1_dense_variant(Legacy 1)
-add_nnue_hidden1_dense_variant(Interleaved2 2)
-add_nnue_hidden1_dense_variant(Interleaved4 4)
-add_nnue_hidden1_dense_variant(Interleaved8 8)
-
-function(add_nnue_incremental_accumulator_variant suffix interleave)
-  add_executable(HebiChessNnueIncrementalAccumulator${suffix}
-    tests/nnue_incremental_accumulator_test.cpp
-    ${CHESS_SOURCES}
-  )
-  target_include_directories(HebiChessNnueIncrementalAccumulator${suffix} PRIVATE src)
-  target_compile_definitions(HebiChessNnueIncrementalAccumulator${suffix} PRIVATE
-    HEBICHESS_NNUE_TEST_PROFILE=1
-    HEBICHESS_NNUE_HIDDEN1_VARIANT=${interleave}
-  )
-endfunction()
-
-add_nnue_incremental_accumulator_variant(Legacy 1)
-add_nnue_incremental_accumulator_variant(Interleaved2 2)
-add_nnue_incremental_accumulator_variant(Interleaved4 4)
-add_nnue_incremental_accumulator_variant(Interleaved8 8)
-
 add_executable(HebiChessNnueSearchAccumulatorTest
   tests/nnue_search_accumulator_test.cpp
   ${CHESS_SOURCES}
@@ -173,6 +156,24 @@ add_executable(HebiChessNnueSearchAccumulatorTest
 target_include_directories(HebiChessNnueSearchAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueSearchAccumulatorTest
   PRIVATE HEBICHESS_NNUE_SEARCH_TEST=1)
+
+# Cross-platform fixed-depth search diagnostics.  All three targets share the
+# same benchmark/search source; only the hidden1 dense data layout differs.
+function(add_nnue_search_layout_variant suffix layout)
+  add_executable(HebiChessSearchBaseline${suffix}
+    tests/search_nnue_layout_benchmark.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(HebiChessSearchBaseline${suffix} PRIVATE src)
+  target_compile_definitions(HebiChessSearchBaseline${suffix} PRIVATE
+    HEBICHESS_NNUE_VARIANT_TEST=1
+    HEBICHESS_NNUE_HIDDEN1_LAYOUT=${layout}
+  )
+endfunction()
+
+add_nnue_search_layout_variant(Original4 0)
+add_nnue_search_layout_variant(Prepacked4 4)
+add_nnue_search_layout_variant(Prepacked8 8)
 
 add_executable(HebiChessGameStateTest
   tests/game_state_test.cpp
