@@ -76,6 +76,19 @@ struct Network {
 
 std::optional<Network>& loaded_network() { static std::optional<Network> value; return value; }
 
+// The normal engine build uses the accepted four-output dense loop.
+// Benchmark-only targets override this at compile time; there is no runtime
+// switch in the engine, UCI, or WASM surface.
+#ifndef HEBICHESS_NNUE_HIDDEN1_VARIANT
+#define HEBICHESS_NNUE_HIDDEN1_VARIANT 4
+#endif
+
+static_assert(HEBICHESS_NNUE_HIDDEN1_VARIANT == 1 ||
+                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 2 ||
+                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 4 ||
+                  HEBICHESS_NNUE_HIDDEN1_VARIANT == 8,
+              "hidden1 dense variant must be legacy, 2, 4, or 8 outputs");
+
 std::uint64_t parameter_count(std::uint32_t hidden1, std::uint32_t hidden2) noexcept {
   return static_cast<std::uint64_t>(kNnueInputDimensions) * kAccumulator + kAccumulator +
       static_cast<std::uint64_t>(hidden1) * (2 * kAccumulator) + hidden1 +
@@ -249,6 +262,69 @@ bool load_nnue_network_bytes_impl(const std::uint8_t* bytes, std::size_t size,
 
 using AccumulatorArray = std::array<float, kAccumulator>;
 
+// Keep every neuron's floating-point accumulation order identical to the
+// original implementation: first stm[0..255], then opp[0..255].  The
+// interleaved forms only expose independent output accumulators to the
+// compiler, allowing it to reuse each clipped input load.
+#if defined(__GNUC__) && !defined(__clang__)
+#define HEBICHESS_NNUE_NO_FP_CONTRACT __attribute__((optimize("fp-contract=off")))
+#else
+#define HEBICHESS_NNUE_NO_FP_CONTRACT
+#endif
+void hidden1_dense_legacy(const Network& network, const float* stm,
+                          const float* opp, float* sums,
+                          std::size_t first_output = 0) noexcept {
+  for (std::size_t o = first_output; o < network.hidden1_dimensions; ++o) {
+    float sum = network.hidden1_bias[o];
+    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
+    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * stm[i];
+    for (std::size_t i = 0; i < kAccumulator; ++i)
+      sum += row[kAccumulator + i] * opp[i];
+    sums[o] = sum;
+  }
+}
+
+template <std::size_t Outputs>
+HEBICHESS_NNUE_NO_FP_CONTRACT
+void hidden1_dense_interleaved(const Network& network, const float* stm,
+                               const float* opp, float* sums) noexcept {
+  std::size_t o = 0;
+  for (; o + Outputs <= network.hidden1_dimensions; o += Outputs) {
+    std::array<float, Outputs> partial{};
+    std::array<const float*, Outputs> rows{};
+    for (std::size_t lane = 0; lane < Outputs; ++lane) {
+      partial[lane] = network.hidden1_bias[o + lane];
+      rows[lane] = network.hidden1.data() + (o + lane) * 2 * kAccumulator;
+    }
+    for (std::size_t i = 0; i < kAccumulator; ++i) {
+      const float input = stm[i];
+      for (std::size_t lane = 0; lane < Outputs; ++lane)
+        partial[lane] += rows[lane][i] * input;
+    }
+    for (std::size_t i = 0; i < kAccumulator; ++i) {
+      const float input = opp[i];
+      for (std::size_t lane = 0; lane < Outputs; ++lane)
+        partial[lane] += rows[lane][kAccumulator + i] * input;
+    }
+    for (std::size_t lane = 0; lane < Outputs; ++lane) sums[o + lane] = partial[lane];
+  }
+  hidden1_dense_legacy(network, stm, opp, sums, o);
+}
+
+void hidden1_dense(const Network& network, const float* stm, const float* opp,
+                   float* sums) noexcept {
+#if HEBICHESS_NNUE_HIDDEN1_VARIANT == 1
+  hidden1_dense_legacy(network, stm, opp, sums);
+#elif HEBICHESS_NNUE_HIDDEN1_VARIANT == 2
+  hidden1_dense_interleaved<2>(network, stm, opp, sums);
+#elif HEBICHESS_NNUE_HIDDEN1_VARIANT == 4
+  hidden1_dense_interleaved<4>(network, stm, opp, sums);
+#else
+  hidden1_dense_interleaved<8>(network, stm, opp, sums);
+#endif
+}
+#undef HEBICHESS_NNUE_NO_FP_CONTRACT
+
 void add_features_to_accumulator(const Network& network,
                                  const NnueFeatures& features,
                                  AccumulatorArray& accumulator) noexcept {
@@ -292,13 +368,8 @@ std::optional<float> evaluate_from_accumulator(const Network& network,
     clipped_opp[i] = clipped_relu(opp[i]);
   }
   std::vector<float> h1(network.hidden1_dimensions);
-  for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
-    float sum = network.hidden1_bias[o];
-    const float* row = network.hidden1.data() + o * 2 * kAccumulator;
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * clipped_stm[i];
-    for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[kAccumulator + i] * clipped_opp[i];
-    h1[o] = clipped_relu(sum);
-  }
+  hidden1_dense(network, clipped_stm, clipped_opp, h1.data());
+  for (float& value : h1) value = clipped_relu(value);
   std::vector<float> h2(network.hidden2_dimensions);
   for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
     float sum = network.hidden2_bias[o];
@@ -481,14 +552,7 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
       const bool white_to_move = boards[index].side_to_move() == Color::White;
       const float* stm = white_to_move ? value.clipped_white.data() : value.clipped_black.data();
       const float* opp = white_to_move ? value.clipped_black.data() : value.clipped_white.data();
-      for (std::size_t o = 0; o < network.hidden1_dimensions; ++o) {
-        float sum = network.hidden1_bias[o];
-        const float* row = network.hidden1.data() + o * 2 * kAccumulator;
-        for (std::size_t i = 0; i < kAccumulator; ++i) sum += row[i] * stm[i];
-        for (std::size_t i = 0; i < kAccumulator; ++i)
-          sum += row[kAccumulator + i] * opp[i];
-        value.hidden1_sums[o] = sum;
-      }
+      hidden1_dense(network, stm, opp, value.hidden1_sums.data());
       stage_sum += value.hidden1_sums[0];
     }
   }
@@ -538,6 +602,44 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
 #endif
 
 #if defined(HEBICHESS_NNUE_TEST_REFERENCE)
+namespace {
+
+std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_impl(
+    const Board& board, bool selected_variant) noexcept {
+  const auto& maybe = loaded_network();
+  if (!maybe) return std::nullopt;
+  const Network& network = *maybe;
+  NnueAccumulator accumulator;
+  refresh_perspective_accumulator(network, board, Color::White, accumulator.white);
+  refresh_perspective_accumulator(network, board, Color::Black, accumulator.black);
+  const auto& stm = board.side_to_move() == Color::White ? accumulator.white : accumulator.black;
+  const auto& opp = board.side_to_move() == Color::White ? accumulator.black : accumulator.white;
+  AccumulatorArray clipped_stm{};
+  AccumulatorArray clipped_opp{};
+  for (std::size_t i = 0; i < kAccumulator; ++i) {
+    clipped_stm[i] = clipped_relu(stm[i]);
+    clipped_opp[i] = clipped_relu(opp[i]);
+  }
+  std::vector<float> values(network.hidden1_dimensions);
+  if (selected_variant)
+    hidden1_dense(network, clipped_stm.data(), clipped_opp.data(), values.data());
+  else
+    hidden1_dense_legacy(network, clipped_stm.data(), clipped_opp.data(), values.data());
+  return values;
+}
+
+}  // namespace
+
+std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_active_for_test(
+    const Board& board) noexcept {
+  return evaluate_nnue_hidden1_pre_impl(board, true);
+}
+
+std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_legacy_for_test(
+    const Board& board) noexcept {
+  return evaluate_nnue_hidden1_pre_impl(board, false);
+}
+
 std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept {
   const auto& maybe = loaded_network(); if (!maybe) return std::nullopt;
   const Network& n = *maybe;

@@ -105,6 +105,14 @@ add_executable(HebiChessSearchBaseline
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
 
+add_executable(HebiChessSearchBaselineLegacy
+  tests/search_baseline.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessSearchBaselineLegacy PRIVATE src)
+target_compile_definitions(HebiChessSearchBaselineLegacy PRIVATE
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=1)
+
 add_executable(HebiChessNnueClipPrecomputeTest
   tests/nnue_clip_precompute_test.cpp
   ${CHESS_SOURCES}
@@ -119,6 +127,44 @@ add_executable(HebiChessNnueIncrementalAccumulatorTest
 target_include_directories(HebiChessNnueIncrementalAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueIncrementalAccumulatorTest
   PRIVATE HEBICHESS_NNUE_TEST_PROFILE=1)
+
+# Phase 6-3A architecture-neutral hidden1 A/B harness.  Each executable is
+# independently compiled, so the selected dense loop is a compile-time choice
+# only; the production engine has no setting or diagnostic toggle.
+function(add_nnue_hidden1_dense_variant suffix interleave)
+  add_executable(HebiChessNnueHidden1Dense${suffix}
+    tests/nnue_hidden1_dense_benchmark.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(HebiChessNnueHidden1Dense${suffix} PRIVATE src)
+  target_compile_definitions(HebiChessNnueHidden1Dense${suffix} PRIVATE
+    HEBICHESS_NNUE_TEST_PROFILE=1
+    HEBICHESS_NNUE_TEST_REFERENCE=1
+    HEBICHESS_NNUE_HIDDEN1_VARIANT=${interleave}
+  )
+endfunction()
+
+add_nnue_hidden1_dense_variant(Legacy 1)
+add_nnue_hidden1_dense_variant(Interleaved2 2)
+add_nnue_hidden1_dense_variant(Interleaved4 4)
+add_nnue_hidden1_dense_variant(Interleaved8 8)
+
+function(add_nnue_incremental_accumulator_variant suffix interleave)
+  add_executable(HebiChessNnueIncrementalAccumulator${suffix}
+    tests/nnue_incremental_accumulator_test.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(HebiChessNnueIncrementalAccumulator${suffix} PRIVATE src)
+  target_compile_definitions(HebiChessNnueIncrementalAccumulator${suffix} PRIVATE
+    HEBICHESS_NNUE_TEST_PROFILE=1
+    HEBICHESS_NNUE_HIDDEN1_VARIANT=${interleave}
+  )
+endfunction()
+
+add_nnue_incremental_accumulator_variant(Legacy 1)
+add_nnue_incremental_accumulator_variant(Interleaved2 2)
+add_nnue_incremental_accumulator_variant(Interleaved4 4)
+add_nnue_incremental_accumulator_variant(Interleaved8 8)
 
 add_executable(HebiChessNnueSearchAccumulatorTest
   tests/nnue_search_accumulator_test.cpp

@@ -55,6 +55,12 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
 #if defined(HEBICHESS_NNUE_TEST_REFERENCE)
 // Test-only legacy implementation for direct old-versus-new raw-score parity.
 std::optional<float> evaluate_nnue_network_raw_reference(const Board& board) noexcept;
+// Test-only pre-activation hidden1 probes.  They are intentionally absent
+// from normal and WASM builds, so they cannot become a runtime diagnostic.
+std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_active_for_test(
+    const Board& board) noexcept;
+std::optional<std::vector<float>> evaluate_nnue_hidden1_pre_legacy_for_test(
+    const Board& board) noexcept;
 #endif
 std::optional<int> evaluate_nnue_network(const Board& board) noexcept;
 void clear_nnue_network() noexcept;
