@@ -1,6 +1,7 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <optional>
 
 #include "chess/movegen.hpp"
 #include "chess/search.hpp"
@@ -89,6 +90,25 @@ void test_tt_consistency() {
             << " elapsed_ms " << elapsed << '\n';
 }
 
+void test_tt_entry_lifecycle() {
+  TranspositionTable table(1);
+  // Occupancy is explicit, so key zero is not an implicit empty sentinel.
+  assert(table.probe(0) == nullptr);
+  const TTStoreResult stored = table.store(0, 0, 17, TTBound::Exact, std::nullopt);
+  assert(stored.stored);
+  const TTEntry* entry = table.probe(0);
+  assert(entry != nullptr);
+  assert(entry->occupied && entry->key == 0 && entry->depth == 0);
+  assert(entry->score == 17 && entry->bound == TTBound::Exact && !entry->best_move.has_value());
+
+  // Same bucket does not imply same position: probe validates the complete
+  // 64-bit Zobrist key before exposing an entry.
+  const ZobristKey colliding_index = static_cast<ZobristKey>(table.size());
+  assert(table.probe(colliding_index) == nullptr);
+  table.clear();
+  assert(table.probe(0) == nullptr);
+}
+
 }  // namespace
 
 int main() {
@@ -96,4 +116,5 @@ int main() {
   test_special_moves();
   test_null_move_integrity();
   test_tt_consistency();
+  test_tt_entry_lifecycle();
 }

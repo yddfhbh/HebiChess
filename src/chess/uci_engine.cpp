@@ -14,6 +14,18 @@
 namespace hebichess {
 namespace {
 
+#ifndef HEBICHESS_QSEARCH_TT_VARIANT
+#define HEBICHESS_QSEARCH_TT_VARIANT 0
+#endif
+
+#ifndef HEBICHESS_QSEARCH_DELTA_PRUNING
+#define HEBICHESS_QSEARCH_DELTA_PRUNING 1
+#endif
+
+#ifndef HEBICHESS_QSEARCH_TT_PROFILE
+#define HEBICHESS_QSEARCH_TT_PROFILE 0
+#endif
+
 int integer_after(std::istringstream& input) {
   int value = 0;
   input >> value;
@@ -37,6 +49,13 @@ void UciEngine::send_command(const std::string& line) {
 #else
     emit("option name EvalMode type combo default HCE var HCE var NNUE");
     emit("option name EvalFile type string default ");
+#endif
+#ifdef HEBICHESS_STRENGTH_RUNNER
+    emit("info string strength_build qdelta_pruning "
+         + std::string(HEBICHESS_QSEARCH_DELTA_PRUNING ? "true" : "false")
+         + " qtt " + std::string(HEBICHESS_QSEARCH_TT_VARIANT == 2 ? "true" : "false")
+         + " qsearch_tt_profile "
+         + std::string(HEBICHESS_QSEARCH_TT_PROFILE ? "true" : "false"));
 #endif
     emit("uciok");
   } else if (command == "isready") {
@@ -65,9 +84,11 @@ void UciEngine::send_command(const std::string& line) {
       std::string error;
       if (value.empty()) {
         clear_nnue_network();
+        clear_transposition_table();
         if (eval_mode_ == EvalMode::NNUE) eval_mode_ = EvalMode::HCE;
         emit("info string NNUE network cleared");
       } else if (load_nnue_network(value, error)) {
+        clear_transposition_table();
         emit("info string NNUE network loaded " + value);
       } else {
         emit("info string error " + error);
@@ -130,6 +151,15 @@ void UciEngine::send_command(const std::string& line) {
     emit("threats " + std::to_string(e.threats));
     emit("initiative " + std::to_string(e.initiative));
     emit("total " + std::to_string(e.total));
+#ifdef HEBICHESS_STRENGTH_RUNNER
+  } else if (command == "fen") {
+    emit("fen " + board_.to_fen());
+  } else if (command == "legalmoves") {
+    std::ostringstream moves;
+    moves << "legalmoves";
+    for (const Move& move : generate_legal_moves(board_)) moves << ' ' << move_to_uci(move);
+    emit(moves.str());
+#endif
   } else if (command == "features" || command == "nnueeval") {
 #ifdef HEBICHESS_WASM
     emit("info string error WASM build supports HCE only");
@@ -188,13 +218,17 @@ void UciEngine::send_command(const std::string& line) {
       info << " nodes " << nodes << " qnodes " << qnodes;
       output_(info.str());
     });
+    // Strength runners deliberately receive only identity and result data.
+    // The normal detailed search record remains available to normal UCI
+    // clients, while timed strength binaries compile all QTT profiling out.
+#ifndef HEBICHESS_STRENGTH_RUNNER
     std::ostringstream stats;
     stats << "info string nodes " << result.nodes
           << " main_nodes " << result.main_nodes
           << " qnodes " << result.qnodes
           << " qdelta_prunes " << result.qdelta_prunes
-          << " tt probes " << result.tt_probes
-          << " hits " << result.tt_hits << " cutoffs " << result.tt_cutoffs
+          << " tt_probes " << result.tt_probes
+          << " tt_hits " << result.tt_hits << " tt_cutoffs " << result.tt_cutoffs
           << " see_calls " << result.see_calls
           << " see_prunes " << result.see_prunes
           << " killer_cutoffs " << result.killer_cutoffs
@@ -220,6 +254,13 @@ void UciEngine::send_command(const std::string& line) {
           << " aspiration_fail_highs " << result.aspiration_fail_highs
           << " aspiration_fail_lows " << result.aspiration_fail_lows;
     emit(stats.str());
+#else
+    std::ostringstream strength;
+    strength << "info string strength_stats"
+             << " score_cp " << result.score
+             << " completed_depth " << result.completed_depth;
+    emit(strength.str());
+#endif
     emit("bestmove " + move_to_uci(result.best_move));
   } else if (!command.empty() && command != "quit") {
     emit("info string error unsupported command");

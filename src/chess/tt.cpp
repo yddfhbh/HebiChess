@@ -29,11 +29,14 @@ const TTEntry* TranspositionTable::probe(ZobristKey key) const noexcept {
   return entry.occupied && entry.key == key ? &entry : nullptr;
 }
 
-void TranspositionTable::store(ZobristKey key, int depth, int score,
-                               TTBound bound, std::optional<Move> best_move) noexcept {
+TTStoreResult TranspositionTable::store(ZobristKey key, int depth, int score,
+                                        TTBound bound,
+                                        std::optional<Move> best_move) noexcept {
   TTEntry& entry = entries_[key & (entries_.size() - 1)];
-  if (entry.occupied && entry.key != key && entry.depth > depth) return;
+  if (entry.occupied && entry.key != key && entry.depth > depth) return {};
+  const bool replaced_different_key = entry.occupied && entry.key != key;
   entry = {key, depth, score, bound, best_move, true};
+  return {true, replaced_different_key};
 }
 
 std::size_t TranspositionTable::hashfull() const noexcept {

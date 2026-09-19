@@ -19,6 +19,18 @@ add_executable(HebiChess
 
 target_include_directories(HebiChess PRIVATE src)
 
+# Phase 6-4B final production configuration.  These are deliberately
+# compile-time-only choices: the normal timed engine has no profiling or
+# diagnostic path, and its relevant search behavior matches the accepted
+# HebiChessStrengthNoDeltaQtt binary.
+target_compile_definitions(HebiChess PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0
+  HEBICHESS_QSEARCH_TT_VARIANT=2
+  HEBICHESS_QSEARCH_TT_CUTOFF_MASK=7
+  HEBICHESS_QSEARCH_TT_PROFILE=0
+  HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
+)
+
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 if(HEBICHESS_BUILD_WASM)
   if(NOT EMSCRIPTEN)
@@ -179,6 +191,94 @@ add_executable(HebiChessGameStateTest
   ${CHESS_SOURCES}
 )
 target_include_directories(HebiChessGameStateTest PRIVATE src)
+
+# Phase 6-4B-2: compile-time-only QSearch TT A/B binaries.  Diagnostic and
+# strength targets remain separately named so the accepted production path
+# stays free of profiling instrumentation.
+function(add_qsearch_tt_variant suffix variant profile source cutoff_mask diagnostic)
+  add_executable(${suffix}
+    ${source}
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(${suffix} PRIVATE src)
+  target_compile_definitions(${suffix} PRIVATE
+    HEBICHESS_QSEARCH_TT_VARIANT=${variant}
+    HEBICHESS_QSEARCH_TT_PROFILE=${profile}
+    HEBICHESS_QSEARCH_TT_CUTOFF_MASK=${cutoff_mask}
+    HEBICHESS_QSEARCH_TT_DIAGNOSTIC=${diagnostic}
+  )
+endfunction()
+
+# Windows acceptance targets.  They compile identical sources and differ only
+# in QTT enablement; profiling is compiled out of the timing path.
+add_qsearch_tt_variant(HebiChessSearchQttBaseline 0 0 tests/qsearch_tt_benchmark.cpp 0 0)
+add_qsearch_tt_variant(HebiChessSearchQttActive 2 0 tests/qsearch_tt_benchmark.cpp 7 0)
+
+# Profile-only companions retain the C1 shadow measurements without affecting
+# the acceptance binaries above.
+add_qsearch_tt_variant(HebiChessSearchQttBaselineProfile 0 1 tests/qsearch_tt_ab.cpp 0 1)
+add_qsearch_tt_variant(HebiChessSearchQttShadowProfile 1 1 tests/qsearch_tt_ab.cpp 0 1)
+add_qsearch_tt_variant(HebiChessSearchQttActiveProfile 2 1 tests/qsearch_tt_ab.cpp 7 1)
+
+# Phase 6-4B-3 diagnosis only.  These are not performance binaries and are
+# never built by the production target.  The mask enables Exact=1, Lower=2,
+# Upper=4 QTT cutoffs while retaining identical QTT probing and storing.
+add_qsearch_tt_variant(HebiChessSearchQttDiagExact 2 1 tests/qsearch_tt_ab.cpp 1 1)
+add_qsearch_tt_variant(HebiChessSearchQttDiagLower 2 1 tests/qsearch_tt_ab.cpp 2 1)
+add_qsearch_tt_variant(HebiChessSearchQttDiagUpper 2 1 tests/qsearch_tt_ab.cpp 4 1)
+add_qsearch_tt_variant(HebiChessSearchQttDiagExactLower 2 1 tests/qsearch_tt_ab.cpp 3 1)
+add_qsearch_tt_variant(HebiChessSearchQttDiagExactUpper 2 1 tests/qsearch_tt_ab.cpp 5 1)
+add_qsearch_tt_variant(HebiChessSearchQttDiagLowerUpper 2 1 tests/qsearch_tt_ab.cpp 6 1)
+
+# Phase 6-4B-6: delta-pruning removal candidates.  The compile definition is
+# attached only to these separately named executables; HebiChess and every
+# existing QTT target keep the default legacy rule.
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOffProfile 0 1 tests/qsearch_tt_ab.cpp 0 1)
+target_compile_definitions(HebiChessSearchNoDeltaQttOffProfile PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOnProfile 2 1 tests/qsearch_tt_ab.cpp 7 1)
+target_compile_definitions(HebiChessSearchNoDeltaQttOnProfile PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOffBenchmark 0 0 tests/qsearch_tt_benchmark.cpp 0 0)
+target_compile_definitions(HebiChessSearchNoDeltaQttOffBenchmark PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOnBenchmark 2 0 tests/qsearch_tt_benchmark.cpp 7 0)
+target_compile_definitions(HebiChessSearchNoDeltaQttOnBenchmark PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+
+# Counter companions run outside the timed sample set.  This preserves the
+# existing release timing path while still reporting eval calls and QTT work.
+add_qsearch_tt_variant(HebiChessSearchQttBaselineCounters 0 1 tests/qsearch_tt_benchmark.cpp 0 0)
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOffCounters 0 1 tests/qsearch_tt_benchmark.cpp 0 0)
+target_compile_definitions(HebiChessSearchNoDeltaQttOffCounters PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+add_qsearch_tt_variant(HebiChessSearchNoDeltaQttOnCounters 2 1 tests/qsearch_tt_benchmark.cpp 7 0)
+target_compile_definitions(HebiChessSearchNoDeltaQttOnCounters PRIVATE
+  HEBICHESS_QSEARCH_DELTA_PRUNING=0)
+
+# Phase 6-4B-7b strength-only UCI engines.  These are release-equivalent
+# timing targets: detailed QTT/evaluation profiling is compiled out.  The
+# separately named *Counters targets above are the only companion binaries
+# allowed to collect those detailed measurements.
+function(add_qsearch_strength_variant target variant cutoff_mask delta_pruning)
+  add_executable(${target}
+    src/main.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(${target} PRIVATE src)
+  target_compile_definitions(${target} PRIVATE
+    HEBICHESS_QSEARCH_TT_VARIANT=${variant}
+    HEBICHESS_QSEARCH_TT_PROFILE=0
+    HEBICHESS_QSEARCH_TT_CUTOFF_MASK=${cutoff_mask}
+    HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
+    HEBICHESS_QSEARCH_DELTA_PRUNING=${delta_pruning}
+    HEBICHESS_STRENGTH_RUNNER=1
+  )
+endfunction()
+
+add_qsearch_strength_variant(HebiChessStrengthCurrent 0 0 1)
+add_qsearch_strength_variant(HebiChessStrengthNoDeltaQtt 2 7 0)
 
 enable_testing()
 add_test(

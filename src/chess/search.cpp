@@ -2,24 +2,122 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <unordered_map>
 
 #include "chess/nnue.hpp"
 #include "chess/see.hpp"
+#include "chess/uci.hpp"
 
 namespace hebichess {
 namespace {
+
+#ifndef HEBICHESS_QSEARCH_TT_VARIANT
+#define HEBICHESS_QSEARCH_TT_VARIANT 0
+#endif
+
+#ifndef HEBICHESS_QSEARCH_TT_PROFILE
+#define HEBICHESS_QSEARCH_TT_PROFILE 0
+#endif
+
+#ifndef HEBICHESS_QSEARCH_DELTA_PRUNING
+#define HEBICHESS_QSEARCH_DELTA_PRUNING 1
+#endif
+
+#ifndef HEBICHESS_QSEARCH_TT_CUTOFF_MASK
+#if HEBICHESS_QSEARCH_TT_VARIANT == 2
+#define HEBICHESS_QSEARCH_TT_CUTOFF_MASK 7
+#else
+#define HEBICHESS_QSEARCH_TT_CUTOFF_MASK 0
+#endif
+#endif
+
+#if HEBICHESS_QSEARCH_TT_VARIANT < 0 || HEBICHESS_QSEARCH_TT_VARIANT > 2
+#error "HEBICHESS_QSEARCH_TT_VARIANT must be 0 (baseline), 1 (shadow), or 2 (active)"
+#endif
+
+#if HEBICHESS_QSEARCH_TT_CUTOFF_MASK < 0 || HEBICHESS_QSEARCH_TT_CUTOFF_MASK > 7
+#error "HEBICHESS_QSEARCH_TT_CUTOFF_MASK is a three-bit Exact/Lower/Upper mask"
+#endif
 
 TranspositionTable& transposition_table() {
   static TranspositionTable table(64);
   return table;
 }
 
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+// Keep depth-zero QSearch entries completely out of the main table. Current
+// negamax routes depth zero directly to QSearch before its main-TT probe, but
+// a separate table makes QSearch eligibility explicit and guarantees zero
+// main-TT replacement pressure.
+TranspositionTable& qsearch_transposition_table() {
+  static TranspositionTable table(16);
+  return table;
+}
+
+void clear_qsearch_transposition_table() noexcept {
+  qsearch_transposition_table().clear();
+}
+#endif
+
 constexpr int MAX_SEARCH_PLY = 128;
 constexpr int MAX_HISTORY = 32768;
 constexpr int ASPIRATION_INITIAL_WINDOW_CP = 35;
+
+constexpr int QTT_EXACT_CUTOFF = 1;
+constexpr int QTT_LOWER_CUTOFF = 2;
+constexpr int QTT_UPPER_CUTOFF = 4;
+
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+thread_local QsearchTtCutoffTraceCallback qsearch_tt_cutoff_trace_callback;
+
+struct QsearchTtStoreProvenance {
+  ZobristKey key{0};
+  std::uint64_t serial{0};
+  std::string fen{};
+  int ply{0};
+  int alpha{0};
+  int beta{0};
+  int result{0};
+  TTBound bound{TTBound::Exact};
+  int encoded_score{0};
+  std::optional<float> raw_nnue{};
+  std::uint64_t accumulator_checksum{0};
+};
+
+struct QsearchTtDiagnosticState {
+  bool override_bounds{false};
+  std::uint8_t bound_mask{0};
+  std::int64_t cutoff_limit{-1};
+  std::uint64_t trace_cutoff{0};
+  std::uint64_t cutoff_serial{0};
+  std::uint64_t store_serial{0};
+  std::unordered_map<ZobristKey, QsearchTtStoreProvenance> stores{};
+};
+
+std::uint64_t accumulator_checksum(const NnueAccumulator* accumulator) noexcept {
+  if (accumulator == nullptr) return 0;
+  std::uint64_t hash = 1469598103934665603ULL;
+  const auto mix = [&hash](float value) {
+    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+    for (int shift = 0; shift < 32; shift += 8) {
+      hash ^= (bits >> shift) & 0xffU;
+      hash *= 1099511628211ULL;
+    }
+  };
+  for (const float value : accumulator->white) mix(value);
+  for (const float value : accumulator->black) mix(value);
+  return hash;
+}
+
+std::optional<float> raw_nnue(const Board& board, const NnueAccumulator* accumulator) {
+  return accumulator != nullptr ? evaluate_nnue_network_raw_from_accumulator(board, *accumulator)
+                                : evaluate_nnue_network_raw(board);
+}
+#endif
 
 struct StyleProfile {
   SearchResult& result;
@@ -119,6 +217,13 @@ struct SearchContext {
   // Root style proofs use a separate, strict policy below.
   std::uint64_t deadline_check_interval_nodes{1};
   std::uint64_t deadline_check_calls{0};
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  QsearchTtDiagnosticState* qtt_diagnostic{nullptr};
+  // Used solely by the trace's QTT-off oracle re-searches.
+  bool qtt_diagnostic_disable{false};
+  std::vector<QsearchNodeTrace>* qsearch_window_trace{nullptr};
+  bool qsearch_diagnostic_disable_delta_pruning{false};
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
   // Test-only: false makes NNUE evaluations follow the old board rebuild
   // path, so the same search can be compared against the wired path.
@@ -141,6 +246,9 @@ struct SearchContext {
 int evaluate_search_position(const Board& board, SearchContext& context,
                              const NnueAccumulator* accumulator,
                              bool qsearch) {
+#if HEBICHESS_QSEARCH_TT_PROFILE
+  if (context.result != nullptr) ++context.result->eval_calls;
+#endif
   if (accumulator != nullptr) {
     const auto raw = evaluate_nnue_network_raw_from_accumulator(board, *accumulator);
     if (raw.has_value()) {
@@ -702,6 +810,13 @@ void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
 
 }  // namespace
 
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+void set_qsearch_tt_cutoff_trace_callback_for_test(
+    QsearchTtCutoffTraceCallback callback) {
+  qsearch_tt_cutoff_trace_callback = std::move(callback);
+}
+#endif
+
 int evaluate_move_style_from_analysis(const Board& before, const Move& move,
                                      const Board& after, const StyleAttackState& before_attack,
                                      const StyleAttackState& after_attack, bool check,
@@ -810,14 +925,249 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   const Square king = board.find_king(side);
   const bool in_check = king.is_valid() &&
                         board.is_square_attacked(king, opposite(side));
+  const int original_alpha = alpha;
+  const int original_beta = beta;
+
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  std::optional<std::size_t> trace_index;
+  if (context.qsearch_window_trace != nullptr) {
+    QsearchNodeTrace node;
+    node.sequence = context.qsearch_window_trace->size();
+    node.key = board.zobrist_key();
+    node.fen = board.to_fen();
+    node.ply = ply;
+    node.entry_alpha = alpha;
+    node.entry_beta = beta;
+    node.in_check = in_check;
+    node.raw_nnue = raw_nnue(board, accumulator);
+    node.accumulator_checksum = accumulator_checksum(accumulator);
+    node.alpha_after_stand_pat = alpha;
+    context.qsearch_window_trace->push_back(std::move(node));
+    trace_index = context.qsearch_window_trace->size() - 1;
+  }
+  const auto finish_trace = [&](QsearchReturnKind kind, int value) {
+    if (trace_index) {
+      QsearchNodeTrace& node = context.qsearch_window_trace->at(*trace_index);
+      node.return_kind = kind;
+      node.returned_score = value;
+    }
+  };
+#endif
+
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  // C1 eligibility is deliberately narrow: no probe, store, or cutoff at an
+  // in-check qsearch node.  QTT never supplies a move-ordering hint.
+  TranspositionTable* qtt = nullptr;
+  ZobristKey qtt_key = 0;
+  if (!in_check
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      && !context.qtt_diagnostic_disable
+#endif
+      ) {
+    qtt = &qsearch_transposition_table();
+    qtt_key = board.zobrist_key();
+    const TTEntry* qtt_entry = qtt->probe(qtt_key);
+    int qtt_score = 0;
+    bool qtt_window_reusable = false;
+    bool qtt_reusable_subtree = false;
+#if HEBICHESS_QSEARCH_TT_PROFILE
+    if (context.result != nullptr) {
+      ++context.result->qtt_probes;
+      ++context.result->qtt_non_check_probes;
+#if HEBICHESS_QSEARCH_TT_VARIANT == 2
+      ++context.result->qtt_active_probes;
+#endif
+    }
+#endif
+    if (qtt_entry != nullptr) {
+      qtt_score = score_from_tt(qtt_entry->score, ply);
+      const int cutoff_bit = qtt_entry->bound == TTBound::Exact ? QTT_EXACT_CUTOFF
+                           : qtt_entry->bound == TTBound::Lower ? QTT_LOWER_CUTOFF
+                           : QTT_UPPER_CUTOFF;
+      qtt_window_reusable = qtt_entry->bound == TTBound::Exact ||
+          (qtt_entry->bound == TTBound::Lower && qtt_score >= beta) ||
+          (qtt_entry->bound == TTBound::Upper && qtt_score <= alpha);
+      qtt_reusable_subtree = qtt_window_reusable &&
+          (HEBICHESS_QSEARCH_TT_CUTOFF_MASK & cutoff_bit) != 0;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      if (context.qtt_diagnostic != nullptr && context.qtt_diagnostic->override_bounds) {
+        qtt_reusable_subtree = qtt_window_reusable &&
+            (context.qtt_diagnostic->bound_mask & cutoff_bit) != 0;
+      }
+#endif
+#if HEBICHESS_QSEARCH_TT_PROFILE
+      if (context.result != nullptr) {
+        ++context.result->qtt_hits;
+        ++context.result->qtt_same_position_repeats;
+        ++context.result->qtt_non_check_hits;
+        if (qtt_entry->bound == TTBound::Exact) ++context.result->qtt_exact_hits;
+        if (qtt_entry->bound == TTBound::Lower) ++context.result->qtt_lower_hits;
+        if (qtt_entry->bound == TTBound::Upper) ++context.result->qtt_upper_hits;
+        if (qtt_entry->bound == TTBound::Exact)
+          ++context.result->qtt_potential_reusable_eval;
+        if (qtt_window_reusable) ++context.result->qtt_potential_reusable_subtree;
+#if HEBICHESS_QSEARCH_TT_VARIANT == 2
+        ++context.result->qtt_active_hits;
+#endif
+      }
+#endif
+      // C1 is intentionally cutoff-only: it does not feed a move back into
+      // ordering, and this branch is already known to be a non-check node.
+      if (qtt_reusable_subtree) {
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+        bool apply_cutoff = true;
+        std::uint64_t cutoff_serial = 0;
+        if (context.qtt_diagnostic != nullptr) {
+          cutoff_serial = ++context.qtt_diagnostic->cutoff_serial;
+          if (context.result != nullptr) ++context.result->qtt_cutoff_candidates;
+          apply_cutoff = context.qtt_diagnostic->cutoff_limit < 0 ||
+              cutoff_serial <= static_cast<std::uint64_t>(context.qtt_diagnostic->cutoff_limit);
+        }
+        if (apply_cutoff && context.qtt_diagnostic != nullptr &&
+            qsearch_tt_cutoff_trace_callback &&
+            (context.qtt_diagnostic->trace_cutoff == 0 ||
+             context.qtt_diagnostic->trace_cutoff == cutoff_serial)) {
+          const auto stored = context.qtt_diagnostic->stores.find(qtt_key);
+          const QsearchTtStoreProvenance* provenance =
+              stored == context.qtt_diagnostic->stores.end() ? nullptr : &stored->second;
+          const auto qtt_off = [&](const Board& source, int oracle_alpha, int oracle_beta,
+                                   int oracle_ply) {
+            Board oracle_board = source;
+            std::uint64_t oracle_nodes = 0, oracle_qnodes = 0;
+            SearchContext oracle{oracle_nodes, oracle_qnodes, false, {}, false, nullptr,
+                                 nullptr, context.use_see_pruning, context.heuristics,
+                                 context.use_null_move, context.use_lmr, context.use_pvs,
+                                 context.eval_mode, context.deadline_check_interval_nodes};
+            oracle.qtt_diagnostic_disable = true;
+            std::optional<NnueAccumulator> oracle_accumulator;
+            if (context.eval_mode == EvalMode::NNUE && nnue_network_available()) {
+              oracle_accumulator.emplace();
+              if (!refresh_nnue_accumulator(oracle_board, *oracle_accumulator))
+                oracle_accumulator.reset();
+            }
+            return quiescence_impl(oracle_board, oracle_alpha, oracle_beta, oracle_ply,
+                                   oracle, oracle_accumulator ? &*oracle_accumulator : nullptr);
+          };
+          QsearchTtCutoffTrace event;
+          event.cutoff_serial = cutoff_serial;
+          event.key = qtt_key;
+          event.hit_fen = board.to_fen();
+          event.ply = ply;
+          event.alpha = alpha;
+          event.beta = beta;
+          event.bound = qtt_entry->bound;
+          event.stored_score = qtt_entry->score;
+          event.decoded_score = qtt_score;
+          event.hit_raw_nnue = raw_nnue(board, accumulator);
+          event.hit_accumulator_checksum = accumulator_checksum(accumulator);
+          event.qtt_off_hit_window = qtt_off(board, alpha, beta, ply);
+          if (provenance != nullptr) {
+            event.stored_key = provenance->key;
+            event.store_serial = provenance->serial;
+            event.store_fen = provenance->fen;
+            event.store_ply = provenance->ply;
+            event.store_alpha = provenance->alpha;
+            event.store_beta = provenance->beta;
+            event.store_result = provenance->result;
+            event.same_fen = provenance->fen == event.hit_fen;
+            event.same_full_key = provenance->key == qtt_key;
+            event.store_raw_nnue = provenance->raw_nnue;
+            event.store_accumulator_checksum = provenance->accumulator_checksum;
+            if (const auto store_board = Board::from_fen(provenance->fen)) {
+              event.qtt_off_store_window = qtt_off(*store_board, provenance->alpha,
+                                                   provenance->beta, provenance->ply);
+              event.qtt_off_full_window = qtt_off(*store_board, -MATE_SCORE,
+                                                  MATE_SCORE, provenance->ply);
+            }
+          }
+          qsearch_tt_cutoff_trace_callback(event);
+        }
+        if (!apply_cutoff) {
+          // The serial limit shadows this otherwise valid C1 cutoff while
+          // leaving probe/store behavior unchanged for binary isolation.
+          qtt_reusable_subtree = false;
+        } else if (context.result != nullptr) {
+          ++context.result->qtt_cutoff_applied;
+        }
+#endif
+        if (!qtt_reusable_subtree) {
+          // Continue into ordinary QSearch after a diagnostic-only shadow.
+        } else {
+  #if HEBICHESS_QSEARCH_TT_PROFILE
+        if (context.result != nullptr) ++context.result->qtt_active_cutoffs;
+  #endif
+        return qtt_score;
+        }
+      }
+    }
+  }
+  const auto store_qtt = [&](int score) {
+    if (qtt == nullptr) return;
+    const TTBound bound = score <= original_alpha ? TTBound::Upper
+                        : score >= original_beta ? TTBound::Lower : TTBound::Exact;
+    const TTStoreResult stored = qtt->store(qtt_key, 0, score_to_tt(score, ply), bound,
+                                            std::nullopt);
+#if HEBICHESS_QSEARCH_TT_PROFILE
+    if (context.result != nullptr && stored.stored) {
+      ++context.result->qtt_stores;
+      if (stored.replaced_different_key) ++context.result->qtt_replacements;
+    }
+#endif
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    if (context.qtt_diagnostic != nullptr) {
+      QsearchTtStoreProvenance provenance;
+      provenance.key = qtt_key;
+      provenance.serial = ++context.qtt_diagnostic->store_serial;
+      provenance.fen = board.to_fen();
+      provenance.ply = ply;
+      provenance.alpha = original_alpha;
+      provenance.beta = original_beta;
+      provenance.result = score;
+      provenance.bound = bound;
+      provenance.encoded_score = score_to_tt(score, ply);
+      provenance.raw_nnue = raw_nnue(board, accumulator);
+      provenance.accumulator_checksum = accumulator_checksum(accumulator);
+      context.qtt_diagnostic->stores[qtt_key] = std::move(provenance);
+    }
+#endif
+  };
+#else
+  const auto store_qtt = [](int) {};
+#endif
   const std::vector<Move> legal = in_check ? generate_legal_moves(board) : std::vector<Move>{};
 
   if (in_check) {
-    if (legal.empty()) return -MATE_SCORE + ply;
+    if (legal.empty()) {
+      const int score = -MATE_SCORE + ply;
+      store_qtt(score);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      finish_trace(QsearchReturnKind::Mate, score);
+#endif
+      return score;
+    }
     const auto evasions = order_moves(board, legal, context.result, context.heuristics, ply,
                                       std::nullopt, true);
     int best = -MATE_SCORE;
-    for (const OrderedMove& item : evasions) {
+    for (std::size_t order = 0; order < evasions.size(); ++order) {
+      const OrderedMove& item = evasions[order];
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      std::optional<std::size_t> trace_move_index;
+      if (trace_index) {
+        QsearchMoveTrace move_trace;
+        move_trace.move = move_to_uci(item.move);
+        move_trace.capture = item.capture;
+        move_trace.promotion = item.move.is_promotion();
+        move_trace.gives_check = item.gives_check;
+        move_trace.see = item.see;
+        move_trace.order = static_cast<int>(order);
+        move_trace.searched = true;
+        move_trace.child_alpha = -beta;
+        move_trace.child_beta = -alpha;
+        QsearchNodeTrace& node = context.qsearch_window_trace->at(*trace_index);
+        node.moves.push_back(std::move(move_trace));
+        trace_move_index = node.moves.size() - 1;
+      }
+#endif
       std::optional<NnueAccumulator> child_accumulator;
       const NnueAccumulator* child = nullptr;
       if (accumulator != nullptr) {
@@ -829,44 +1179,124 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                          context, child);
       board.unmake_move(item.move, undo);
-      if (context.stopped) return 0;
-      best = std::max(best, score);
+      if (context.stopped) {
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+        if (trace_move_index)
+          context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).child_score = score;
+        finish_trace(QsearchReturnKind::Stopped, 0);
+#endif
+        return 0;
+      }
+      if (score > best) {
+        best = score;
+      }
       alpha = std::max(alpha, score);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      if (trace_move_index) {
+        QsearchMoveTrace& move_trace =
+            context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index);
+        move_trace.child_score = score;
+        move_trace.alpha_after = alpha;
+        move_trace.beta_cutoff = alpha >= beta;
+      }
+#endif
       if (alpha >= beta) break;
     }
+    store_qtt(best);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    finish_trace(QsearchReturnKind::EvasionLoop, best);
+#endif
     return best;
   }
 
   const int stand_pat = evaluate_search_position(board, context, accumulator, true);
-  if (stand_pat >= beta) return beta;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  if (trace_index) context.qsearch_window_trace->at(*trace_index).stand_pat = stand_pat;
+#endif
+  if (stand_pat >= beta) {
+    store_qtt(beta);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    if (trace_index) context.qsearch_window_trace->at(*trace_index).alpha_after_stand_pat = alpha;
+    finish_trace(QsearchReturnKind::StandPatBeta, beta);
+#endif
+    return beta;
+  }
   alpha = std::max(alpha, stand_pat);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  if (trace_index) context.qsearch_window_trace->at(*trace_index).alpha_after_stand_pat = alpha;
+#endif
 
   const std::vector<Move> tactical_moves = generate_legal_tactical_moves(board);
-  if (tactical_moves.empty() && generate_legal_moves(board).empty()) return 0;
+  if (tactical_moves.empty() && generate_legal_moves(board).empty()) {
+    store_qtt(0);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    finish_trace(QsearchReturnKind::Stalemate, 0);
+#endif
+    return 0;
+  }
   const auto tactical = order_moves(board, tactical_moves, context.result, nullptr, ply,
                                     std::nullopt, true);
-  for (const OrderedMove& item : tactical) {
+  for (std::size_t order = 0; order < tactical.size(); ++order) {
+    const OrderedMove& item = tactical[order];
     const Move& move = item.move;
     const bool promotion = move.is_promotion();
     const bool capture = item.capture;
     const bool check = item.gives_check;
     const int see = item.see;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    std::optional<std::size_t> trace_move_index;
+    if (trace_index) {
+      QsearchMoveTrace move_trace;
+      move_trace.move = move_to_uci(move);
+      move_trace.capture = capture;
+      move_trace.promotion = promotion;
+      move_trace.gives_check = check;
+      move_trace.see = see;
+      move_trace.order = static_cast<int>(order);
+      QsearchNodeTrace& node = context.qsearch_window_trace->at(*trace_index);
+      node.moves.push_back(std::move(move_trace));
+      trace_move_index = node.moves.size() - 1;
+    }
+#endif
     if (context.use_see_pruning && capture && see < -100 && !check && !promotion) {
       if (context.result != nullptr) ++context.result->see_prunes;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      if (trace_move_index)
+        context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).see_rejected = true;
+#endif
       continue;
     }
-    // A non-checking, non-promotion capture cannot raise alpha when even the
-    // captured material plus a deliberately generous margin is insufficient.
-    // Keep checks and promotions out: their tactical value is not bounded by
-    // the immediate victim value.
+#if HEBICHESS_QSEARCH_DELTA_PRUNING
+    // Legacy production rule.  No-delta experiment targets compile this
+    // entire rejection out; the default remains enabled so production and
+    // all pre-existing targets retain byte-for-byte search semantics.
     const Piece victim = move.flag == MoveFlag::EnPassant
         ? Piece{PieceType::Pawn, opposite(side)} : board.piece_at(move.to);
     constexpr int DELTA_MARGIN_CP = 120;
-    if (capture && !check && !promotion &&
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    const bool disable_delta_pruning = context.qsearch_diagnostic_disable_delta_pruning;
+#else
+    constexpr bool disable_delta_pruning = false;
+#endif
+    if (!disable_delta_pruning && capture && !check && !promotion &&
         stand_pat + piece_value(victim.type) + DELTA_MARGIN_CP < alpha) {
       if (context.result != nullptr) ++context.result->qdelta_prunes;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      if (trace_move_index)
+        context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).delta_rejected = true;
+#endif
       continue;
     }
+#endif
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    if (trace_move_index) {
+      QsearchMoveTrace& move_trace =
+          context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index);
+      move_trace.searched = true;
+      move_trace.child_alpha = -beta;
+      move_trace.child_beta = -alpha;
+    }
+#endif
     std::optional<NnueAccumulator> child_accumulator;
     const NnueAccumulator* child = nullptr;
     if (accumulator != nullptr) {
@@ -878,10 +1308,30 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                        context, child);
     board.unmake_move(move, undo);
-    if (context.stopped) return 0;
+    if (context.stopped) {
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      if (trace_move_index)
+        context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).child_score = score;
+      finish_trace(QsearchReturnKind::Stopped, 0);
+#endif
+      return 0;
+    }
     alpha = std::max(alpha, score);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    if (trace_move_index) {
+      QsearchMoveTrace& move_trace =
+          context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index);
+      move_trace.child_score = score;
+      move_trace.alpha_after = alpha;
+      move_trace.beta_cutoff = alpha >= beta;
+    }
+#endif
     if (alpha >= beta) break;
   }
+  store_qtt(alpha);
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  finish_trace(QsearchReturnKind::TacticalLoop, alpha);
+#endif
   return alpha;
 }
 
@@ -1035,25 +1485,62 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   if (context.tt != nullptr && context.result != nullptr) {
     const TTBound bound = best <= original_alpha ? TTBound::Upper
                          : best >= original_beta ? TTBound::Lower : TTBound::Exact;
-    context.tt->store(board.zobrist_key(), depth, score_to_tt(best, ply), bound,
-                      best_move);
+    const TTStoreResult stored = context.tt->store(board.zobrist_key(), depth,
+                                                    score_to_tt(best, ply), bound,
+                                                    best_move);
+    #if HEBICHESS_QSEARCH_TT_PROFILE
+    if (stored.stored) {
+      ++context.result->tt_stores;
+      if (stored.replaced_different_key) ++context.result->tt_replacements;
+    }
+    #endif
   }
   return best;
 }
 
 int negamax(Board& board, int depth, int alpha, int beta, int ply,
             std::uint64_t& nodes) {
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  clear_qsearch_transposition_table();
+#endif
   std::uint64_t qnodes = 0;
   SearchContext context{nodes, qnodes};
   return negamax_impl(board, depth, alpha, beta, ply, context);
 }
 
 int quiescence(Board& board, int alpha, int beta, int ply) {
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  clear_qsearch_transposition_table();
+#endif
   std::uint64_t nodes = 0;
   std::uint64_t qnodes = 0;
   SearchContext context{nodes, qnodes};
   return quiescence_impl(board, alpha, beta, ply, context);
 }
+
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+QsearchWindowTrace trace_qsearch_window_for_test(const Board& board, int alpha, int beta,
+                                                  int ply, EvalMode eval_mode,
+                                                  bool disable_delta_pruning) {
+  QsearchWindowTrace trace;
+  Board working = board;
+  std::uint64_t nodes = 0;
+  std::uint64_t qnodes = 0;
+  SearchContext context{nodes, qnodes, false, {}, false, nullptr, nullptr, true,
+                        nullptr, false, false, false, eval_mode, 1};
+  context.qtt_diagnostic_disable = true;
+  context.qsearch_window_trace = &trace.nodes;
+  context.qsearch_diagnostic_disable_delta_pruning = disable_delta_pruning;
+  std::optional<NnueAccumulator> accumulator;
+  if (eval_mode == EvalMode::NNUE && nnue_network_available()) {
+    accumulator.emplace();
+    if (!refresh_nnue_accumulator(working, *accumulator)) accumulator.reset();
+  }
+  trace.score = quiescence_impl(working, alpha, beta, ply, context,
+                                accumulator ? &*accumulator : nullptr);
+  return trace;
+}
+#endif
 
 SearchResult search(const Board& position, int max_depth) {
   SearchLimits limits;
@@ -1068,7 +1555,19 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                          NnueSearchAccumulatorCounters* nnue_counters
 #endif
                          ) {
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  // QTT lifetime is one root search.  This also makes a later EvalFile reload
+  // safe even if a host forgets to issue ucinewgame.
+  clear_qsearch_transposition_table();
+#endif
   SearchResult result;
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  QsearchTtDiagnosticState qtt_diagnostic;
+  qtt_diagnostic.override_bounds = limits.qtt_diagnostic_override_bounds;
+  qtt_diagnostic.bound_mask = limits.qtt_diagnostic_bound_mask;
+  qtt_diagnostic.cutoff_limit = limits.qtt_cutoff_limit;
+  qtt_diagnostic.trace_cutoff = limits.qtt_trace_cutoff;
+#endif
   const auto search_started = std::chrono::steady_clock::now();
   if (limits.max_depth < 1) return result;
   Board root = position;
@@ -1096,6 +1595,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
                           limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                           limits.deadline_check_interval_nodes};
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+    context.qtt_diagnostic = &qtt_diagnostic;
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
     context.use_nnue_accumulator = test_use_nnue_accumulator;
     context.nnue_counters = nnue_counters;
@@ -1105,31 +1607,17 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     return result;
   }
   result.best_move = legal.front();
-  // Reserve scheduling deliberately uses only move fields and king proximity.
-  // Full attack/motif analysis belongs after the objective root scores exist.
-  const Color root_mover = root.side_to_move();
-  const Square enemy_king = root.find_king(opposite(root_mover));
-  const bool has_concrete_style_candidate = limits.use_style_v3 && std::any_of(
-      legal.begin(), legal.end(), [&](const Move& move) {
-        const Piece moving = root.piece_at(move.from);
-        const Piece captured = root.piece_at(move.to);
-        const int proximity = enemy_king.is_valid() ?
-            chebyshev_distance(move.to, enemy_king) : 8;
-        return is_capture(move) || move.is_promotion() ||
-               (moving.type != PieceType::Pawn && moving.type != PieceType::King &&
-                (proximity <= 3 || !captured.is_empty()));
-      });
-  const int requested_reserve = limits.style_verification_reserve_ms >= 0
-      ? limits.style_verification_reserve_ms : 150;
-  // Do not take a large objective-search slice in ordinary positions.  A
-  // small guard still prevents a deadline edge from exposing partial work.
-  const int reserve_ms = limits.has_deadline
-      ? (has_concrete_style_candidate ? requested_reserve : 10) : 0;
-  result.style_verification_reserve_active = limits.has_deadline &&
-      has_concrete_style_candidate && reserve_ms > 0;
-  result.style_verification_reserve_ms = static_cast<std::uint64_t>(reserve_ms);
+  const Square enemy_king = root.find_king(opposite(root.side_to_move()));
+  // Preserve the explicit benchmark setting as result metadata only.  It no
+  // longer reserves objective-search time or influences its deadline.
+  if (limits.has_deadline && limits.style_verification_reserve_ms >= 0) {
+    result.style_verification_reserve_active = true;
+    result.style_verification_reserve_ms =
+        static_cast<std::uint64_t>(limits.style_verification_reserve_ms);
+  }
   const auto objective_deadline = limits.has_deadline
-      ? limits.deadline - std::chrono::milliseconds(reserve_ms) : limits.deadline;
+      ? limits.deadline - std::chrono::milliseconds(10)
+      : limits.deadline;
   std::vector<RootMoveInfo> previous_root;
   std::vector<RootMoveInfo> last_completed;
   int last_objective_best = -MATE_SCORE;
@@ -1155,6 +1643,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
                             limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                             limits.deadline_check_interval_nodes};
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+      context.qtt_diagnostic = &qtt_diagnostic;
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
       context.use_nnue_accumulator = test_use_nnue_accumulator;
       context.nnue_counters = nnue_counters;
@@ -1395,6 +1886,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                              limits.use_killer_history ? &search_heuristics() : nullptr,
                              limits.use_null_move, limits.use_lmr, limits.use_pvs,
                              limits.eval_mode, 1};
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+  verification.qtt_diagnostic = &qtt_diagnostic;
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
   verification.use_nnue_accumulator = test_use_nnue_accumulator;
   verification.nnue_counters = nnue_counters;
@@ -1479,6 +1973,61 @@ SearchResult search(const Board& position, const SearchLimits& limits,
 #endif
 }
 
+#if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
+SearchResult search_forced_root_move_for_test(const Board& board,
+                                              const Move& forced_root_move,
+                                              const SearchLimits& limits) {
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  clear_qsearch_transposition_table();
+#endif
+  SearchResult result;
+  QsearchTtDiagnosticState qtt_diagnostic;
+  qtt_diagnostic.override_bounds = limits.qtt_diagnostic_override_bounds;
+  qtt_diagnostic.bound_mask = limits.qtt_diagnostic_bound_mask;
+  qtt_diagnostic.cutoff_limit = limits.qtt_cutoff_limit;
+  qtt_diagnostic.trace_cutoff = limits.qtt_trace_cutoff;
+  if (limits.max_depth < 1) return result;
+  const std::vector<Move> legal = generate_legal_moves(board);
+  if (std::find(legal.begin(), legal.end(), forced_root_move) == legal.end()) {
+    return result;
+  }
+
+  Board root = board;
+  const bool use_nnue_accumulator = limits.eval_mode == EvalMode::NNUE &&
+      nnue_network_available();
+  std::optional<NnueAccumulator> root_accumulator;
+  if (use_nnue_accumulator) {
+    root_accumulator.emplace();
+    if (!refresh_nnue_accumulator(root, *root_accumulator)) root_accumulator.reset();
+  }
+  SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
+                        limits.deadline, false,
+                        limits.use_tt ? &transposition_table() : nullptr, &result,
+                        limits.use_see_pruning,
+                        limits.use_killer_history ? &search_heuristics() : nullptr,
+                        limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
+                        limits.deadline_check_interval_nodes};
+  context.qtt_diagnostic = &qtt_diagnostic;
+  std::optional<NnueAccumulator> child_accumulator;
+  const NnueAccumulator* child = nullptr;
+  if (root_accumulator.has_value()) {
+    child_accumulator.emplace();
+    child = make_child_accumulator(root, forced_root_move, &*root_accumulator,
+                                   *child_accumulator, context, false);
+  }
+  const UndoState undo = root.make_move(forced_root_move);
+  result.score = -negamax_impl(root, limits.max_depth - 1, -MATE_SCORE, MATE_SCORE,
+                               1, context, child);
+  root.unmake_move(forced_root_move, undo);
+  if (!context.stopped) {
+    result.best_move = forced_root_move;
+    result.completed_depth = limits.max_depth;
+  }
+  result.main_nodes = result.nodes - result.qnodes;
+  return result;
+}
+#endif
+
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
 NnueSearchTestResult search_nnue_incremental_for_test(const Board& board,
                                                        const SearchLimits& limits) {
@@ -1495,7 +2044,12 @@ NnueSearchTestResult search_nnue_legacy_for_test(const Board& board,
 }
 #endif
 
-void clear_transposition_table() noexcept { transposition_table().clear(); }
+void clear_transposition_table() noexcept {
+  transposition_table().clear();
+#if HEBICHESS_QSEARCH_TT_VARIANT != 0
+  clear_qsearch_transposition_table();
+#endif
+}
 
 void clear_search_heuristics() noexcept { search_heuristics().clear(); }
 
