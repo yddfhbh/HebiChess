@@ -12,24 +12,29 @@ set(CHESS_SOURCES
   src/chess/uci_engine.cpp
 )
 
-add_executable(HebiChess
-  src/main.cpp
-  ${CHESS_SOURCES}
-)
-
-target_include_directories(HebiChess PRIVATE src)
-
-# Phase 6-4B final production configuration.  These are deliberately
-# compile-time-only choices: the normal timed engine has no profiling or
-# diagnostic path, and its relevant search behavior matches the accepted
-# HebiChessStrengthNoDeltaQtt binary.
-target_compile_definitions(HebiChess PRIVATE
+# Phase 6-4B final production configuration.  Keep the accepted search
+# definitions shared by every production engine target so they cannot drift.
+set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_DELTA_PRUNING=0
   HEBICHESS_QSEARCH_TT_VARIANT=2
   HEBICHESS_QSEARCH_TT_CUTOFF_MASK=7
   HEBICHESS_QSEARCH_TT_PROFILE=0
   HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
 )
+
+function(apply_hebichess_production_qsearch target)
+  target_compile_definitions(${target} PRIVATE
+    ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
+  )
+endfunction()
+
+add_executable(HebiChess
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+
+target_include_directories(HebiChess PRIVATE src)
+apply_hebichess_production_qsearch(HebiChess)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 if(HEBICHESS_BUILD_WASM)
@@ -39,6 +44,7 @@ if(HEBICHESS_BUILD_WASM)
   add_executable(HebiChessWasm src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasm PRIVATE src)
   target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1)
+  apply_hebichess_production_qsearch(HebiChessWasm)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/web/public/engine"
@@ -55,6 +61,7 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
   add_executable(HebiChessWasmNodeTest src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasmNodeTest PRIVATE src)
   target_compile_definitions(HebiChessWasmNodeTest PRIVATE HEBICHESS_WASM=1)
+  apply_hebichess_production_qsearch(HebiChessWasmNodeTest)
   set_target_properties(HebiChessWasmNodeTest PROPERTIES
     OUTPUT_NAME hebichess-node
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/node-test"
