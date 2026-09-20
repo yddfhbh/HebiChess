@@ -9,7 +9,7 @@ set(CHESS_SOURCES
   src/chess/board.cpp src/chess/movegen.cpp src/chess/game_state.cpp src/chess/perft.cpp
   src/chess/eval.cpp src/chess/nnue.cpp src/chess/nnue_features.cpp
   src/chess/search.cpp src/chess/uci.cpp src/chess/zobrist.cpp src/chess/tt.cpp src/chess/see.cpp
-  src/chess/uci_engine.cpp
+  src/chess/uci_engine.cpp src/chess/opening_book.cpp
 )
 
 # Phase 6-4B final production configuration.  Keep the accepted search
@@ -21,7 +21,6 @@ set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_TT_PROFILE=0
   HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
 )
-
 function(apply_hebichess_production_qsearch target)
   target_compile_definitions(${target} PRIVATE
     ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
@@ -199,6 +198,12 @@ add_executable(HebiChessGameStateTest
 )
 target_include_directories(HebiChessGameStateTest PRIVATE src)
 
+add_executable(HebiChessOpeningBookTest
+  tests/opening_book_test.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessOpeningBookTest PRIVATE src)
+
 # Phase 6-4B-2: compile-time-only QSearch TT A/B binaries.  Diagnostic and
 # strength targets remain separately named so the accepted production path
 # stays free of profiling instrumentation.
@@ -303,6 +308,7 @@ add_test(NAME chess_uci COMMAND HebiChessUciTest)
 add_test(NAME chess_zobrist_tt COMMAND HebiChessZobristTtTest)
 add_test(NAME chess_see COMMAND HebiChessSeeTest)
 add_test(NAME chess_game_state COMMAND HebiChessGameStateTest)
+add_test(NAME chess_opening_book COMMAND HebiChessOpeningBookTest)
 add_test(NAME chess_nnue_clip_precompute COMMAND HebiChessNnueClipPrecomputeTest)
 set_tests_properties(chess_nnue_clip_precompute PROPERTIES
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
