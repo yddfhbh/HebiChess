@@ -1,8 +1,10 @@
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "chess/opening_book.hpp"
 #include "chess/search.hpp"
 #include "chess/uci.hpp"
 #include "chess/uci_engine.hpp"
@@ -14,6 +16,58 @@ Board position(const char* fen) {
   const auto board = Board::from_fen(fen);
   assert(board);
   return *board;
+}
+
+void put16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value));
+  bytes.push_back(static_cast<std::uint8_t>(value >> 8));
+}
+void put32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+  for (int i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+}
+void put64(std::vector<std::uint8_t>& bytes, std::uint64_t value) {
+  for (int i = 0; i < 8; ++i) bytes.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+}
+std::vector<std::uint8_t> book_fixture(const Board& board, Move candidate,
+                                       std::uint16_t max_ply = 30) {
+  std::vector<std::uint8_t> bytes{'H', 'E', 'B', 'I', 'B', 'O', 'O', 'K'};
+  put32(bytes, 1); put32(bytes, 1); put32(bytes, 1);
+  put16(bytes, max_ply); put16(bytes, 1);
+  put64(bytes, opening_book_key(board)); put32(bytes, 0); put16(bytes, 1); put16(bytes, 0);
+  put16(bytes, OpeningBook::pack_move(candidate)); put16(bytes, 0); put32(bytes, 1);
+  return bytes;
+}
+
+void test_uci_opening_book_path() {
+  const Board initial = Board::initial();
+  const Move e4 = *parse_uci_move(initial, "e2e4");
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  assert(engine.load_opening_book_bytes(book_fixture(initial, e4)));
+  assert(engine.opening_book_available());
+  engine.send_command("position startpos");
+  engine.send_command("go depth 1");
+  bool searched = false;
+  for (const auto& line : output) searched |= line.rfind("info depth ", 0) == 0;
+  assert(searched);  // OwnBook defaults to false.
+
+  output.clear();
+  engine.send_command("setoption name BookSeed value 7");
+  engine.send_command("setoption name OwnBook value true");
+  engine.send_command("go depth 64");
+  assert((output == std::vector<std::string>{"info string BookSeed 7", "info string OwnBook true",
+                                             "info string book hit", "bestmove e2e4"}));
+
+  output.clear();
+  engine.send_command("position fen 4k3/8/8/8/8/8/8/4K2R w - - 0 16");
+  engine.send_command("go depth 1");
+  searched = false;
+  for (const auto& line : output) searched |= line.rfind("info depth ", 0) == 0;
+  assert(searched);  // Current ply is 30, so the book is disabled.
+
+  output.clear();
+  engine.send_command("setoption name BookFile value");
+  assert(!engine.opening_book_available());
 }
 
 void test_move_parsing() {
@@ -84,4 +138,5 @@ int main() {
   test_move_parsing();
   test_serialization_and_timeout_integrity();
   test_eval_breakdown_uci_output();
+  test_uci_opening_book_path();
 }

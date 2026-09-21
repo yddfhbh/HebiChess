@@ -90,6 +90,22 @@ int hebichess_nnue_load_bytes(const std::uint8_t* bytes, std::size_t size) {
   return 1;
 }
 
+int hebichess_book_load_bytes(const std::uint8_t* bytes, std::size_t size) {
+  output.clear();
+  if (!bytes || !engine().load_opening_book_bytes({bytes, size})) {
+    engine().clear_opening_book();
+    output = "info string error opening book load failed\n";
+    return 0;
+  }
+  output = "info string opening book loaded browser binary\n";
+  return 1;
+}
+
+void hebichess_book_clear() {
+  engine().clear_opening_book();
+  output = "info string opening book cleared\n";
+}
+
 void hebichess_nnue_clear() {
   hebichess::clear_nnue_network();
   output = "info string NNUE network cleared\n";

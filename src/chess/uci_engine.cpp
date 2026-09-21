@@ -1,10 +1,14 @@
 #include "chess/uci_engine.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
+#include <vector>
 
 #include "chess/nnue.hpp"
 #include "chess/nnue_features.hpp"
@@ -32,9 +36,44 @@ int integer_after(std::istringstream& input) {
   return std::max(0, value);
 }
 
+bool parse_uint64(const std::string& text, std::uint64_t& value) {
+  if (text.empty()) return false;
+  const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+  return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+
+std::uint64_t splitmix64(std::uint64_t& state) noexcept {
+  state += 0x9e3779b97f4a7c15ULL;
+  std::uint64_t z = state;
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
 }  // namespace
 
-UciEngine::UciEngine(Output output) : output_(std::move(output)) {}
+UciEngine::UciEngine(Output output) : output_(std::move(output)) {
+  reset_book_random_state();
+}
+
+bool UciEngine::load_opening_book_bytes(std::span<const std::uint8_t> bytes) {
+  return opening_book_.load(bytes);
+}
+
+void UciEngine::clear_opening_book() noexcept { opening_book_.clear(); }
+
+bool UciEngine::opening_book_available() const noexcept { return opening_book_.available(); }
+
+void UciEngine::reset_book_random_state() noexcept {
+  // A new game gets a reproducible stream, while the game counter prevents
+  // every ucinewgame from selecting the same opening line.
+  book_random_state_ = book_seed_ +
+      (book_game_counter_ * 0x9e3779b97f4a7c15ULL);
+}
+
+std::uint64_t UciEngine::next_book_random() {
+  return splitmix64(book_random_state_);
+}
 
 void UciEngine::send_command(const std::string& line) {
   std::istringstream input(line);
@@ -44,6 +83,9 @@ void UciEngine::send_command(const std::string& line) {
   if (command == "uci") {
     emit("id name HebiChess");
     emit("id author Hebi");
+    emit("option name OwnBook type check default false");
+    emit("option name BookFile type string default ");
+    emit("option name BookSeed type string default 0");
 #ifdef HEBICHESS_WASM
     emit("option name EvalMode type combo default HCE var HCE");
 #else
@@ -62,6 +104,8 @@ void UciEngine::send_command(const std::string& line) {
     emit("readyok");
   } else if (command == "ucinewgame") {
     board_ = Board::initial();
+    ++book_game_counter_;
+    reset_book_random_state();
     clear_transposition_table();
     clear_search_heuristics();
   } else if (command == "setoption") {
@@ -72,8 +116,50 @@ void UciEngine::send_command(const std::string& line) {
     if (!value.empty() && value.front() == ' ') value.erase(0, 1);
     if (name_token != "name" || value_token != "value") {
       emit("info string error unsupported setoption");
+    } else if (name == "OwnBook" && (value == "true" || value == "false")) {
+      own_book_ = value == "true";
+      emit("info string OwnBook " + std::string(own_book_ ? "true" : "false"));
+    } else if (name == "BookSeed") {
+      std::uint64_t seed = 0;
+      if (!parse_uint64(value, seed)) {
+        emit("info string error invalid BookSeed");
+      } else {
+        book_seed_ = seed;
+        reset_book_random_state();
+        emit("info string BookSeed " + std::to_string(book_seed_));
+      }
+    } else if (name == "BookFile") {
 #ifdef HEBICHESS_WASM
+      emit("info string error BookFile filesystem paths are unavailable in WASM");
+#else
+      if (value.empty()) {
+        clear_opening_book();
+        emit("info string opening book cleared");
+      } else {
+        bool loaded = false;
+        try {
+          std::ifstream file(value, std::ios::binary | std::ios::ate);
+          if (file) {
+            const std::streamoff end = file.tellg();
+            if (end >= 0 && static_cast<std::uint64_t>(end) <= std::numeric_limits<std::size_t>::max()) {
+              std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+              file.seekg(0, std::ios::beg);
+              loaded = static_cast<bool>(file.read(reinterpret_cast<char*>(bytes.data()), end)) &&
+                       load_opening_book_bytes(bytes);
+            }
+          }
+        } catch (const std::bad_alloc&) {
+          loaded = false;
+        }
+        if (loaded) emit("info string opening book loaded " + value);
+        else {
+          clear_opening_book();
+          emit("info string error opening book load failed " + value);
+        }
+      }
+#endif
     } else if (name == "EvalMode" && value == "HCE") {
+#ifdef HEBICHESS_WASM
       eval_mode_ = EvalMode::HCE;
       emit("info string EvalMode HCE");
     } else {
@@ -208,6 +294,18 @@ void UciEngine::send_command(const std::string& line) {
       budget = std::max(1, budget - (has_movetime ? std::min(20, budget / 10) : 10));
       limits.has_deadline = true;
       limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);
+    }
+    const std::uint32_t fullmove = board_.fullmove_number();
+    const std::uint32_t book_ply =
+        (fullmove > 0 ? 2 * (fullmove - 1) : 0) +
+        (board_.side_to_move() == Color::Black ? 1 : 0);
+    if (own_book_ && opening_book_.available() &&
+        book_ply < opening_book_.max_book_ply()) {
+      if (const auto book_move = opening_book_.choose_move(board_, next_book_random())) {
+        emit("info string book hit");
+        emit("bestmove " + move_to_uci(*book_move));
+        return;
+      }
     }
     const SearchResult result = search(board_, limits, [this](int depth, int score, std::uint64_t nodes, std::uint64_t qnodes) {
       std::ostringstream info;

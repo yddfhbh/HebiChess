@@ -3,6 +3,7 @@
 let modulePromise, module, liveContext = {};
 let evalMode = 'HCE';
 let nnueState = 'hce-ready';
+let bookState = 'book-unavailable';
 const frozenModel = {
   file: 'models/hebinnue-v3-4c815d54bc6c9fbf.hebinnue',
   sha256: '4c815d54bc6c9fbfc27ebc19ea48ff3b23d845c338cda710aad14a65215a7826'
@@ -39,6 +40,7 @@ function emitOutput(context = {}) {
 }
 
 function publishNnue(extra = {}) { self.postMessage({type:'nnue-state', state:nnueState, evalMode, ...extra}); }
+function publishBook(extra = {}) { self.postMessage({type:'book-state', state:bookState, ...extra}); }
 function hex(bytes) { return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join(''); }
 async function sha256(bytes) {
   if (!self.crypto?.subtle) throw Error('SHA-256 validation requires Web Crypto (secure context or localhost)');
@@ -109,6 +111,39 @@ async function loadNnue({url, sha256: expectedSha256} = {}) {
   }
 }
 
+async function loadBook({url, sha256: expectedSha256, seed} = {}) {
+  bookState = 'book-loading'; publishBook();
+  let bytes, pointer = 0;
+  try {
+    if (!url || !expectedSha256) throw Error('book load requires url and sha256');
+    diagnostic('opening book download started', {bookUrl:url});
+    const response = await fetch(url, {cache:'default'});
+    if (!response.ok) throw Error(`opening book download failed: HTTP ${response.status}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+    const expected = String(expectedSha256).toLowerCase();
+    const actual = await sha256(bytes);
+    if (actual !== expected) throw Error(`opening book SHA-256 mismatch: expected ${expected}, got ${actual}`);
+    pointer = module._malloc(bytes.byteLength);
+    if (!pointer) throw Error('WASM could not allocate opening book transfer buffer');
+    module.HEAPU8.set(bytes, pointer);
+    if (!module.ccall('hebichess_book_load_bytes', 'number', ['number','number'], [pointer, bytes.byteLength])) {
+      throw Error(module.ccall('hebichess_take_output', 'string', [], []).trim() || 'opening book parser rejected book');
+    }
+    if (seed !== undefined && seed !== null) command(`setoption name BookSeed value ${String(seed)}`, {});
+    command('setoption name OwnBook value true', {});
+    bookState = 'book-ready';
+    diagnostic('opening book loaded', {bookUrl:url, bytes:bytes.byteLength, sha256:actual});
+    publishBook({url, bytes:bytes.byteLength, sha256:actual});
+  } catch (error) {
+    command('setoption name OwnBook value false', {});
+    bookState = 'book-load-failed';
+    publishBook({error:String(error.message || error)});
+  } finally {
+    if (pointer) module._free(pointer);
+    bytes = null;
+  }
+}
+
 function setEvalMode(mode) {
   if (mode !== 'HCE' && mode !== 'NNUE') throw Error(`unsupported EvalMode ${mode}`);
   if (mode === 'NNUE' && nnueState !== 'nnue-ready') {
@@ -124,6 +159,7 @@ self.onmessage = async ({data:message = {}}) => {
     if (message.type === 'init') { await initialize(); diagnostic('worker ready'); self.postMessage({type:'ready', nnueState, evalMode}); return; }
     if (!module) throw Error('engine is not initialized');
     if (message.type === 'load-nnue') { await loadNnue(message); return; }
+    if (message.type === 'load-book') { await loadBook(message); return; }
     if (message.type === 'set-eval-mode') { setEvalMode(String(message.mode || '')); return; }
     if (message.type === 'nnue-evaluate') {
       if (nnueState !== 'nnue-ready') throw Error(`NNUE raw evaluation requested while state is ${nnueState}`);
