@@ -1,7 +1,11 @@
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "chess/opening_book.hpp"
@@ -12,6 +16,10 @@
 using namespace hebichess;
 
 namespace {
+void require(bool condition, const char* message) {
+  if (!condition) throw std::runtime_error(message);
+}
+
 Board position(const char* fen) {
   const auto board = Board::from_fen(fen);
   assert(board);
@@ -28,46 +36,146 @@ void put32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
 void put64(std::vector<std::uint8_t>& bytes, std::uint64_t value) {
   for (int i = 0; i < 8; ++i) bytes.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
 }
-std::vector<std::uint8_t> book_fixture(const Board& board, Move candidate,
-                                       std::uint16_t max_ply = 30) {
+std::vector<std::uint8_t> book_fixture(
+    const Board& board, std::initializer_list<std::pair<Move, std::uint32_t>> candidates,
+    std::uint16_t max_ply = 30) {
   std::vector<std::uint8_t> bytes{'H', 'E', 'B', 'I', 'B', 'O', 'O', 'K'};
-  put32(bytes, 1); put32(bytes, 1); put32(bytes, 1);
-  put16(bytes, max_ply); put16(bytes, 1);
-  put64(bytes, opening_book_key(board)); put32(bytes, 0); put16(bytes, 1); put16(bytes, 0);
-  put16(bytes, OpeningBook::pack_move(candidate)); put16(bytes, 0); put32(bytes, 1);
+  put32(bytes, 1); put32(bytes, 1); put32(bytes, static_cast<std::uint32_t>(candidates.size()));
+  put16(bytes, max_ply); put16(bytes, static_cast<std::uint16_t>(candidates.size()));
+  put64(bytes, opening_book_key(board)); put32(bytes, 0);
+  put16(bytes, static_cast<std::uint16_t>(candidates.size())); put16(bytes, 0);
+  for (const auto& [candidate, weight] : candidates) {
+    put16(bytes, OpeningBook::pack_move(candidate)); put16(bytes, 0); put32(bytes, weight);
+  }
   return bytes;
+}
+
+bool has_line(const std::vector<std::string>& output, const std::string& expected) {
+  for (const auto& line : output) if (line == expected) return true;
+  return false;
+}
+
+void require_bounded_search(const std::vector<std::string>& output) {
+  bool searched = false;
+  bool bestmove = false;
+  for (const auto& line : output) {
+    searched |= line.rfind("info depth ", 0) == 0;
+    bestmove |= line.rfind("bestmove ", 0) == 0;
+  }
+  require(searched, "bounded fallback did not search");
+  require(bestmove, "bounded fallback did not emit bestmove");
+}
+
+std::string book_bestmove(const Board& board, const std::vector<std::uint8_t>& bytes,
+                          const char* seed) {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  require(engine.load_opening_book_bytes(bytes), "opening book fixture failed to load");
+  engine.send_command(std::string("setoption name BookSeed value ") + seed);
+  engine.send_command("setoption name OwnBook value true");
+  engine.send_command("position fen " + board.to_fen());
+  engine.send_command("go movetime 50");
+  require(has_line(output, "info string book hit"), "book fixture did not hit");
+  require(!std::any_of(output.begin(), output.end(), [](const std::string& line) {
+    return line.rfind("info depth ", 0) == 0;
+  }), "book hit unexpectedly searched");
+  for (const auto& line : output) {
+    if (line.rfind("bestmove ", 0) == 0) return line.substr(9);
+  }
+  throw std::runtime_error("book hit did not emit bestmove");
 }
 
 void test_uci_opening_book_path() {
   const Board initial = Board::initial();
   const Move e4 = *parse_uci_move(initial, "e2e4");
-  std::vector<std::string> output;
-  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
-  assert(engine.load_opening_book_bytes(book_fixture(initial, e4)));
-  assert(engine.opening_book_available());
-  engine.send_command("position startpos");
-  engine.send_command("go depth 1");
-  bool searched = false;
-  for (const auto& line : output) searched |= line.rfind("info depth ", 0) == 0;
-  assert(searched);  // OwnBook defaults to false.
+  const Move d4 = *parse_uci_move(initial, "d2d4");
 
-  output.clear();
-  engine.send_command("setoption name BookSeed value 7");
-  engine.send_command("setoption name OwnBook value true");
-  engine.send_command("go depth 64");
-  assert((output == std::vector<std::string>{"info string BookSeed 7", "info string OwnBook true",
-                                             "info string book hit", "bestmove e2e4"}));
+  // OwnBook defaults to false even when a valid book is loaded.
+  {
+    std::vector<std::string> output;
+    UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+    const bool loaded = engine.load_opening_book_bytes(book_fixture(initial, {{e4, 1}}));
+    require(loaded, "opening book fixture failed to load");
+    require(engine.opening_book_available(), "opening book should be available");
+    engine.send_command("position startpos");
+    engine.send_command("go movetime 50");
+    require(!has_line(output, "info string book hit"), "OwnBook=false unexpectedly used book");
+    require_bounded_search(output);
+  }
 
-  output.clear();
-  engine.send_command("position fen 4k3/8/8/8/8/8/8/4K2R w - - 0 16");
-  engine.send_command("go depth 1");
-  searched = false;
-  for (const auto& line : output) searched |= line.rfind("info depth ", 0) == 0;
-  assert(searched);  // Current ply is 30, so the book is disabled.
+  // A book hit must finish immediately and never enter the search loop.
+  {
+    std::vector<std::string> output;
+    UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+    const bool loaded = engine.load_opening_book_bytes(book_fixture(initial, {{e4, 1}}));
+    require(loaded, "opening book fixture failed to load");
+    engine.send_command("setoption name BookSeed value 7");
+    engine.send_command("setoption name OwnBook value true");
+    engine.send_command("position startpos");
+    engine.send_command("go movetime 50");
+    require(has_line(output, "info string book hit"), "book hit was not reported");
+    require(has_line(output, "bestmove e2e4"), "book returned unexpected move");
+    require(!std::any_of(output.begin(), output.end(), [](const std::string& line) {
+      return line.rfind("info depth ", 0) == 0;
+    }), "book hit unexpectedly searched");
+  }
 
-  output.clear();
-  engine.send_command("setoption name BookFile value");
-  assert(!engine.opening_book_available());
+  // A missing position and a malformed book both take the bounded fallback path.
+  {
+    std::vector<std::string> output;
+    UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+    const bool loaded = engine.load_opening_book_bytes(book_fixture(initial, {{e4, 1}}));
+    require(loaded, "opening book fixture failed to load");
+    engine.send_command("setoption name OwnBook value true");
+    engine.send_command("position fen 4k3/8/8/8/8/8/8/4K2R w - - 0 1");
+    engine.send_command("go movetime 50");
+    require(!has_line(output, "info string book hit"), "explicit miss unexpectedly hit book");
+    require_bounded_search(output);
+
+    auto malformed = book_fixture(initial, {{e4, 1}});
+    malformed[0] = 'X';
+    require(!engine.load_opening_book_bytes(malformed), "malformed book loaded");
+    require(!engine.opening_book_available(), "malformed book remained available");
+    output.clear();
+    engine.send_command("position startpos");
+    engine.send_command("go movetime 50");
+    require_bounded_search(output);
+  }
+
+  // Ply 29 is eligible; ply 30 is outside the configured book range.
+  {
+    const Board ply29 = position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 15");
+    const Move e5 = *parse_uci_move(ply29, "e7e5");
+    require(book_bestmove(ply29, book_fixture(ply29, {{e5, 1}}), "0") == "e7e5",
+            "ply 29 book hit returned unexpected move");
+
+    const Board ply30 = position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 16");
+    std::vector<std::string> output;
+    UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+    const bool loaded = engine.load_opening_book_bytes(book_fixture(ply30, {{e4, 1}}));
+    require(loaded, "opening book fixture failed to load");
+    engine.send_command("setoption name OwnBook value true");
+    engine.send_command("position fen " + ply30.to_fen());
+    engine.send_command("go movetime 50");
+    require(!has_line(output, "info string book hit"), "ply 30 unexpectedly used book");
+    require_bounded_search(output);
+  }
+
+  // Fixed seeds are reproducible, and two precomputed seeds select both candidates.
+  const auto candidates = book_fixture(initial, {{e4, 1}, {d4, 1}});
+  require(book_bestmove(initial, candidates, "0") == book_bestmove(initial, candidates, "0"),
+          "fixed BookSeed was not deterministic");
+  require(book_bestmove(initial, candidates, "0") == "d2d4", "seed 0 selected unexpected move");
+  require(book_bestmove(initial, candidates, "2") == "e2e4", "seed 2 selected unexpected move");
+
+  {
+    UciEngine engine([](const std::string&) {});
+    const bool loaded = engine.load_opening_book_bytes(book_fixture(initial, {{e4, 1}}));
+    require(loaded, "opening book fixture failed to load");
+    require(engine.opening_book_available(), "opening book should be available");
+    engine.clear_opening_book();
+    require(!engine.opening_book_available(), "clear did not make book unavailable");
+  }
 }
 
 void test_move_parsing() {
