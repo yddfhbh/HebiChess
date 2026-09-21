@@ -4,9 +4,15 @@ let modulePromise, module, liveContext = {};
 let evalMode = 'HCE';
 let nnueState = 'hce-ready';
 let bookState = 'book-unavailable';
+const ENGINE_ASSET_VERSION = '20260921book1';
 const frozenModel = {
   file: 'models/hebinnue-v3-4c815d54bc6c9fbf.hebinnue',
   sha256: '4c815d54bc6c9fbfc27ebc19ea48ff3b23d845c338cda710aad14a65215a7826'
+};
+const frozenBook = {
+  file: 'books/witty_alien-v1-0edeb48aeb553d16.hebibook',
+  sha256: '0edeb48aeb553d16fb79af5de01e43f422ee8c162b14f73b40b27972cb4c50a9',
+  bytes: 1889392
 };
 function diagnostic(step, extra = {}) { self.postMessage({type:'diagnostic', step, at:performance.now(), ...extra}); }
 function parseInfo(line) {
@@ -47,20 +53,46 @@ async function sha256(bytes) {
   return hex(await self.crypto.subtle.digest('SHA-256', bytes));
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = setTimeout(() => controller?.abort(), timeoutMs);
+  try {
+    return await fetch(url, controller ? {...options, signal:controller.signal} : options);
+  } catch (error) {
+    if (controller?.signal.aborted) throw Error(`opening book download timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function automaticBookSeed() {
+  try {
+    if (!self.crypto?.getRandomValues) throw Error('crypto.getRandomValues unavailable');
+    const words = new Uint32Array(2);
+    self.crypto.getRandomValues(words);
+    return ((BigInt(words[0]) << 32n) | BigInt(words[1])).toString();
+  } catch (error) {
+    diagnostic('opening book random seed unavailable', {error:String(error.message || error)});
+    return '0';
+  }
+}
+
 async function initialize() {
   diagnostic('worker initialize');
   if (!modulePromise) {
-    const engineScriptUrl = new URL('hebichess.js', self.location.href).href;
+    const engineScriptUrl = new URL(`hebichess.js?v=${ENGINE_ASSET_VERSION}`, self.location.href).href;
     const engineWasmUrl = new URL('hebichess.wasm', engineScriptUrl).href;
     diagnostic('engine artifacts resolved', {engineScriptUrl, engineWasmUrl});
     importScripts(engineScriptUrl);
-    modulePromise = self.createHebiChessModule({locateFile:file => new URL(file, engineScriptUrl).href});
+    modulePromise = self.createHebiChessModule({locateFile:file => `${new URL(file, engineScriptUrl).href}?v=${ENGINE_ASSET_VERSION}`});
   }
   module = await modulePromise;
   module.ccall('hebichess_initialize', null, [], []);
   diagnostic('worker engine initialized');
   emitOutput();
   publishNnue();
+  await loadBook({automatic:true});
 }
 
 function command(text, context) {
@@ -111,16 +143,20 @@ async function loadNnue({url, sha256: expectedSha256} = {}) {
   }
 }
 
-async function loadBook({url, sha256: expectedSha256, seed} = {}) {
+async function loadBook({url, sha256: expectedSha256, seed, automatic = false} = {}) {
   bookState = 'book-loading'; publishBook();
   let bytes, pointer = 0;
   try {
-    if (!url || !expectedSha256) throw Error('book load requires url and sha256');
-    diagnostic('opening book download started', {bookUrl:url});
-    const response = await fetch(url, {cache:'default'});
+    const engineScriptUrl = new URL('hebichess.js', self.location.href).href;
+    const bookUrl = url || (automatic ? new URL(frozenBook.file, engineScriptUrl).href : null);
+    const expected = String(expectedSha256 || (automatic ? frozenBook.sha256 : '')).toLowerCase();
+    if (!bookUrl || !expected) throw Error('book load requires url and sha256');
+    const bookSeed = seed !== undefined && seed !== null ? String(seed) : automatic ? automaticBookSeed() : null;
+    diagnostic('opening book download started', {bookUrl, expectedBytes:automatic ? frozenBook.bytes : undefined});
+    const response = await fetchWithTimeout(bookUrl, {cache:'default'});
     if (!response.ok) throw Error(`opening book download failed: HTTP ${response.status}`);
     bytes = new Uint8Array(await response.arrayBuffer());
-    const expected = String(expectedSha256).toLowerCase();
+    if (automatic && bytes.byteLength !== frozenBook.bytes) throw Error(`opening book byte-size mismatch: expected ${frozenBook.bytes}, got ${bytes.byteLength}`);
     const actual = await sha256(bytes);
     if (actual !== expected) throw Error(`opening book SHA-256 mismatch: expected ${expected}, got ${actual}`);
     pointer = module._malloc(bytes.byteLength);
@@ -129,12 +165,13 @@ async function loadBook({url, sha256: expectedSha256, seed} = {}) {
     if (!module.ccall('hebichess_book_load_bytes', 'number', ['number','number'], [pointer, bytes.byteLength])) {
       throw Error(module.ccall('hebichess_take_output', 'string', [], []).trim() || 'opening book parser rejected book');
     }
-    if (seed !== undefined && seed !== null) command(`setoption name BookSeed value ${String(seed)}`, {});
+    if (bookSeed !== null) command(`setoption name BookSeed value ${bookSeed}`, {});
     command('setoption name OwnBook value true', {});
     bookState = 'book-ready';
-    diagnostic('opening book loaded', {bookUrl:url, bytes:bytes.byteLength, sha256:actual});
-    publishBook({url, bytes:bytes.byteLength, sha256:actual});
+    diagnostic('opening book loaded', {bookUrl, bytes:bytes.byteLength, sha256:actual, seed:bookSeed});
+    publishBook({url:bookUrl, bytes:bytes.byteLength, sha256:actual, seed:bookSeed});
   } catch (error) {
+    module.ccall('hebichess_book_clear', null, [], []);
     command('setoption name OwnBook value false', {});
     bookState = 'book-load-failed';
     publishBook({error:String(error.message || error)});
@@ -156,7 +193,7 @@ function setEvalMode(mode) {
 
 self.onmessage = async ({data:message = {}}) => {
   try {
-    if (message.type === 'init') { await initialize(); diagnostic('worker ready'); self.postMessage({type:'ready', nnueState, evalMode}); return; }
+    if (message.type === 'init') { await initialize(); diagnostic('worker ready'); self.postMessage({type:'ready', nnueState, evalMode, bookState}); return; }
     if (!module) throw Error('engine is not initialized');
     if (message.type === 'load-nnue') { await loadNnue(message); return; }
     if (message.type === 'load-book') { await loadBook(message); return; }

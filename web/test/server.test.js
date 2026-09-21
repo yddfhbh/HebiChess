@@ -9,9 +9,11 @@ process.env.DATA_PATH = testData;
 const {server} = require('../server');
 if (previousDataPath === undefined) delete process.env.DATA_PATH;
 else process.env.DATA_PATH = previousDataPath;
+const serverSource=fs.readFileSync(path.join(__dirname,'..','server.js'),'utf8');
 let port;
 test.before(async()=>{await new Promise((resolve,reject)=>{const failed=error=>reject(error);server.once('error',failed);server.listen(0,'127.0.0.1',()=>{server.off('error',failed);port=server.address().port;resolve();});});});
 test.after(async()=>{server.closeAllConnections?.();await new Promise(resolve=>server.close(resolve));try{fs.unlinkSync(testData)}catch(error){if(error.code!=='ENOENT')throw error}});
+test('opening books use binary MIME and immutable cache only for hash-named assets',()=>{assert.match(serverSource,/\.hebibook':'application\/octet-stream/);assert.match(serverSource,/hebibook.*max-age=31536000, immutable/s);assert.match(serverSource,/hebinnue-v3-\[0-9a-f\]\{16\}\\\.hebinnue/)});
 async function call(path,body,cookie){const r=await fetch(`http://127.0.0.1:${port}${path}`,{method:body?'POST':'GET',headers:{'content-type':'application/json',...(cookie?{cookie}: {})},body:body&&JSON.stringify(body)});const raw=await r.text();let data;try{data=JSON.parse(raw)}catch{data=raw}return {status:r.status,data,cookie:r.headers.get('set-cookie')?.split(';')[0]||cookie}}
 function session(value){return `hebichess_session=${value}`}
 function sse(cookie){return fetch(`http://127.0.0.1:${port}/events`,{headers:{cookie}})}

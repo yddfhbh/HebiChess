@@ -52,7 +52,7 @@ function render(){
   $('mode').textContent=isPlayer()?'You vs HebiChess':'Spectator Mode · 현재 다른 사용자가 대국 중입니다';
   $('status').textContent=S.result?`${resultText()} · ${terminationText(S.termination)}`:!live()?'과거 기보 보는 중':S.engineThinking?'HebiChess 생각 중...':isPlayer()&&currentTurn===S.playerColor?'내 차례':`Turn: ${currentTurn==='w'?'White':'Black'}`;
   const completed=engineTelemetry.last();
-  const displayed=(S.engineThinking?engineTelemetry.current():null)||completed||{score:{type:'cp',value:Number(S.evaluation||0)*100},depth:Number(S.depth||0),nodes:Number(S.nodes||0)};
+  const displayed=(S.engineThinking?engineTelemetry.current():null)||(!S.engineThinking?completed:null)||{score:{type:'cp',value:Number(S.evaluation||0)*100},depth:Number(S.depth||0),nodes:Number(S.nodes||0)};
   const score=displayed.score,depth=displayed.depth??0;
   const metric=score?.type==='mate'?(score.value>0?`M${score.value}`:`-M${Math.abs(score.value)}`):`Eval ${((score?.value||0)/100)>=0?'+':''}${((score?.value||0)/100).toFixed(2)}`;
   $('metrics').textContent=`${S.engineThinking?'Eval':'Last Eval'} ${metric.replace(/^Eval /,'')} · D${depth}`;

@@ -97,3 +97,16 @@ test('NNUE selection fails closed until the asynchronous model load is ready',as
   assert.equal(engine.evalMode,'NNUE');
   engine.terminate();
 });
+
+test('ready exposes the final book state and bestmove-only book hits resolve go',async()=>{
+  const {engine,worker}=await client();
+  const states=[]; engine.onBookState(message=>states.push(message.state));
+  worker.send({type:'book-state',state:'book-ready'});
+  assert.equal(engine.bookState,'book-ready');
+  engine.position({gameId:'book-game',fen:'start'});
+  const pending=engine.go({movetime:50});
+  worker.send({type:'bestmove',gameId:engine.gameId,searchId:engine.searchId,move:'e2e4'});
+  assert.equal(await pending,'e2e4');
+  assert.deepEqual(states,['book-ready']);
+  engine.terminate();
+});
