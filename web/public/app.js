@@ -10,7 +10,7 @@ const PIECE_SVG={
 const {coordinateLabels, materialDifference}=HebiChessUi;
 const {shouldApplyServerState}=HebiChessStateSync;
 const engineTelemetry=HebiChessEngineTelemetry.create();
-let S={active:false}, selectedSquare=null, selectedPiece=null, selectedInteractionMode=null, legalDestinations=[], premove=null, drag=null, flipped=false, viewIndex=-1, latestState=null, toastTimer, perspectiveInitialized=false, requestInFlight=false, pendingPromotion=null, suppressClick=false, events=null, engineClient=null, activeEngineSearch=null, liveEngine=null;
+let S={active:false}, selectedSquare=null, selectedPiece=null, selectedInteractionMode=null, legalDestinations=[], premove=null, drag=null, flipped=false, viewIndex=-1, latestState=null, toastTimer, perspectiveInitialized=false, requestInFlight=false, pendingPromotion=null, suppressClick=false, events=null, engineClient=null, activeEngineSearch=null, liveEngine=null, telemetryRenderFrame=null;
 let browserGameState={key:null,hydrated:false,legalMoves:[],pending:null};
 const $=id=>document.getElementById(id);
 const diagnostic=(...args)=>{if(location.hostname==='localhost'||location.hostname==='127.0.0.1')console.debug?.(...args)};
@@ -44,6 +44,23 @@ function capturedHtml(color){const pieces=S.capturedPieces?.[color]||[], order=[
 function material(){const diff=materialDifference(S.capturedPieces);return diff?` ${diff>0?'+':''}${diff}`:''}
 function resultText(){if(!S.result)return '';if(S.result==='1/2-1/2')return 'Draw';const winner=S.result==='1-0'?'w':'b';return isPlayer()?(winner===S.playerColor?'You win':'You lose'):`${winner==='w'?'White':'Black'} wins`}
 function renderCards(){const playerWhite=S.playerColor!=='b', spectator=!isPlayer();const top=spectator?'b':playerWhite?'b':'w', bottom=top==='w'?'b':'w';const card=(side,engine)=>{const winner=S.result&&(S.result==='1/2-1/2'?'draw':(S.result==='1-0'?'w':'b')===side?'winner':'loser');return `<div class="avatar">${pieceSvg(side==='w'?'N':'n',true)}</div><div><strong>${engine?'JJUGLE':spectator?(side==='w'?'White':'Black'):'You'}</strong><small>${side==='w'?'White':'Black'}${engine?' · Engine':''}</small></div><span class="turn-dot ${!S.result&&S.turn===side?'active':''}"></span><div class="captured">${capturedHtml(side)}${side==='w'?material():''}</div><span class="winner-mark ${winner||''}">${winner==='winner'?'♛':''}</span>`};$('top-card').innerHTML=card(top,!spectator&&top!==S.playerColor);$('bottom-card').innerHTML=card(bottom,!spectator&&bottom!==S.playerColor)}
+function renderEngineTelemetry(){
+  const completed=engineTelemetry.last();
+  const displayed=(S.engineThinking?engineTelemetry.current():null)||(!S.engineThinking?completed:null)||{score:{type:'cp',value:Number(S.evaluation||0)*100},depth:Number(S.depth||0),nodes:Number(S.nodes||0)};
+  const score=displayed.score,depth=displayed.depth??0;
+  const metric=score?.type==='mate'?(score.value>0?`M${score.value}`:`-M${Math.abs(score.value)}`):`Eval ${((score?.value||0)/100)>=0?'+':''}${((score?.value||0)/100).toFixed(2)}`;
+  $('metrics').textContent=`${S.engineThinking?'Eval':'Last Eval'} ${metric.replace(/^Eval /,'')} · ${displayed.book?'Book':`D${depth}`}`;
+  $('engine-state').textContent=S.result?'Game over':S.engineThinking?'Thinking':'Ready';
+  $('nodes').textContent=displayed.nodes?`Nodes ${Number(displayed.nodes).toLocaleString()}`:'';
+  $('engine-state').previousElementSibling.classList.toggle('active',!!S.engineThinking);
+  const cp=score?.type==='cp'?score.value:score?.type==='mate'?(score.value>0?500:-500):0;
+  const evalValue=Math.max(-1,Math.min(1,cp/500));$('eval-bar').firstElementChild.style.height=`${50+evalValue*50}%`;
+}
+function scheduleEngineTelemetryRender(){
+  if(telemetryRenderFrame!==null)return;
+  const schedule=typeof requestAnimationFrame==='function'?requestAnimationFrame:callback=>setTimeout(callback,0);
+  telemetryRenderFrame=schedule(()=>{telemetryRenderFrame=null;renderEngineTelemetry()});
+}
 function render(){
   diagnostic('[Phase2][render called]',{gameId:S.gameId||null,revision:S.revision??null,turn:S.turn||null,status:S.result||null});
   $('lobby').hidden=S.active||!!S.result;$('game').hidden=!S.active&&!S.result;if(!S.active&&!S.result)return;
@@ -51,14 +68,7 @@ function render(){
   const position=visiblePosition(),currentTurn=position.turn||S.turn;
   $('mode').textContent=isPlayer()?'You vs JJUGLE':'Spectator Mode · 현재 다른 사용자가 대국 중입니다';
   $('status').textContent=S.result?`${resultText()} · ${terminationText(S.termination)}`:!live()?'과거 기보 보는 중':S.engineThinking?'JJUGLE 생각 중...':isPlayer()&&currentTurn===S.playerColor?'내 차례':`Turn: ${currentTurn==='w'?'White':'Black'}`;
-  const completed=engineTelemetry.last();
-  const displayed=(S.engineThinking?engineTelemetry.current():null)||(!S.engineThinking?completed:null)||{score:{type:'cp',value:Number(S.evaluation||0)*100},depth:Number(S.depth||0),nodes:Number(S.nodes||0)};
-  const score=displayed.score,depth=displayed.depth??0;
-  const metric=score?.type==='mate'?(score.value>0?`M${score.value}`:`-M${Math.abs(score.value)}`):`Eval ${((score?.value||0)/100)>=0?'+':''}${((score?.value||0)/100).toFixed(2)}`;
-  $('metrics').textContent=`${S.engineThinking?'Eval':'Last Eval'} ${metric.replace(/^Eval /,'')} · ${displayed.book?'Book':`D${depth}`}`;
-  $('engine-state').textContent=S.result?'Game over':S.engineThinking?'Thinking':'Ready';$('nodes').textContent=displayed.nodes?`Nodes ${Number(displayed.nodes).toLocaleString()}`:'';$('engine-state').previousElementSibling.classList.toggle('active',!!S.engineThinking);
-  const cp=score?.type==='cp'?score.value:score?.type==='mate'?(score.value>0?500:-500):0;
-  const evalValue=Math.max(-1,Math.min(1,cp/500));$('eval-bar').firstElementChild.style.height=`${50+evalValue*50}%`;
+  renderEngineTelemetry();
   renderCards();coordinates();renderBoard(position.board||S.board,position);renderHistory();
   $('resign').disabled=!isPlayer()||!!S.result;$('cancel-premove').hidden=!premove;$('history-state').textContent=live()?'':'(과거 위치)';
 }
@@ -98,7 +108,23 @@ function applyServerState(nextState,source='unknown'){diagnostic('[Phase2][apply
 function sendMove(move){if(requestInFlight)return;diagnostic('[Phase3][move-click]',{move});requestInFlight=true;clearInteraction();browserSnapshot(move).then(snapshot=>gameMutations.move(move,snapshot)).then(data=>{viewIndex=-1;applyServerState(data,'move-response')}).catch(error=>{premove=null;if(error.status!==409||!error.data?.stale)toast(error.message);resync('move-error')}).finally(()=>{requestInFlight=false})}
 function maybePremove(){if(!premove||requestInFlight||!isPlayer()||S.result||S.turn!==S.playerColor)return;const queued=premove,move=queued.from+queued.to+(queued.promotion||'');requestInFlight=true;browserSnapshot(move).then(snapshot=>gameMutations.move(move,snapshot)).then(data=>{premove=null;viewIndex=-1;applyServerState(data,'premove-response')}).catch(error=>{premove=null;if(error.status!==409||!error.data?.stale)toast(error.message);resync('premove-error')}).finally(()=>{requestInFlight=false})}
 async function resync(source='resync'){const query=S.gameId?`?gameId=${encodeURIComponent(S.gameId)}`:'';const response=await fetch(`/api/state${query}`);const data=await response.json();viewIndex=-1;applyServerState(data,source)}
-function engineInfo(message){const search=activeEngineSearch;if(!search||message.searchId!==search.engineSearchId||message.gameId!==engineClient.gameId)return;const line=message.line,depth=line.match(/\bdepth\s+(\d+)/),scoreMatch=line.match(/\bscore\s+(cp|mate)\s+(-?\d+)/),nodes=line.match(/\bnodes\s+(\d+)/),book=line.includes('string book_eval');if(!scoreMatch)return;const raw=Number(scoreMatch[2]),value=search.rootSide==='b'?-raw:raw;const parsed={scoreType:scoreMatch[1],cp:scoreMatch[1]==='cp'?value:null,mate:scoreMatch[1]==='mate'?value:null,depth:depth?Number(depth[1]):null,nodes:nodes?Number(nodes[1]):null,book};diagnostic('[HebiChess][uci info]',{line,parsed});const info={score:{type:parsed.scoreType,value:parsed.scoreType==='cp'?parsed.cp:parsed.mate}};if(parsed.depth!==null)info.depth=parsed.depth;if(parsed.nodes!==null)info.nodes=parsed.nodes;if(parsed.book)info.book=true;if(!engineTelemetry.update({gameId:search.gameId,searchId:search.engineSearchId},info))return;liveEngine=engineTelemetry.current();if(!search.firstInfoAt){search.firstInfoAt=performance.now();search.diagnostic.firstInfo=search.firstInfoAt-search.startedAt;diagnostic('[HebiChess]',{step:'firstInfo',...search.diagnostic,latencyMs:search.diagnostic.firstInfo})}render()}
+function engineInfo(message){
+  const search=activeEngineSearch;
+  if(!search||message.searchId!==search.engineSearchId||message.gameId!==engineClient.gameId)return;
+  const line=message.line,depth=line.match(/\bdepth\s+(\d+)/),scoreMatch=line.match(/\bscore\s+(cp|mate)\s+(-?\d+)/),nodes=line.match(/\bnodes\s+(\d+)/),book=line.includes('string book_eval');
+  if(!scoreMatch)return;
+  const raw=Number(scoreMatch[2]),value=search.rootSide==='b'?-raw:raw;
+  const parsed={scoreType:scoreMatch[1],cp:scoreMatch[1]==='cp'?value:null,mate:scoreMatch[1]==='mate'?value:null,depth:depth?Number(depth[1]):null,nodes:nodes?Number(nodes[1]):null,book};
+  diagnostic('[HebiChess][uci info]',{line,parsed});
+  const info={score:{type:parsed.scoreType,value:parsed.scoreType==='cp'?parsed.cp:parsed.mate}};
+  if(parsed.depth!==null)info.depth=parsed.depth;
+  if(parsed.nodes!==null)info.nodes=parsed.nodes;
+  if(parsed.book)info.book=true;
+  if(!engineTelemetry.update({gameId:search.gameId,searchId:search.engineSearchId},info))return;
+  liveEngine=engineTelemetry.current();
+  if(!search.firstInfoAt){search.firstInfoAt=performance.now();search.diagnostic.firstInfo=search.firstInfoAt-search.startedAt;diagnostic('[HebiChess]',{step:'firstInfo',...search.diagnostic,latencyMs:search.diagnostic.firstInfo})}
+  scheduleEngineTelemetryRender();
+}
 function engineDiagnostic(message){if(message.step==='worker created'){engineTelemetry.setGame(S.gameId||null);return}if(message.step==='bestmove received'&&activeEngineSearch&&message.gameId===engineClient.gameId&&message.searchId===activeEngineSearch.engineSearchId){const search=activeEngineSearch;if(!engineTelemetry.complete({gameId:search.gameId,searchId:message.searchId}))return;const completed=engineTelemetry.last()||{};search.diagnostic.bestmove=message.at;search.diagnostic.wallMs=message.at-search.startedAt;search.diagnostic.completedDepth=completed.depth??null;search.diagnostic.nodes=completed.nodes??null;search.diagnostic.nps=search.diagnostic.wallMs>0&&completed.nodes!=null?Math.round(completed.nodes/(search.diagnostic.wallMs/1000)):0;diagnostic('[HebiChess]',search.diagnostic)}}
 function cancelEngineSearch(action='cancel'){if(!activeEngineSearch)return;activeEngineSearch=null;if(engineClient?.worker)engineClient.stop?.();liveEngine=null;diagnostic('[HebiChess][reconcileEngine]',{gameId:S.gameId,revision:S.revision,turn:S.turn,action});render()}
 async function maybeEngineSearch(){const wanted=S.active&&S.isPlayer&&S.engineThinking&&S.turn!==S.playerColor&&!S.result;if(!wanted){if(activeEngineSearch)cancelEngineSearch('cancel');else console.debug?.('[HebiChess][reconcileEngine]',{gameId:S.gameId||null,revision:S.revision||null,turn:S.turn||null,action:'none'});return}const snapshot={gameId:S.gameId,revision:S.revision};if(activeEngineSearch?.gameId===snapshot.gameId&&activeEngineSearch.revision===snapshot.revision){console.debug?.('[HebiChess][reconcileEngine]',{...snapshot,turn:S.turn,action:'reuse'});return}if(activeEngineSearch)cancelEngineSearch('cancel');const token={...snapshot,rootSide:S.turn,phase:'starting'};activeEngineSearch=token;console.debug?.('[HebiChess][reconcileEngine]',{...snapshot,turn:S.turn,action:'start'});$('status').textContent=requestedEvalMode==='NNUE'?'NNUE 준비 중':'JJUGLE 준비 중';try{const client=await ensureEngineClient();await ensureSelectedEvalMode(client)}catch(error){if(activeEngineSearch===token)activeEngineSearch=null;const detail=String(error.message||error);diagnostic('[HebiChess][NNUE load failed]',{detail});toast(requestedEvalMode==='NNUE'?`NNUE를 사용할 수 없습니다: ${detail}`:'JJUGLE 준비 실패: 다시 시도해 주세요');render();return}if(activeEngineSearch!==token||S.gameId!==snapshot.gameId||S.revision!==snapshot.revision)return;engineClient.position({fen:S.currentFen,gameId:S.gameId});const startedAt=performance.now(),promise=engineClient.go({movetime:1500});Object.assign(token,{promise,engineSearchId:engineClient.searchId,startedAt,diagnostic:{step:'searchStart',searchStart:startedAt,requestedMovetime:1500,evalMode:engineClient.evalMode,gameId:snapshot.gameId,revision:snapshot.revision,searchId:engineClient.searchId}});engineTelemetry.start({gameId:snapshot.gameId,searchId:token.engineSearchId});liveEngine=engineTelemetry.current();console.debug?.('[HebiChess]',token.diagnostic);render();try{const move=await promise;if(activeEngineSearch?.promise!==promise)return;if(S.gameId!==snapshot.gameId||S.revision!==snapshot.revision||!S.engineThinking||S.turn===S.playerColor)return;const data=await gameMutations.engineMove(move,snapshot);viewIndex=-1;applyServerState(data,'engine-move-response')}catch(error){if(error.name!=='AbortError'){if(error.status===409&&error.data?.stale)resync('engine-move-error');else toast('JJUGLE 수 계산에 실패했습니다. 다시 시도해 주세요')}}finally{if(activeEngineSearch?.promise===promise)activeEngineSearch=null}}

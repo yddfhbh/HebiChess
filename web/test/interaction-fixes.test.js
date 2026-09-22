@@ -7,7 +7,7 @@ const css = fs.readFileSync('public/interaction-fixes.css', 'utf8');
 const html = fs.readFileSync('public/index.html', 'utf8');
 
 test('interaction hardening assets are loaded after the main client', () => {
-  assert.match(html, /app\.js\?v=20260922jjugle1[\s\S]*interaction-fixes\.js\?v=20260915a/);
+  assert.match(html, /app\.js\?v=20260922perf1[\s\S]*interaction-fixes\.js\?v=20260915a/);
   assert.match(html, /interaction-fixes\.css\?v=20260909f/);
 });
 
