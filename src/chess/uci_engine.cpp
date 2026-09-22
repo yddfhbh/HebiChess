@@ -86,10 +86,8 @@ void UciEngine::send_command(const std::string& line) {
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
     emit("option name BookSeed type string default 0");
-#ifdef HEBICHESS_WASM
-    emit("option name EvalMode type combo default HCE var HCE");
-#else
     emit("option name EvalMode type combo default HCE var HCE var NNUE");
+#ifndef HEBICHESS_WASM
     emit("option name EvalFile type string default ");
 #endif
 #ifdef HEBICHESS_STRENGTH_RUNNER
@@ -158,15 +156,10 @@ void UciEngine::send_command(const std::string& line) {
         }
       }
 #endif
-    } else if (name == "EvalMode" && value == "HCE") {
-#ifdef HEBICHESS_WASM
-      eval_mode_ = EvalMode::HCE;
-      emit("info string EvalMode HCE");
-    } else {
-      emit("info string error WASM build supports HCE only");
-    }
-#else
     } else if (name == "EvalFile") {
+#ifdef HEBICHESS_WASM
+      emit("info string error EvalFile filesystem paths are unavailable in WASM; use hebichess_nnue_load_bytes");
+#else
       std::string error;
       if (value.empty()) {
         clear_nnue_network();
@@ -179,6 +172,7 @@ void UciEngine::send_command(const std::string& line) {
       } else {
         emit("info string error " + error);
       }
+#endif
     } else if (name == "EvalMode" && value == "HCE") {
       eval_mode_ = EvalMode::HCE;
       emit("info string EvalMode HCE");
@@ -193,7 +187,6 @@ void UciEngine::send_command(const std::string& line) {
     } else {
       emit("info string error unsupported setoption");
     }
-#endif
   } else if (command == "position") {
     std::string kind;
     input >> kind;
@@ -247,9 +240,6 @@ void UciEngine::send_command(const std::string& line) {
     emit(moves.str());
 #endif
   } else if (command == "features" || command == "nnueeval") {
-#ifdef HEBICHESS_WASM
-    emit("info string error WASM build supports HCE only");
-#else
     if (command == "features") {
       for (Color perspective : {Color::White, Color::Black}) {
         const NnueFeatures features = extract_nnue_features(board_, perspective);
@@ -267,7 +257,6 @@ void UciEngine::send_command(const std::string& line) {
         emit(evaluation.str());
       } else emit("info string error NNUE unavailable");
     }
-#endif
   } else if (command == "go") {
     SearchLimits limits;
     limits.max_depth = 64;

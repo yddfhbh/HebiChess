@@ -10,3 +10,9 @@ build-nnue/
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# web-v2 browser engine artifacts (downloaded/generated locally)
+web-v2/public/engine/hebichess.js
+web-v2/public/engine/hebichess.wasm
+web-v2/public/engine/models/*.hebinnue
+web-v2/public/engine/books/*.hebibook

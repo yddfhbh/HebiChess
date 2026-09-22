@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>JJUGLE</title><link rel="stylesheet" href="./styles.css"></head>
+<body>
+  <main>
+    <section id="lobby" class="panel lobby"><p class="eyebrow">HEBICHESS V2</p><h1>JJUGLE</h1><p>Play against the JJUGLE chess engine.</p><div class="colors"><button data-color="w">White</button><button data-color="b">Black</button><button data-color="random">Random</button></div></section>
+    <section id="game" hidden>
+      <header><div><p class="eyebrow">JJUGLE</p><h1>Human vs engine</h1></div><div class="engine-card"><strong>JJUGLE</strong><span id="player-color">White</span></div></header>
+      <div class="layout"><div class="board-wrap"><div id="board" class="board" aria-label="Chess board"></div><div class="board-actions"><button id="flip">Flip board</button><span id="turn"></span></div></div><aside class="panel side"><p id="status" role="status"></p><div class="telemetry"><span>Eval <b id="evaluation">—</b></span><span>Depth <b id="depth">—</b></span><span>Nodes <b id="nodes">—</b></span></div><h2>Moves</h2><div id="moves" class="moves"></div><h2>Captured</h2><div id="captured" class="captured"></div></aside></div>
+    </section>
+  </main>
+  <div id="promotion" class="promotion" hidden><div class="panel"><h2>Promote to</h2><button data-promotion="q">Queen</button><button data-promotion="r">Rook</button><button data-promotion="b">Bishop</button><button data-promotion="n">Knight</button></div></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "hebichess-web-v2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
