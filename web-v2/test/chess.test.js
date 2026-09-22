@@ -25,3 +25,8 @@ test('does not expose online or Firebase UI', () => {
   assert.doesNotMatch(html, /firebase|matchmaking|방 만들기|방 참가|온라인 PvP/i);
   assert.doesNotMatch(app, /firebase|matchmaking|setoption name Skill Level|go depth/i);
 });
+
+test('uses the JJUGLE HebiChess browser title', () => {
+  assert.match(html, /<title>JJUGLE \| HebiChess<\/title>/);
+  assert.doesNotMatch(html, /Chesubu|チェス部/i);
+});

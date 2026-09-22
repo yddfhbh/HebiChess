@@ -1761,20 +1761,30 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       best_move_stability = 1;
     const int score_swing = depth == 1 ? 0 : std::abs(objective_best - previous_completed_score);
     int second_best = -MATE_SCORE;
+    bool root_margin_known = objective_move->bound == ScoreBound::Exact;
+    bool usable_competitor = false;
     for (const RootMoveInfo& info : last_completed) {
-      if (info.move != objective_best_move && info.bound == ScoreBound::Exact)
+      if (info.move == objective_best_move) continue;
+      if (info.bound == ScoreBound::Lower) {
+        // A lower bound has no useful ceiling: the true competitor score may
+        // be arbitrarily above this reported value.
+        root_margin_known = false;
+      } else {
+        usable_competitor = true;
         second_best = std::max(second_best, info.search_score);
+      }
     }
-    const int root_margin = second_best == -MATE_SCORE
-        ? MATE_SCORE : objective_best - second_best;
+    root_margin_known = root_margin_known && usable_competitor;
+    const int root_margin = root_margin_known ? objective_best - second_best : 0;
     const bool soft_reached = limits.has_soft_deadline &&
         std::chrono::steady_clock::now() >= limits.soft_deadline;
     const auto elapsed = std::chrono::steady_clock::now() - search_started;
     const auto soft_duration = limits.has_soft_deadline
         ? limits.soft_deadline - search_started : std::chrono::steady_clock::duration::zero();
     const bool clear_window_reached = limits.has_soft_deadline &&
-        elapsed >= soft_duration * 6 / 10;
+        elapsed >= soft_duration * 3 / 4;
     const SoftStopState stop_state{best_move_stability, score_swing, root_margin,
+        root_margin_known,
         result.aspiration_retries != aspiration_retries_before};
     const bool mate_confirmed = objective_best > MATE_SCORE - 1000 ||
         objective_best < -MATE_SCORE + 1000;

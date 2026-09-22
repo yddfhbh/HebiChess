@@ -31,6 +31,7 @@ struct SoftStopState {
   int best_move_stability{0};
   int score_swing{0};
   int root_margin{0};
+  bool root_margin_known{false};
   bool aspiration_retry{false};
 };
 
@@ -38,11 +39,12 @@ inline bool should_stop_at_soft_deadline(const SoftStopState& state,
                                          bool soft_reached,
                                          bool clear_choice_window = false) noexcept {
   if (state.aspiration_retry) return false;
-  if (clear_choice_window && state.best_move_stability >= 3 &&
-      state.score_swing <= 15 && state.root_margin >= 60) return true;
+  if (clear_choice_window && state.best_move_stability >= 4 &&
+      state.score_swing <= 15 && state.root_margin_known &&
+      state.root_margin >= 75) return true;
   if (!soft_reached) return false;
   return state.best_move_stability >= 2 && state.score_swing <= 20 &&
-      state.root_margin >= 35;
+      state.root_margin_known && state.root_margin >= 35;
 }
 
 }  // namespace hebichess
