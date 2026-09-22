@@ -43,7 +43,8 @@ export function createServer() {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : '';
+if (fileURLToPath(import.meta.url) === entrypoint) {
   createServer().listen(port, '127.0.0.1', () => {
     console.log(`JJUGLE web-v2 listening on http://127.0.0.1:${port}`);
   });

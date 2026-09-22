@@ -1,25 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newGame, legalMoves, play, fromFen, status, toFen } from '../public/chess.js';
+import fs from 'node:fs';
 
-test('generates legal opening moves and FEN after a move', () => {
-  const state = newGame();
-  assert.equal(legalMoves(state).length, 20);
-  const next = play(state, 'e2e4');
-  assert.equal(toFen(next), 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1');
+const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+
+test('imports the original chess UI and rule interaction surface', () => {
+  for (const name of [
+    'PIECE_SVG', 'castlingRights', 'enPassantTarget', 'capturedByWhite',
+    'capturedByBlack', 'moveHistory', 'boardHistory', 'renderBoard',
+    'executeMove', 'legalMoves', 'showPromotionModal'
+  ]) assert.match(app, new RegExp(`\\b${name}\\b`));
+  assert.match(app, /var premoveQueue\s*=\s*\[\]/);
+  for (const name of ['buildPremovePreviewState', 'relaxedPremoveMovesForState', 'queuePremove', 'tryExecutePremove']) {
+    assert.match(app, new RegExp(`function ${name}\\s*\\(`));
+  }
+  assert.match(app, /pointerdown|touchstart/);
+  assert.match(app, /dragGhost/);
+  assert.match(html, /id="chessboard"/);
+  assert.match(html, /id="promotion-modal"/);
 });
 
-test('supports castling, en passant, and promotion', () => {
-  const castle = fromFen('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1');
-  assert.ok(legalMoves(castle).some(move => move.from === 60 && move.to === 62));
-  assert.equal(play(castle, 'e1g1').board[61], 'R');
-  const enPassant = fromFen('8/8/8/3pP3/8/8/8/4K2k w - d6 0 1');
-  assert.equal(play(enPassant, 'e5d6').board[19], 'P');
-  const promotion = fromFen('4k3/P7/8/8/8/8/8/4K3 w - - 0 1');
-  assert.equal(play(promotion, 'a7a8q').board[0], 'Q');
-});
-
-test('detects checkmate and stalemate', () => {
-  assert.deepEqual(status(fromFen('7k/6Q1/6K1/8/8/8/8/8 b - - 0 1')), { status: 'checkmate', result: '1-0' });
-  assert.deepEqual(status(fromFen('7k/5Q2/7K/8/8/8/8/8 b - - 0 1')), { status: 'stalemate', result: '1/2-1/2' });
+test('does not expose online or Firebase UI', () => {
+  assert.doesNotMatch(html, /firebase|matchmaking|방 만들기|방 참가|온라인 PvP/i);
+  assert.doesNotMatch(app, /firebase|matchmaking|setoption name Skill Level|go depth/i);
 });

@@ -1,15 +1,313 @@
-<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>JJUGLE</title><link rel="stylesheet" href="./styles.css"></head>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chesubu | &#12481;&#12455;&#12473;&#37096;</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%99%9F%3C/text%3E%3C/svg%3E">
+    <link rel="stylesheet" href="styles.css">
+</head>
 <body>
-  <main>
-    <section id="lobby" class="panel lobby"><p class="eyebrow">HEBICHESS V2</p><h1>JJUGLE</h1><p>Play against the JJUGLE chess engine.</p><div class="colors"><button data-color="w">White</button><button data-color="b">Black</button><button data-color="random">Random</button></div></section>
-    <section id="game" hidden>
-      <header><div><p class="eyebrow">JJUGLE</p><h1>Human vs engine</h1></div><div class="engine-card"><strong>JJUGLE</strong><span id="player-color">White</span></div></header>
-      <div class="layout"><div class="board-wrap"><div id="board" class="board" aria-label="Chess board"></div><div class="board-actions"><button id="flip">Flip board</button><span id="turn"></span></div></div><aside class="panel side"><p id="status" role="status"></p><div class="telemetry"><span>Eval <b id="evaluation">—</b></span><span>Depth <b id="depth">—</b></span><span>Nodes <b id="nodes">—</b></span></div><h2>Moves</h2><div id="moves" class="moves"></div><h2>Captured</h2><div id="captured" class="captured"></div></aside></div>
-    </section>
-  </main>
-  <div id="promotion" class="promotion" hidden><div class="panel"><h2>Promote to</h2><button data-promotion="q">Queen</button><button data-promotion="r">Rook</button><button data-promotion="b">Bishop</button><button data-promotion="n">Knight</button></div></div>
-  <script type="module" src="./app.js"></script>
+
+<div id="intro-screen" class="screen active">
+    <div class="intro-shell">
+        <div class="intro-copy-panel">
+            <span class="intro-badge">♚♚체★스♚♚ 접속시$$전원 수읽기☜☜실력상승100% ai대전 무료증정￥§§체크메이트§§★역전기회★바로시작@@@</span>
+            <p class="intro-copy">Web 발신)너는나를존중해야한다나는단순한게임이아니라수백년의역사를지닌지성과전략의집합체다나는수많은사람들의사고력을단련시켰고전세계에서가장깊이있는두뇌싸움으로인정받아왔다나는단순한운이아니라계산과예측창의성과심리전으로승부가갈리는게임이며수많은경우의수속에서최선의선택을찾아내야하는극한의사고실험이다한수한수가쌓여전장을이루고그안에서인간의지능과통찰력이시험받는다수많은천재들이나를통해자신의능력을증명했고나는교육과학인공지능연구에까지영향을끼치며단순한놀이를넘어선존재가되었다나를가볍게보는시선이있을지라도내가지닌깊이와가치그리고인간사고에끼친영향은결코변하지않는다</p>
+        </div>
+        <div class="intro-visual-panel" aria-hidden="true">
+            <div class="intro-board-preview" id="intro-board-preview-primary">
+                <span class="intro-piece light">♔</span>
+                <span></span>
+                <span></span>
+                <span class="intro-piece dark">♞</span>
+                <span></span>
+                <span class="intro-piece dark">♛</span>
+                <span class="intro-piece light">♘</span>
+                <span></span>
+                <span></span>
+                <span class="intro-piece light">♙</span>
+                <span class="intro-piece dark">♟</span>
+                <span></span>
+                <span class="intro-piece dark">♚</span>
+                <span></span>
+                <span></span>
+                <span class="intro-piece light">♕</span>
+            </div>
+            <div class="intro-board-preview" id="intro-board-preview-secondary"></div>
+            <div class="intro-side-stack">
+            <div class="intro-feature-box">
+            <div class="intro-feature-list">
+                <div class="intro-feature">로컬 2인 대전</div>
+                <div class="intro-feature">최고급$$AI$$무료증정</div>
+                <div class="intro-feature">온라인 매치</div>
+            </div>
+            </div>
+            <div class="intro-actions">
+                <button type="button" class="modal-btn primary intro-start-btn" id="intro-start-btn" onclick="enterLobby()">게임 시작</button>
+            </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================
+     로비 화면
+     ============================================ -->
+<div id="lobby-screen" class="screen">
+    <div class="lobby-container">
+        <div class="lobby-section">
+            <h2>게임 모드</h2>
+            <div class="mode-grid">
+                <div class="mode-btn" data-mode="ai" onclick="selectMode('ai')">
+                    <span class="mode-icon">🤖</span>
+                    <span class="mode-label">vs AI</span>
+                    <span class="mode-desc">JJUGLE 엔진</span>
+                </div>
+            </div>
+
+            <div class="ai-settings" id="ai-settings">
+                <div class="ai-settings-step active" id="ai-step-config">
+                    <h3>AI 설정</h3>
+                    <label style="display:block; font-size:0.85em; color:var(--text-secondary); margin-bottom:8px;">플레이 색상 선택</label>
+                    <div class="ai-color-select">
+                        <div class="ai-color-btn active" data-color="white" onclick="selectAIColor('white')">백 (선공)</div>
+                        <div class="ai-color-btn" data-color="black" onclick="selectAIColor('black')">흑 (후공)</div>
+                        <div class="ai-color-btn" data-color="random" onclick="selectAIColor('random')">랜덤 선택</div>
+                    </div>
+                    <div class="step-actions">
+                        <button type="button" class="modal-btn primary" onclick="openTimeModal('ai')">다음</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<!-- ============================================
+     게임 화면
+     ============================================ -->
+<div id="game-screen" class="screen">
+    <div class="game-container">
+        <div class="board-area">
+            <div class="board-labels-file" id="rank-labels-top"></div>
+            <div class="board-wrapper">
+                <div class="board-labels-rank" id="file-labels-left"></div>
+                <div id="chessboard"></div>
+                <div class="board-labels-rank" id="file-labels-right"></div>
+            </div>
+            <div class="board-labels-file" id="rank-labels-bottom"></div>
+            <div class="ai-thinking-indicator" id="ai-thinking">
+                <div class="ai-spinner"></div>
+                <span>AI가 생각 중입니다...</span>
+            </div>
+        </div>
+
+        <div class="side-panel" id="game-side-panel">
+            <div class="player-card black-player-card" id="black-player-card">
+                <div class="player-avatar black-avatar">♚</div>
+                <div class="player-info">
+                    <div class="player-header">
+                        <span class="player-side-label">흑</span>
+                        <span id="black-turn" class="turn-indicator"></span>
+                    </div>
+                    <div class="player-identity">
+                        <div class="player-name" id="display-black-name">흑 (Black)</div>
+                    </div>
+                    <div class="captured-pieces" id="black-captured"></div>
+                </div>
+                <div class="player-clock-stack">
+                    <div class="player-clock-line">
+                        <span class="player-timer" id="black-timer">5:00</span>
+                        <span class="increment-badge" id="black-increment-badge" style="display:none;"></span>
+                    </div>
+                    <div class="first-move-timer" id="black-first-move-timer" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="move-history">
+                <h3>기보</h3>
+                <div id="move-list"></div>
+                <div id="move-result-summary" class="move-result-summary" style="display:none;"></div>
+                <div class="history-nav" aria-label="기보 포지션 탐색">
+                    <button type="button" class="history-nav-btn" id="history-first-btn" onclick="jumpToHistoryFirst()" aria-label="가장 첫 포지션 보기">&lt;&lt;</button>
+                    <button type="button" class="history-nav-btn" id="history-prev-btn" onclick="stepHistoryBackward()" aria-label="한 수 전 포지션 보기">&lt;</button>
+                    <button type="button" class="history-nav-btn" id="history-next-btn" onclick="stepHistoryForward()" aria-label="한 수 앞 포지션 보기">&gt;</button>
+                    <button type="button" class="history-nav-btn" id="history-latest-btn" onclick="jumpToHistoryLatest()" aria-label="가장 최신 포지션 보기">&gt;&gt;</button>
+                </div>
+            </div>
+
+            <div class="player-card white-player-card" id="white-player-card">
+                <div class="player-avatar white-avatar">♔</div>
+                <div class="player-info">
+                    <div class="player-header">
+                        <span class="player-side-label">백</span>
+                        <span id="white-turn" class="turn-indicator active"></span>
+                    </div>
+                    <div class="player-identity">
+                        <div class="player-name" id="display-white-name">백 (White)</div>
+                    </div>
+                    <div class="captured-pieces" id="white-captured"></div>
+                </div>
+                <div class="player-clock-stack">
+                    <div class="player-clock-line">
+                        <span class="player-timer" id="white-timer">5:00</span>
+                        <span class="increment-badge" id="white-increment-badge" style="display:none;"></span>
+                    </div>
+                    <div class="first-move-timer" id="white-first-move-timer" style="display:none;"></div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button class="ctrl-btn" id="undo-copy-btn" onclick="handleUndoOrCopyControl()">⏪ 되돌리기</button>
+                <button class="ctrl-btn" id="flip-save-btn" onclick="handleFlipOrSaveControl()">🔄 뒤집기</button>
+                <button class="ctrl-btn" id="retry-ai-btn" onclick="retryAIGame()" style="display:none;">🔁 재도전</button>
+                <button class="ctrl-btn" id="offer-draw-btn" onclick="offerDraw()">🤝 무승부 제안</button>
+                <button class="ctrl-btn" id="accept-draw-btn" onclick="acceptDraw()" disabled>✅ 무승부 수락</button>
+                <button class="ctrl-btn danger" id="end-game-btn" onclick="handleEndGameControl()">🏳️ 기권</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================
+     게임 종료 모달
+     ============================================ -->
+<div id="gameover-modal" class="modal-overlay">
+    <div class="modal-content">
+        <h2 id="gameover-title">게임 종료</h2>
+        <p id="gameover-message"></p>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" id="copy-pgn-result-btn" onclick="copyPGN()">PGN 복사</button>
+            <button class="modal-btn secondary" id="download-pgn-result-btn" onclick="downloadPGN()">저장</button>
+            <button class="modal-btn primary" id="restart-game-btn" onclick="restartGame()">🔄 재시작</button>
+            <button class="modal-btn secondary" onclick="backToLobby()">🏠 로비로 돌아가기</button>
+        </div>
+    </div>
+</div>
+
+<div id="game-time-modal" class="modal-overlay" onclick="if (event.target === this) closeGameTimeModal()">
+    <div class="modal-content game-time-modal">
+        <h2 id="game-time-modal-title">대국 시간 설정</h2>
+        <p id="game-time-modal-message">원하는 시간 제한을 고른 뒤 다음을 눌러 진행하세요.</p>
+        <div class="time-settings-panel" data-time-scope="ai">
+            <div class="time-presets">
+                <div class="preset-btn" data-minutes="1" data-increment="0" onclick="applyPreset(1, 0, this)">
+                    <span class="time-value">1분</span><span class="time-label">BULLET</span>
+                </div>
+                <div class="preset-btn" data-minutes="1" data-increment="1" onclick="applyPreset(1, 1, this)">
+                    <span class="time-value">1+1</span><span class="time-label">BULLET</span>
+                </div>
+                <div class="preset-btn" data-minutes="2" data-increment="1" onclick="applyPreset(2, 1, this)">
+                    <span class="time-value">2+1</span><span class="time-label">BULLET</span>
+                </div>
+                <div class="preset-btn" data-minutes="3" data-increment="0" onclick="applyPreset(3, 0, this)">
+                    <span class="time-value">3분</span><span class="time-label">BLITZ</span>
+                </div>
+                <div class="preset-btn" data-minutes="3" data-increment="2" onclick="applyPreset(3, 2, this)">
+                    <span class="time-value">3+2</span><span class="time-label">BLITZ</span>
+                </div>
+                <div class="preset-btn active" data-minutes="5" data-increment="0" onclick="applyPreset(5, 0, this)">
+                    <span class="time-value">5분</span><span class="time-label">BLITZ</span>
+                </div>
+                <div class="preset-btn" data-minutes="5" data-increment="3" onclick="applyPreset(5, 3, this)">
+                    <span class="time-value">5+3</span><span class="time-label">BLITZ</span>
+                </div>
+                <div class="preset-btn" data-minutes="10" data-increment="0" onclick="applyPreset(10, 0, this)">
+                    <span class="time-value">10분</span><span class="time-label">RAPID</span>
+                </div>
+                <div class="preset-btn" data-minutes="10" data-increment="5" onclick="applyPreset(10, 5, this)">
+                    <span class="time-value">10+5</span><span class="time-label">RAPID</span>
+                </div>
+                <div class="preset-btn" data-minutes="15" data-increment="10" onclick="applyPreset(15, 10, this)">
+                    <span class="time-value">15+10</span><span class="time-label">RAPID</span>
+                </div>
+                <div class="preset-btn" data-minutes="30" data-increment="0" onclick="applyPreset(30, 0, this)">
+                    <span class="time-value">30분</span><span class="time-label">CLASSICAL</span>
+                </div>
+                <div class="preset-btn" data-minutes="0" data-increment="0" onclick="applyPreset(0, 0, this)">
+                    <span class="time-value">무제한</span><span class="time-label">NO LIMIT</span>
+                </div>
+            </div>
+            <h4 class="time-panel-title">직접 설정</h4>
+            <div class="custom-time">
+                <div class="time-input-group">
+                    <label>기본 시간</label>
+                    <div class="time-adjuster">
+                        <button type="button" onclick="adjustTime('minutes', -1, this)">-</button>
+                        <input type="number" class="time-minutes-input" value="5" min="0" max="180" onchange="updateCustomPreset(this)">
+                        <button type="button" onclick="adjustTime('minutes', 1, this)">+</button>
+                        <span>분</span>
+                    </div>
+                </div>
+                <div class="time-input-group">
+                    <label>추가 시간</label>
+                    <div class="time-adjuster">
+                        <button type="button" onclick="adjustTime('increment', -1, this)">-</button>
+                        <input type="number" class="time-increment-input" value="0" min="0" max="60" onchange="updateCustomPreset(this)">
+                        <button type="button" onclick="adjustTime('increment', 1, this)">+</button>
+                        <span>초</span>
+                    </div>
+                </div>
+            </div>
+            <div class="time-summary">
+                <span class="time-summary-text">각 플레이어: 5분 | 추가 시간(수 당): 없음</span>
+            </div>
+        </div>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" onclick="closeGameTimeModal()">취소</button>
+            <button class="modal-btn primary" id="game-time-confirm-btn" onclick="confirmGameTimeModal()">다음</button>
+        </div>
+    </div>
+</div>
+
+<div id="resign-modal" class="modal-overlay" onclick="if (event.target === this) closeResignModal()">
+    <div class="modal-content resign-modal">
+        <h2 id="resign-modal-title">기권 확인</h2>
+        <p id="resign-modal-message">확인을 누르기 전까지는 게임이 계속 진행됩니다. 정말 기권할까요?</p>
+        <div id="resign-modal-error" class="modal-inline-error" aria-live="polite"></div>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" id="resign-cancel-btn" onclick="closeResignModal()">취소</button>
+            <button class="modal-btn danger" id="resign-confirm-btn" onclick="confirmResignGame()">기권하기</button>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================
+     프로모션 모달
+     ============================================ -->
+<div id="pgn-modal" class="modal-overlay">
+    <div class="modal-content pgn-modal-content">
+        <h2>PGN</h2>
+        <p>텍스트를 복사하거나 파일로 내려받을 수 있습니다.</p>
+        <textarea id="pgn-text" class="pgn-textarea" readonly spellcheck="false"></textarea>
+        <div class="modal-buttons">
+            <button class="modal-btn secondary" id="copy-pgn-btn" onclick="copyPGN()">복사</button>
+            <button class="modal-btn secondary" id="download-pgn-btn" onclick="downloadPGN()">다운로드</button>
+            <button class="modal-btn primary" onclick="closePGNModal()">닫기</button>
+        </div>
+    </div>
+</div>
+
+<div id="promotion-modal" class="modal-overlay">
+    <div class="modal-content">
+        <h2>폰 프로모션</h2>
+        <p>승급할 기물을 선택하세요.</p>
+        <div id="promotion-choices"></div>
+    </div>
+</div>
+
+<div id="engine-loading" class="engine-loading-overlay">
+    <div class="engine-loading-spinner"></div>
+    <div class="engine-loading-text">
+        JJUGLE 엔진을 로딩하고 있습니다...<br>
+        <span style="font-size:0.85em; opacity:0.7;">처음 로딩 시 몇 초 정도 걸릴 수 있습니다.</span>
+    </div>
+</div>
+
+<script src="app.js"></script>
+<script src="first-move-timer.js"></script>
+
 </body>
 </html>
