@@ -1,7 +1,7 @@
 (function(global) {
   const defaultWorkerUrl = typeof document !== 'undefined' && document.currentScript?.src
-    ? `${new URL('hebichess-worker.js', document.currentScript.src).href}?v=20260921book1`
-    : '/public/engine/hebichess-worker.js?v=20260921book1';
+    ? `${new URL('hebichess-worker.js', document.currentScript.src).href}?v=20260922jjugle1`
+    : '/public/engine/hebichess-worker.js?v=20260922jjugle1';
   class HebiChessEngineClient {
     constructor(workerUrl=defaultWorkerUrl) { this.workerUrl=workerUrl; this.gameId=0; this.searchId=0; this.positionKey=undefined; this.nnueState='hce-ready'; this.evalMode='HCE'; this.bookState='book-unavailable'; this.handlers={info(){},output(){},error(){},diagnostic(){},gameState(){},nnueState(){},bookState(){}}; this.gamePending=null; this.nnuePending=null; this.evalModePending=null; this.rawPending=new Map(); this.rawRequestId=0; }
     async initialize() {

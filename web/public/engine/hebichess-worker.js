@@ -4,7 +4,7 @@ let modulePromise, module, liveContext = {};
 let evalMode = 'HCE';
 let nnueState = 'hce-ready';
 let bookState = 'book-unavailable';
-const ENGINE_ASSET_VERSION = '20260921book1';
+const ENGINE_ASSET_VERSION = '20260922jjugle1';
 const frozenModel = {
   file: 'models/hebinnue-v3-4c815d54bc6c9fbf.hebinnue',
   sha256: '4c815d54bc6c9fbfc27ebc19ea48ff3b23d845c338cda710aad14a65215a7826'
