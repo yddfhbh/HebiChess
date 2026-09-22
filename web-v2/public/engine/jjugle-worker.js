@@ -56,12 +56,12 @@ async function boot() {
   // The engine is never advertised as NNUE until the verified model is resident.
   const model = await fetchBytes(MODEL.file, MODEL.sha256);
   await loadBytes(model, 'hebichess_nnue_load_bytes', 'NNUE model');
-  engine.ccall('hebichess_send_command', null, ['string'], ['setoption name EvalMode value NNUE']); emitBuffer();
+  engine.ccall('hebichess_send_command', null, ['string'], ['setoption name EvalMode value NNUE']);
   const book = await fetchBytes(BOOK.file, BOOK.sha256, BOOK.bytes);
   await loadBytes(book, 'hebichess_book_load_bytes', 'opening book');
-  engine.ccall('hebichess_send_command', null, ['string'], ['setoption name OwnBook value true']); emitBuffer();
-  engine.ccall('hebichess_send_command', null, ['string'], ['uci']); emitBuffer();
-  engine.ccall('hebichess_send_command', null, ['string'], ['isready']); emitBuffer();
+  engine.ccall('hebichess_send_command', null, ['string'], ['setoption name OwnBook value true']);
+  engine.ccall('hebichess_send_command', null, ['string'], ['uci']);
+  engine.ccall('hebichess_send_command', null, ['string'], ['isready']);
 }
 function ensureBoot() {
   if (!bootPromise) bootPromise = boot().catch(errorValue => { bootError = errorValue; throw errorValue; });
@@ -69,7 +69,6 @@ function ensureBoot() {
 }
 function command(text) {
   engine.ccall('hebichess_send_command', null, ['string'], [text]);
-  emitBuffer();
 }
 self.onmessage = ({ data }) => {
   const text = typeof data === 'string' ? data.trim() : '';

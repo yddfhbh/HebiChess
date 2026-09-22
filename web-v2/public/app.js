@@ -285,10 +285,10 @@ function requestAIMove() {
 
 // ★ 엔진이 반환한 수를 처리
 function handleEngineMove(moveStr) {
-    aiThinking = false;
-    showAIThinking(false);
-
-    if (gameOver) return;
+    if (gameOver || !aiThinking || !isAITurn()) {
+        console.warn('Duplicate/stale JJUGLE bestmove ignored:', moveStr);
+        return;
+    }
 
     // moveStr 형식: "e2e4", "e7e8q" (프로모션)
     var files = 'abcdefgh';
@@ -310,11 +310,21 @@ function handleEngineMove(moveStr) {
         }
     }
 
-    if (fromRow < 0 || fromCol < 0 || toRow < 0 || toCol < 0) {
+    if (fromRow < 0 || fromCol < 0 || toRow < 0 || toCol < 0 || fromRow >= 8 || fromCol >= 8 || toRow >= 8 || toCol >= 8) {
         console.error('잘못된 엔진 수:', moveStr);
         return;
     }
 
+    var piece = board[fromRow][fromCol];
+    var legal = legalMoves(fromRow, fromCol);
+    var isLegalDestination = legal.some(function(move) { return move[0] === toRow && move[1] === toCol; });
+    if (!piece || pieceColor(piece) !== gameSetting.aiColor || pieceColor(piece) !== currentTurn || !isLegalDestination) {
+        console.warn('불법 엔진 수 무시:', moveStr);
+        return;
+    }
+
+    aiThinking = false;
+    showAIThinking(false);
     executeMove(fromRow, fromCol, toRow, toCol, promotionPiece);
 }
 

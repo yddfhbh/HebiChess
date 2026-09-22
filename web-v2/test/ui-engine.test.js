@@ -20,3 +20,17 @@ test('retains premove, drag, promotion, and timer support', () => {
   }
   assert.match(timerSource, /FIRST_MOVE_TIMEOUT_MS/);
 });
+
+test('guards JJUGLE moves and avoids duplicate worker output', () => {
+  assert.match(workerSource, /function command\(text\)\s*\{\s*engine\.ccall\('hebichess_send_command'/);
+  assert.doesNotMatch(workerSource, /function command\(text\)[\s\S]*?emitBuffer\(\)/);
+  assert.match(appSource, /if \(gameOver \|\| !aiThinking \|\| !isAITurn\(\)\)/);
+  assert.match(appSource, /pieceColor\(piece\) !== gameSetting\.aiColor/);
+  assert.match(appSource, /isLegalDestination/);
+  assert.match(appSource, /aiThinking = false;\s*showAIThinking\(false\);\s*executeMove/);
+});
+
+test('uses the game time modal for AI setup', () => {
+  const html = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  assert.match(html, /onclick="openGameTimeModal\('ai'\)"/);
+});
