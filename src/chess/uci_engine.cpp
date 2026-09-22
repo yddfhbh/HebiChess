@@ -87,6 +87,7 @@ void UciEngine::send_command(const std::string& line) {
     emit("option name BookFile type string default ");
     emit("option name BookSeed type string default 0");
     emit("option name EvalMode type combo default HCE var HCE var NNUE");
+    emit("option name MaxMoveTime type spin default 0 min 0 max 600000");
 #ifndef HEBICHESS_WASM
     emit("option name EvalFile type string default ");
 #endif
@@ -184,6 +185,15 @@ void UciEngine::send_command(const std::string& line) {
         emit("info string error EvalMode NNUE unavailable: no network loaded; retaining " +
              std::string(eval_mode_ == EvalMode::HCE ? "HCE" : "NNUE"));
       }
+    } else if (name == "MaxMoveTime") {
+      int value_ms = 0;
+      std::istringstream value_input(value);
+      if (!(value_input >> value_ms) || value_ms < 0 || value_ms > 600000) {
+        emit("info string error invalid MaxMoveTime");
+      } else {
+        max_move_time_ms_ = value_ms;
+        emit("info string MaxMoveTime " + std::to_string(max_move_time_ms_));
+      }
     } else {
       emit("info string error unsupported setoption");
     }
@@ -280,6 +290,7 @@ void UciEngine::send_command(const std::string& line) {
         budget = remaining / 30 + increment / 2;
         budget = std::min(budget, std::max(1, remaining - 20));
       }
+      if (max_move_time_ms_ > 0) budget = std::min(budget, max_move_time_ms_);
       budget = std::max(1, budget - (has_movetime ? std::min(20, budget / 10) : 10));
       limits.has_deadline = true;
       limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);

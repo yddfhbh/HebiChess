@@ -285,11 +285,28 @@ void test_eval_breakdown_uci_output() {
       "initiative 10",
       "total 965"}));
 }
+
+void test_uci_max_move_time_option() {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+
+  engine.send_command("uci");
+  assert(has_line(output, "option name MaxMoveTime type spin default 0 min 0 max 600000"));
+
+  output.clear();
+  engine.send_command("setoption name MaxMoveTime value 10000");
+  assert(has_line(output, "info string MaxMoveTime 10000"));
+
+  output.clear();
+  engine.send_command("setoption name MaxMoveTime value 600001");
+  assert(has_line(output, "info string error invalid MaxMoveTime"));
+}
 }
 
 int main() {
   test_move_parsing();
   test_serialization_and_timeout_integrity();
   test_eval_breakdown_uci_output();
+  test_uci_max_move_time_option();
   test_uci_opening_book_path();
 }

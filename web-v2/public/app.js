@@ -280,7 +280,19 @@ function requestAIMove() {
 
     // 새 게임 시작 시 position 설정
     jjugleWorker.postMessage('position fen ' + fen);
-    jjugleWorker.postMessage('go movetime 1500');
+    var goCommand;
+    if (gameSetting.unlimited) {
+        goCommand = 'go movetime 10000';
+    } else {
+        // Keep the UCI clock aligned with the browser clock at the instant
+        // the engine starts thinking. The engine owns time allocation.
+        consumeActiveTurnTime();
+        goCommand = 'go wtime ' + Math.max(0, Math.floor(whiteTime * 1000)) +
+            ' btime ' + Math.max(0, Math.floor(blackTime * 1000)) +
+            ' winc ' + Math.max(0, Math.floor(gameSetting.increment * 1000)) +
+            ' binc ' + Math.max(0, Math.floor(gameSetting.increment * 1000));
+    }
+    jjugleWorker.postMessage(goCommand);
 }
 
 // ★ 엔진이 반환한 수를 처리

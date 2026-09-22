@@ -30,6 +30,7 @@ class UciEngine {
 
   Board board_{Board::initial()};
   EvalMode eval_mode_{EvalMode::HCE};
+  int max_move_time_ms_{0};
   OpeningBook opening_book_;
   bool own_book_{false};
   std::uint64_t book_seed_{0};

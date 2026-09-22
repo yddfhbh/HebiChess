@@ -60,6 +60,7 @@ async function boot() {
   const book = await fetchBytes(BOOK.file, BOOK.sha256, BOOK.bytes);
   await loadBytes(book, 'hebichess_book_load_bytes', 'opening book');
   engine.ccall('hebichess_send_command', null, ['string'], ['setoption name OwnBook value true']);
+  engine.ccall('hebichess_send_command', null, ['string'], ['setoption name MaxMoveTime value 10000']);
   engine.ccall('hebichess_send_command', null, ['string'], ['uci']);
   engine.ccall('hebichess_send_command', null, ['string'], ['isready']);
 }
