@@ -1,4 +1,5 @@
 #include "chess/search.hpp"
+#include "chess/time_management.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1615,13 +1616,15 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     result.style_verification_reserve_ms =
         static_cast<std::uint64_t>(limits.style_verification_reserve_ms);
   }
-  const auto objective_deadline = limits.has_deadline
-      ? limits.deadline - std::chrono::milliseconds(10)
-      : limits.deadline;
+  const auto objective_deadline = limits.deadline;
   std::vector<RootMoveInfo> previous_root;
   std::vector<RootMoveInfo> last_completed;
   int last_objective_best = -MATE_SCORE;
+  std::optional<Move> previous_best_move;
+  int best_move_stability = 0;
+  int previous_completed_score = 0;
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
+    const std::uint64_t aspiration_retries_before = result.aspiration_retries;
     const int previous_score = result.score;
     const bool mate_score = previous_score > MATE_SCORE - 1000 ||
                             previous_score < -MATE_SCORE + 1000;
@@ -1751,6 +1754,36 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
     previous_root = last_completed;
     legal = generate_legal_moves(root);
+
+    if (previous_best_move.has_value() && *previous_best_move == objective_best_move)
+      ++best_move_stability;
+    else
+      best_move_stability = 1;
+    const int score_swing = depth == 1 ? 0 : std::abs(objective_best - previous_completed_score);
+    int second_best = -MATE_SCORE;
+    for (const RootMoveInfo& info : last_completed) {
+      if (info.move != objective_best_move && info.bound == ScoreBound::Exact)
+        second_best = std::max(second_best, info.search_score);
+    }
+    const int root_margin = second_best == -MATE_SCORE
+        ? MATE_SCORE : objective_best - second_best;
+    const bool soft_reached = limits.has_soft_deadline &&
+        std::chrono::steady_clock::now() >= limits.soft_deadline;
+    const auto elapsed = std::chrono::steady_clock::now() - search_started;
+    const auto soft_duration = limits.has_soft_deadline
+        ? limits.soft_deadline - search_started : std::chrono::steady_clock::duration::zero();
+    const bool clear_window_reached = limits.has_soft_deadline &&
+        elapsed >= soft_duration * 6 / 10;
+    const SoftStopState stop_state{best_move_stability, score_swing, root_margin,
+        result.aspiration_retries != aspiration_retries_before};
+    const bool mate_confirmed = objective_best > MATE_SCORE - 1000 ||
+        objective_best < -MATE_SCORE + 1000;
+    if ((limits.has_soft_deadline && should_stop_at_soft_deadline(
+             stop_state, soft_reached, clear_window_reached)) ||
+        (legal.size() == 1) || mate_confirmed)
+      break;
+    previous_best_move = objective_best_move;
+    previous_completed_score = objective_best;
   }
   if (last_completed.empty()) {
     result.objective_time_ms = static_cast<std::uint64_t>(

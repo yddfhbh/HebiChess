@@ -9,15 +9,15 @@ const timerSource = fs.readFileSync(new URL('../public/first-move-timer.js', imp
 test('uses the JJUGLE UCI adapter without Stockfish settings', () => {
   assert.match(appSource, /new Worker\('\.\/engine\/jjugle-worker\.js'\)/);
   assert.match(appSource, /position fen/);
-  assert.match(appSource, /go movetime 10000/);
+  assert.match(appSource, /go movetime 15000/);
   assert.match(appSource, /goCommand = 'go wtime/);
   assert.match(appSource, /' btime '/);
   assert.match(appSource, /' winc '/);
   assert.match(appSource, /' binc '/);
-  assert.doesNotMatch(appSource, /go movetime 1500/);
+  assert.doesNotMatch(appSource, /go movetime 1500\b/);
   assert.doesNotMatch(appSource, /Stockfish|setoption name Skill Level|go depth/i);
   assert.match(workerSource, /go \|setoption/);
-  assert.match(workerSource, /setoption name MaxMoveTime value 10000/);
+  assert.match(workerSource, /setoption name MaxMoveTime value 20000/);
 });
 
 test('retains premove, drag, promotion, and timer support', () => {

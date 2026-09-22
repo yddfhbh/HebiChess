@@ -282,7 +282,7 @@ function requestAIMove() {
     jjugleWorker.postMessage('position fen ' + fen);
     var goCommand;
     if (gameSetting.unlimited) {
-        goCommand = 'go movetime 10000';
+        goCommand = 'go movetime 15000';
     } else {
         // Keep the UCI clock aligned with the browser clock at the instant
         // the engine starts thinking. The engine owns time allocation.

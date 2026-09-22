@@ -13,6 +13,7 @@
 #include "chess/nnue.hpp"
 #include "chess/nnue_features.hpp"
 #include "chess/search.hpp"
+#include "chess/time_management.hpp"
 #include "chess/uci.hpp"
 
 namespace hebichess {
@@ -283,17 +284,25 @@ void UciEngine::send_command(const std::string& line) {
       else if (option == "binc") binc = integer_after(input);
     }
     if (has_movetime || wtime > 0 || btime > 0) {
-      int budget = movetime;
-      if (!has_movetime) {
+      TimeBudget time_budget;
+      if (has_movetime) {
+        const int hard = max_move_time_ms_ > 0
+            ? std::min(movetime, max_move_time_ms_) : movetime;
+        time_budget = {std::min(5000, hard), std::max(1, hard)};
+      } else {
         const int remaining = board_.side_to_move() == Color::White ? wtime : btime;
         const int increment = board_.side_to_move() == Color::White ? winc : binc;
-        budget = remaining / 30 + increment / 2;
-        budget = std::min(budget, std::max(1, remaining - 20));
+        time_budget = allocate_time_budget(remaining, increment);
       }
-      if (max_move_time_ms_ > 0) budget = std::min(budget, max_move_time_ms_);
-      budget = std::max(1, budget - (has_movetime ? std::min(20, budget / 10) : 10));
+      if (max_move_time_ms_ > 0) {
+        time_budget.soft_ms = std::min(time_budget.soft_ms, max_move_time_ms_);
+        time_budget.hard_ms = std::min(time_budget.hard_ms, max_move_time_ms_);
+      }
       limits.has_deadline = true;
-      limits.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget);
+      const auto now = std::chrono::steady_clock::now();
+      limits.deadline = now + std::chrono::milliseconds(time_budget.hard_ms);
+      limits.has_soft_deadline = true;
+      limits.soft_deadline = now + std::chrono::milliseconds(time_budget.soft_ms);
     }
     const std::uint32_t fullmove = board_.fullmove_number();
     const std::uint32_t book_ply =

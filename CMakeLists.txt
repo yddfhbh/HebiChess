@@ -100,6 +100,9 @@ add_executable(HebiChessUciTest
 )
 target_include_directories(HebiChessUciTest PRIVATE src)
 
+add_executable(HebiChessTimeManagementTest tests/time_management_test.cpp)
+target_include_directories(HebiChessTimeManagementTest PRIVATE src)
+
 add_executable(HebiChessZobristTtTest
   tests/zobrist_tt_test.cpp
   ${CHESS_SOURCES}
@@ -306,6 +309,7 @@ add_test(NAME chess_movegen COMMAND HebiChessMovegenTest)
 add_test(NAME chess_perft COMMAND HebiChessPerftTest)
 add_test(NAME chess_search COMMAND HebiChessSearchTest)
 add_test(NAME chess_uci COMMAND HebiChessUciTest)
+add_test(NAME chess_time_management COMMAND HebiChessTimeManagementTest)
 add_test(NAME chess_zobrist_tt COMMAND HebiChessZobristTtTest)
 add_test(NAME chess_see COMMAND HebiChessSeeTest)
 add_test(NAME chess_game_state COMMAND HebiChessGameStateTest)

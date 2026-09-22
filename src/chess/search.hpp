@@ -149,6 +149,8 @@ struct SearchLimits {
   int max_depth{1};
   bool has_deadline{false};
   std::chrono::steady_clock::time_point deadline{};
+  bool has_soft_deadline{false};
+  std::chrono::steady_clock::time_point soft_deadline{};
   bool use_tt{true};
   bool use_see_pruning{true};
   bool use_killer_history{true};
