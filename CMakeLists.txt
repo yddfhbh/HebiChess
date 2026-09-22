@@ -36,6 +36,7 @@ target_include_directories(HebiChess PRIVATE src)
 apply_hebichess_production_qsearch(HebiChess)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
+set(HEBICHESS_WASM_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/web/public/engine" CACHE PATH "Output directory for the browser WebAssembly engine")
 if(HEBICHESS_BUILD_WASM)
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "HEBICHESS_BUILD_WASM requires Emscripten (configure with emcmake cmake)")
@@ -46,7 +47,7 @@ if(HEBICHESS_BUILD_WASM)
   apply_hebichess_production_qsearch(HebiChessWasm)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/web/public/engine"
+    RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_OUTPUT_DIR}"
     SUFFIX ".js"
   LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessModule -sENVIRONMENT=web,worker -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
   )
