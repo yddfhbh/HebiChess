@@ -68,3 +68,10 @@ test('stale search info cannot overwrite the completed result',()=>{
   assert.equal(telemetry.update({gameId:'stale-game',searchId:1},{score:{type:'mate',value:-4},depth:99}),false);
   assert.deepEqual(telemetry.last().score,{type:'cp',value:420});
 });
+
+test('book evaluation marker is preserved through completion',()=>{
+  const telemetry=create(), key=search(telemetry,'book-game');
+  telemetry.update(key,{score:{type:'cp',value:32},nodes:0,book:true});
+  telemetry.complete(key);
+  assert.deepEqual(telemetry.last(),{score:{type:'cp',value:32},nodes:0,book:true});
+});

@@ -302,6 +302,13 @@ void UciEngine::send_command(const std::string& line) {
     if (own_book_ && opening_book_.available() &&
         book_ply < opening_book_.max_book_ply()) {
       if (const auto book_move = opening_book_.choose_move(board_, next_book_random())) {
+        Board post_move = board_;
+        post_move.make_move(*book_move);
+        if (const auto post_move_score = evaluate(post_move, eval_mode_)) {
+          std::ostringstream info;
+          info << "info score cp " << -*post_move_score << " nodes 0 string book_eval";
+          emit(info.str());
+        }
         emit("info string book hit");
         emit("bestmove " + move_to_uci(*book_move));
         return;

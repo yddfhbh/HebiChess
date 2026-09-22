@@ -55,6 +55,13 @@ bool has_line(const std::vector<std::string>& output, const std::string& expecte
   return false;
 }
 
+std::size_t line_index(const std::vector<std::string>& output, const std::string& expected) {
+  for (std::size_t i = 0; i < output.size(); ++i) {
+    if (output[i] == expected) return i;
+  }
+  return output.size();
+}
+
 void require_bounded_search(const std::vector<std::string>& output) {
   bool searched = false;
   bool bestmove = false;
@@ -83,6 +90,22 @@ std::string book_bestmove(const Board& board, const std::vector<std::uint8_t>& b
     if (line.rfind("bestmove ", 0) == 0) return line.substr(9);
   }
   throw std::runtime_error("book hit did not emit bestmove");
+}
+
+std::vector<std::string> book_output(const Board& board, const std::vector<std::uint8_t>& bytes,
+                                     const char* seed) {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  require(engine.load_opening_book_bytes(bytes), "opening book fixture failed to load");
+  engine.send_command(std::string("setoption name BookSeed value ") + seed);
+  engine.send_command("setoption name OwnBook value true");
+  engine.send_command("position fen " + board.to_fen());
+  engine.send_command("go movetime 50");
+  require(has_line(output, "info string book hit"), "book fixture did not hit");
+  require(!std::any_of(output.begin(), output.end(), [](const std::string& line) {
+    return line.rfind("info depth ", 0) == 0;
+  }), "book hit unexpectedly searched");
+  return output;
 }
 
 void test_uci_opening_book_path() {
@@ -115,6 +138,18 @@ void test_uci_opening_book_path() {
     engine.send_command("go movetime 50");
     require(has_line(output, "info string book hit"), "book hit was not reported");
     require(has_line(output, "bestmove e2e4"), "book returned unexpected move");
+    Board post_move = initial;
+    post_move.make_move(e4);
+    const auto post_move_score = evaluate(post_move, EvalMode::HCE);
+    require(post_move_score.has_value(), "HCE book evaluation was unavailable");
+    const std::string book_eval = "info score cp " + std::to_string(-*post_move_score) +
+                                  " nodes 0 string book_eval";
+    require(has_line(output, book_eval),
+            "book evaluation was not reported");
+    require(line_index(output, book_eval) < line_index(output, "info string book hit"),
+            "book evaluation arrived after book hit");
+    require(line_index(output, "info string book hit") < line_index(output, "bestmove e2e4"),
+            "book hit arrived after bestmove");
     require(!std::any_of(output.begin(), output.end(), [](const std::string& line) {
       return line.rfind("info depth ", 0) == 0;
     }), "book hit unexpectedly searched");
@@ -148,6 +183,16 @@ void test_uci_opening_book_path() {
     const Move e5 = *parse_uci_move(ply29, "e7e5");
     require(book_bestmove(ply29, book_fixture(ply29, {{e5, 1}}), "0") == "e7e5",
             "ply 29 book hit returned unexpected move");
+    const auto output_book = book_output(ply29, book_fixture(ply29, {{e5, 1}}), "0");
+    Board post_move = ply29;
+    post_move.make_move(e5);
+    const auto post_move_score = evaluate(post_move, EvalMode::HCE);
+    require(post_move_score.has_value(), "HCE book evaluation was unavailable");
+    require(*post_move_score != 0, "black book perspective fixture was not discriminating");
+    const auto expected = -*post_move_score;
+    require(has_line(output_book, "info score cp " + std::to_string(expected) +
+                              " nodes 0 string book_eval"),
+            "black book evaluation had the wrong root perspective");
 
     const Board ply30 = position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 16");
     std::vector<std::string> output;
