@@ -1571,6 +1571,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
 #endif
   const auto search_started = std::chrono::steady_clock::now();
   if (limits.max_depth < 1) return result;
+  if (limits.has_soft_deadline)
+    result.time_soft_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.soft_deadline - search_started).count());
+  if (limits.has_deadline)
+    result.time_hard_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.deadline - search_started).count());
+  if (limits.has_soft_deadline)
+    result.time_target_ms = adaptive_target_ms(result.time_soft_ms, result.time_hard_ms, TimeConfidence::Low);
+  result.time_confidence = "low";
   Board root = position;
   const bool use_nnue_accumulator = limits.eval_mode == EvalMode::NNUE &&
       nnue_network_available()
@@ -1608,6 +1615,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     return result;
   }
   result.best_move = legal.front();
+  if (legal.size() == 1) {
+    result.time_stop_reason = "forced";
+    return result;
+  }
   const Square enemy_king = root.find_king(opposite(root.side_to_move()));
   // Preserve the explicit benchmark setting as result metadata only.  It no
   // longer reserves objective-search time or influences its deadline.
@@ -1620,9 +1631,22 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   std::vector<RootMoveInfo> previous_root;
   std::vector<RootMoveInfo> last_completed;
   int last_objective_best = -MATE_SCORE;
-  std::optional<Move> previous_best_move;
-  int best_move_stability = 0;
-  int previous_completed_score = 0;
+  std::vector<int> best_move_history;
+  std::vector<int> score_history;
+  std::vector<bool> aspiration_retry_history;
+  int target_floor_ms = result.time_target_ms;
+  auto move_key = [](const Move& move) {
+    return static_cast<int>(move.from.index()) * 64 + move.to.index();
+  };
+  auto confidence_name = [](TimeConfidence confidence) {
+    switch (confidence) {
+      case TimeConfidence::High: return "high";
+      case TimeConfidence::Medium: return "medium";
+      case TimeConfidence::Low: return "low";
+      case TimeConfidence::VeryLow: return "very_low";
+    }
+    return "low";
+  };
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
     const std::uint64_t aspiration_retries_before = result.aspiration_retries;
     const int previous_score = result.score;
@@ -1733,7 +1757,11 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       }
       completed = true;
     }
-    if (stopped_iteration || current.size() != legal.size()) break;
+    if (stopped_iteration || current.size() != legal.size()) {
+      if (limits.has_deadline && std::chrono::steady_clock::now() >= limits.deadline)
+        result.time_stop_reason = "hard";
+      break;
+    }
     int objective_best = -MATE_SCORE;
     auto objective_move = current.end();
     for (auto it = current.begin(); it != current.end(); ++it) {
@@ -1755,11 +1783,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     previous_root = last_completed;
     legal = generate_legal_moves(root);
 
-    if (previous_best_move.has_value() && *previous_best_move == objective_best_move)
-      ++best_move_stability;
-    else
-      best_move_stability = 1;
-    const int score_swing = depth == 1 ? 0 : std::abs(objective_best - previous_completed_score);
+    best_move_history.push_back(move_key(objective_best_move));
+    score_history.push_back(objective_best);
+    aspiration_retry_history.push_back(result.aspiration_retries != aspiration_retries_before);
     int second_best = -MATE_SCORE;
     bool root_margin_known = objective_move->bound == ScoreBound::Exact;
     bool usable_competitor = false;
@@ -1776,24 +1802,43 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     }
     root_margin_known = root_margin_known && usable_competitor;
     const int root_margin = root_margin_known ? objective_best - second_best : 0;
-    const bool soft_reached = limits.has_soft_deadline &&
-        std::chrono::steady_clock::now() >= limits.soft_deadline;
-    const auto elapsed = std::chrono::steady_clock::now() - search_started;
-    const auto soft_duration = limits.has_soft_deadline
-        ? limits.soft_deadline - search_started : std::chrono::steady_clock::duration::zero();
-    const bool clear_window_reached = limits.has_soft_deadline &&
-        elapsed >= soft_duration * 3 / 4;
-    const SoftStopState stop_state{best_move_stability, score_swing, root_margin,
-        root_margin_known,
-        result.aspiration_retries != aspiration_retries_before};
+    const TimeEvidence final_evidence{best_move_history, score_history,
+        aspiration_retry_history, root_margin_known, root_margin};
+    const TimeConfidence confidence = choose_time_confidence(final_evidence);
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = now - search_started;
+    const int elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+    const int soft_ms = limits.has_soft_deadline ? static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.soft_deadline - search_started).count()) : 0;
+    const int hard_ms = limits.has_deadline ? static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.deadline - search_started).count()) : 0;
+    const int target_ms = limits.has_soft_deadline
+        ? (target_floor_ms = std::max(target_floor_ms,
+              adaptive_target_ms(soft_ms, hard_ms, confidence)))
+        : 0;
+    result.time_soft_ms = soft_ms;
+    result.time_hard_ms = hard_ms;
+    result.time_target_ms = target_ms;
+    result.time_elapsed_ms = elapsed_ms;
+    result.time_stability = 1;
+    for (std::size_t i = best_move_history.size(); i > 1 &&
+         best_move_history[i - 1] == best_move_history.back(); --i) ++result.time_stability;
+    result.time_score_swing = 0;
+    if (score_history.size() >= 2) {
+      const auto first = score_history.size() - std::min<std::size_t>(3, score_history.size());
+      const auto range = std::minmax_element(score_history.begin() + first, score_history.end());
+      result.time_score_swing = *range.second - *range.first;
+    }
+    result.time_margin_known = root_margin_known;
+    result.time_margin = root_margin;
+    result.time_confidence = confidence_name(confidence);
     const bool mate_confirmed = objective_best > MATE_SCORE - 1000 ||
         objective_best < -MATE_SCORE + 1000;
-    if ((limits.has_soft_deadline && should_stop_at_soft_deadline(
-             stop_state, soft_reached, clear_window_reached)) ||
-        (legal.size() == 1) || mate_confirmed)
+    const bool hard_reached = limits.has_deadline && now >= limits.deadline;
+    const bool target_reached = limits.has_soft_deadline && target_ms > 0 && elapsed_ms >= target_ms;
+    if (hard_reached || target_reached || (legal.size() == 1) || mate_confirmed) {
+      result.time_stop_reason = hard_reached ? "hard" : legal.size() == 1 ? "forced" :
+          mate_confirmed ? "mate" : "target";
       break;
-    previous_best_move = objective_best_move;
-    previous_completed_score = objective_best;
+    }
   }
   if (last_completed.empty()) {
     result.objective_time_ms = static_cast<std::uint64_t>(

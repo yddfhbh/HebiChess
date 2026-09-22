@@ -109,6 +109,7 @@ function sendMove(move){if(requestInFlight)return;diagnostic('[Phase3][move-clic
 function maybePremove(){if(!premove||requestInFlight||!isPlayer()||S.result||S.turn!==S.playerColor)return;const queued=premove,move=queued.from+queued.to+(queued.promotion||'');requestInFlight=true;browserSnapshot(move).then(snapshot=>gameMutations.move(move,snapshot)).then(data=>{premove=null;viewIndex=-1;applyServerState(data,'premove-response')}).catch(error=>{premove=null;if(error.status!==409||!error.data?.stale)toast(error.message);resync('premove-error')}).finally(()=>{requestInFlight=false})}
 async function resync(source='resync'){const query=S.gameId?`?gameId=${encodeURIComponent(S.gameId)}`:'';const response=await fetch(`/api/state${query}`);const data=await response.json();viewIndex=-1;applyServerState(data,source)}
 function engineInfo(message){
+  if (message.line?.startsWith('info string tm ')) console.debug?.('[JJUGLE TM]', message.line);
   const search=activeEngineSearch;
   if(!search||message.searchId!==search.engineSearchId||message.gameId!==engineClient.gameId)return;
   const line=message.line,depth=line.match(/\bdepth\s+(\d+)/),scoreMatch=line.match(/\bscore\s+(cp|mate)\s+(-?\d+)/),nodes=line.match(/\bnodes\s+(\d+)/),book=line.includes('string book_eval');

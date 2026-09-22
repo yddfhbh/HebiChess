@@ -288,7 +288,7 @@ void UciEngine::send_command(const std::string& line) {
       if (has_movetime) {
         const int hard = max_move_time_ms_ > 0
             ? std::min(movetime, max_move_time_ms_) : movetime;
-        time_budget = {std::min(5000, hard), std::max(1, hard)};
+        time_budget = {std::min(5000, hard), std::min(20000, std::max(1, hard))};
       } else {
         const int remaining = board_.side_to_move() == Color::White ? wtime : btime;
         const int increment = board_.side_to_move() == Color::White ? winc : binc;
@@ -319,6 +319,7 @@ void UciEngine::send_command(const std::string& line) {
           emit(info.str());
         }
         emit("info string book hit");
+        emit("info string tm reason book");
         emit("bestmove " + move_to_uci(*book_move));
         return;
       }
@@ -336,6 +337,19 @@ void UciEngine::send_command(const std::string& line) {
     // The normal detailed search record remains available to normal UCI
     // clients, while timed strength binaries compile all QTT profiling out.
 #ifndef HEBICHESS_STRENGTH_RUNNER
+    std::ostringstream tm;
+    tm << "info string tm soft " << result.time_soft_ms
+       << " hard " << result.time_hard_ms
+       << " target " << result.time_target_ms
+       << " elapsed " << result.time_elapsed_ms
+       << " depth " << result.completed_depth
+       << " confidence " << result.time_confidence
+       << " stability " << result.time_stability
+       << " swing " << result.time_score_swing
+       << " margin_known " << (result.time_margin_known ? 1 : 0)
+       << " margin " << result.time_margin
+       << " stop " << result.time_stop_reason;
+    emit(tm.str());
     std::ostringstream stats;
     stats << "info string nodes " << result.nodes
           << " main_nodes " << result.main_nodes

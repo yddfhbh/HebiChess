@@ -5,31 +5,30 @@
 using namespace hebichess;
 
 int main() {
-  const TimeBudget one_plus_zero = allocate_time_budget(60'000, 0);
-  const TimeBudget five_plus_zero = allocate_time_budget(300'000, 0);
-  const TimeBudget ten_plus_five = allocate_time_budget(600'000, 5'000);
-  assert(one_plus_zero.soft_ms < five_plus_zero.soft_ms);
-  assert(five_plus_zero.soft_ms < ten_plus_five.soft_ms);
-  assert(ten_plus_five.soft_ms <= 8'000);
-  assert(ten_plus_five.hard_ms <= 20'000);
+  assert(allocate_time_budget(60'000, 0).soft_ms == 600);
+  assert(allocate_time_budget(300'000, 0).soft_ms == 3000);
+  assert(allocate_time_budget(600'000, 5'000).soft_ms == 5000);
+  assert(allocate_time_budget(600'000, 5'000).hard_ms == 20000);
+  assert(allocate_time_budget(0, 0, true).soft_ms == 5000);
+  assert(allocate_time_budget(0, 0, true).hard_ms == 20000);
 
-  const TimeBudget unlimited = allocate_time_budget(0, 0, true);
-  assert(unlimited.soft_ms == 5'000 && unlimited.hard_ms == 15'000);
+  const TimeEvidence high{{1, 1, 1}, {100, 105, 110}, {false, false, false}, true, 80};
+  const TimeEvidence medium{{1, 1, 1}, {100, 115, 125}, {false, false, false}, true, 50};
+  const TimeEvidence low{{1, 2, 2}, {100, 145, 180}, {false, false, false}, true, 35};
+  const TimeEvidence very_low{{1, 2, 3}, {100, 170, 240}, {false, true, false}, true, 15};
+  assert(choose_time_confidence(high) == TimeConfidence::High);
+  assert(choose_time_confidence(medium) == TimeConfidence::Medium);
+  assert(choose_time_confidence(low) == TimeConfidence::Low);
+  assert(choose_time_confidence(very_low) == TimeConfidence::VeryLow);
+  assert(adaptive_target_ms(3000, 12000, TimeConfidence::High) == 3000);
+  assert(adaptive_target_ms(3000, 12000, TimeConfidence::Medium) == 4500);
+  assert(adaptive_target_ms(3000, 12000, TimeConfidence::Low) == 6000);
+  assert(adaptive_target_ms(3000, 5000, TimeConfidence::VeryLow) == 5000);
 
-  // A clear choice is only actionable after the conservative 75% window.
-  assert(should_stop_at_soft_deadline({4, 10, 75, true, false}, false, true));
-  assert(!should_stop_at_soft_deadline({4, 10, 75, false, false}, false, true));
-  assert(!should_stop_at_soft_deadline({3, 10, 75, true, false}, false, true));
-  assert(!should_stop_at_soft_deadline({4, 16, 75, true, false}, false, true));
-
-  // Unknown margin must not turn a stable best move into a clear choice.
-  assert(!should_stop_at_soft_deadline({4, 0, 0, false, false}, false, true));
-  assert(!should_stop_at_soft_deadline({4, 0, 80, false, false}, true));
-  // A proven small margin allows ordinary soft-deadline stopping only.
-  assert(should_stop_at_soft_deadline({2, 20, 35, true, false}, true));
-  assert(!should_stop_at_soft_deadline({2, 20, 34, true, false}, true));
-  assert(!should_stop_at_soft_deadline({2, 20, 35, false, false}, true));
-  assert(!should_stop_at_soft_deadline({2, 20, 80, true, true}, true));
-  assert(!should_stop_at_soft_deadline({4, 10, 80, true, false}, false, true));
+  assert(choose_time_confidence({{1, 1, 2}, {100, 105, 110}, {false, false, false}, true, 80}) != TimeConfidence::High);
+  assert(choose_time_confidence({{1, 1, 1}, {100, 145, 180}, {false, false, false}, true, 80}) != TimeConfidence::Medium);
+  assert(choose_time_confidence({{1, 1, 1}, {100, 105, 110}, {false, false, false}, false, 0}) != TimeConfidence::High);
+  assert(choose_time_confidence({{1, 1, 1}, {100, 105, 110}, {false, false, false}, true, 15}) != TimeConfidence::High);
+  assert(choose_time_confidence({{1, 1, 1}, {100, 105, 110}, {false, true, false}, true, 80}) != TimeConfidence::High);
   return 0;
 }

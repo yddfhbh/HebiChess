@@ -1,8 +1,8 @@
 #pragma once
 
 #include <algorithm>
-#include <chrono>
-#include <cstdlib>
+#include <cmath>
+#include <vector>
 
 namespace hebichess {
 
@@ -11,40 +11,83 @@ struct TimeBudget {
   int hard_ms{0};
 };
 
-// Clock allocation is deliberately independent of the search so it can be
-// tested without waiting on a wall clock.
 inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
                                        bool unlimited = false) noexcept {
-  if (unlimited) return {5000, 15000};
+  if (unlimited) return {5000, 20000};
   remaining_ms = std::max(0, remaining_ms);
   increment_ms = std::max(0, increment_ms);
   const int safe_remaining = std::max(1, remaining_ms -
       std::max(20, remaining_ms / 10));
   int soft = remaining_ms / 100 + (increment_ms * 40) / 100;
-  soft = std::clamp(soft, 300, 8000);
+  soft = std::clamp(soft, 300, 5000);
   soft = std::min(soft, safe_remaining);
-  const int requested_hard = std::max(soft * 5 / 2, soft + 1500);
+  const int requested_hard = std::max(soft * 4, soft + 3000);
   return {soft, std::min({requested_hard, 20000, safe_remaining})};
 }
 
-struct SoftStopState {
-  int best_move_stability{0};
-  int score_swing{0};
-  int root_margin{0};
+enum class TimeConfidence { High, Medium, Low, VeryLow };
+
+struct TimeEvidence {
+  // These histories contain completed root iterations, newest last.
+  std::vector<int> best_move_history;
+  std::vector<int> score_history;
+  std::vector<bool> aspiration_retry_history;
   bool root_margin_known{false};
-  bool aspiration_retry{false};
+  int root_margin{0};
 };
 
-inline bool should_stop_at_soft_deadline(const SoftStopState& state,
-                                         bool soft_reached,
-                                         bool clear_choice_window = false) noexcept {
-  if (state.aspiration_retry) return false;
-  if (clear_choice_window && state.best_move_stability >= 4 &&
-      state.score_swing <= 15 && state.root_margin_known &&
-      state.root_margin >= 75) return true;
-  if (!soft_reached) return false;
-  return state.best_move_stability >= 2 && state.score_swing <= 20 &&
-      state.root_margin_known && state.root_margin >= 35;
+inline TimeConfidence choose_time_confidence(const TimeEvidence& evidence) noexcept {
+  const std::size_t n = evidence.best_move_history.size();
+  const std::size_t score_count = evidence.score_history.size();
+  const std::size_t recent = std::min<std::size_t>(3, n);
+  bool recent_move_change = false;
+  if (recent >= 2) {
+    for (std::size_t i = n - recent + 1; i < n; ++i)
+      recent_move_change |= evidence.best_move_history[i] != evidence.best_move_history[i - 1];
+  }
+  int swing = 0;
+  if (score_count >= 2) {
+    const std::size_t first = score_count - std::min<std::size_t>(3, score_count);
+    auto range = std::minmax_element(evidence.score_history.begin() + first,
+                                     evidence.score_history.end());
+    swing = *range.second - *range.first;
+  }
+  bool retry = false;
+  const std::size_t retry_count = evidence.aspiration_retry_history.size();
+  for (std::size_t i = retry_count - std::min<std::size_t>(3, retry_count);
+       i < retry_count; ++i) retry |= evidence.aspiration_retry_history[i];
+  const bool small_margin = evidence.root_margin_known && evidence.root_margin <= 20;
+  const bool very_low = (recent_move_change && swing >= 60) ||
+      (retry && (recent_move_change || swing >= 30 || small_margin)) ||
+      (swing >= 60 && small_margin);
+  if (very_low) return TimeConfidence::VeryLow;
+  if (recent_move_change || !evidence.root_margin_known ||
+      evidence.root_margin <= 35 || swing >= 35 || retry)
+    return TimeConfidence::Low;
+  const bool stable_moves = n >= 3 && !recent_move_change;
+  if (stable_moves && score_count >= 3 && swing <= 15 &&
+      evidence.root_margin_known && evidence.root_margin >= 75 && !retry)
+    return TimeConfidence::High;
+  if (n >= 3 && score_count >= 3 && swing <= 30 &&
+      evidence.root_margin_known && evidence.root_margin >= 40 && !retry)
+    return TimeConfidence::Medium;
+  return TimeConfidence::Low;
+}
+
+inline double time_multiplier(TimeConfidence confidence) noexcept {
+  switch (confidence) {
+    case TimeConfidence::High: return 1.0;
+    case TimeConfidence::Medium: return 1.5;
+    case TimeConfidence::Low: return 2.0;
+    case TimeConfidence::VeryLow: return 2.5;
+  }
+  return 2.0;
+}
+
+inline int adaptive_target_ms(int soft_ms, int hard_ms,
+                              TimeConfidence confidence) noexcept {
+  return std::min(hard_ms, std::max(0, static_cast<int>(std::ceil(
+      soft_ms * time_multiplier(confidence)))));
 }
 
 }  // namespace hebichess

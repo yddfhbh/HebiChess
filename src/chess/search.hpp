@@ -142,6 +142,17 @@ struct SearchResult {
   std::uint64_t aspiration_retries{0};
   std::uint64_t aspiration_fail_highs{0};
   std::uint64_t aspiration_fail_lows{0};
+  // Adaptive time-management telemetry, emitted by the normal UCI frontend.
+  int time_soft_ms{0};
+  int time_hard_ms{0};
+  int time_target_ms{0};
+  int time_elapsed_ms{0};
+  int time_stability{0};
+  int time_score_swing{0};
+  bool time_margin_known{false};
+  int time_margin{0};
+  std::string time_confidence{"low"};
+  std::string time_stop_reason{"depth"};
   std::vector<RootMoveInfo> root_moves{};
 };
 
