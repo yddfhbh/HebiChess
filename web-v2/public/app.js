@@ -995,6 +995,75 @@ function applyMoveToState(state, move) {
     return true;
 }
 
+function getSANDisambiguation(state, move, pieceType) {
+    var piece = state.board[move.fromRow][move.fromCol];
+    if (!piece || piece.toUpperCase() !== pieceType) return '';
+
+    var competitors = [];
+    for (var row = 0; row < 8; row++) for (var col = 0; col < 8; col++) {
+        if (row === move.fromRow && col === move.fromCol) continue;
+        var candidate = state.board[row][col];
+        if (!candidate || candidate !== piece) continue;
+        if (isLegalDestination(move.toRow, move.toCol, legalMovesForState(state, row, col))) {
+            competitors.push([row, col]);
+        }
+    }
+    if (competitors.length === 0) return '';
+
+    var sameFile = competitors.some(function(square) { return square[1] === move.fromCol; });
+    var sameRank = competitors.some(function(square) { return square[0] === move.fromRow; });
+    var files = 'abcdefgh', ranks = '87654321';
+    if (!sameFile) return files[move.fromCol];
+    if (!sameRank) return ranks[move.fromRow];
+    return files[move.fromCol] + ranks[move.fromRow];
+}
+
+function buildSAN(state, move) {
+    var piece = state.board[move.fromRow][move.fromCol];
+    if (!piece) return '';
+
+    var files = 'abcdefgh', ranks = '87654321';
+    var pieceType = piece.toUpperCase();
+    var target = state.board[move.toRow][move.toCol];
+    var isEnPassant = pieceType === 'P' && state.enPassantTarget &&
+        move.toRow === state.enPassantTarget[0] && move.toCol === state.enPassantTarget[1];
+    var isCapture = !!target || isEnPassant;
+    var notation;
+
+    if (pieceType === 'K' && Math.abs(move.toCol - move.fromCol) === 2) {
+        notation = move.toCol === 6 ? 'O-O' : 'O-O-O';
+    } else if (pieceType === 'P') {
+        notation = (isCapture ? files[move.fromCol] + 'x' : '') + files[move.toCol] + ranks[move.toRow];
+        if (move.toRow === 0 || move.toRow === 7) {
+            notation += '=' + (move.promotionPiece || getDefaultPromotionPiece(piece)).toUpperCase();
+        }
+    } else {
+        notation = pieceType + getSANDisambiguation(state, move, pieceType) +
+            (isCapture ? 'x' : '') + files[move.toCol] + ranks[move.toRow];
+    }
+
+    var nextState = {
+        board: cloneBoard(state.board),
+        castlingRights: cloneCastlingRights(state.castlingRights),
+        enPassantTarget: state.enPassantTarget ? state.enPassantTarget.slice() : null
+    };
+    if (!applyMoveToState(nextState, move)) return notation;
+    var opponent = opponentColor(pieceColor(piece));
+    if (isInCheck(nextState.board, opponent)) {
+        notation += hasAnyLegalMovesForState(nextState, opponent) ? '+' : '#';
+    }
+    return notation;
+}
+
+function hasAnyLegalMovesForState(state, color) {
+    for (var row = 0; row < 8; row++) for (var col = 0; col < 8; col++) {
+        if (state.board[row][col] && pieceColor(state.board[row][col]) === color && legalMovesForState(state, row, col).length > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function clearPremoveQueue() {
     premoveQueue = [];
 }
@@ -2274,9 +2343,11 @@ function executeMove(fromRow, fromCol, toRow, toCol, promotionPiece, options) {
     var moveOptions = options || {};
     var moveDurationMs = typeof moveOptions.forceDurationMs === 'number' ? moveOptions.forceDurationMs : (isUntimedFirstMove ? 0 : (turnStartedAt ? Math.max(0, Date.now() - turnStartedAt) : 0));
     var captured = board[toRow][toCol];
-    var moveNotation = '';
+    var moveNotation = buildSAN(createBoardStateSnapshot(), {
+        fromRow: fromRow, fromCol: fromCol, toRow: toRow, toCol: toCol,
+        promotionPiece: promotionPiece
+    });
     var isCapture = false;
-    var isCastle = false;
 
     if (captured) {
         isCapture = true;
@@ -2290,9 +2361,8 @@ function executeMove(fromRow, fromCol, toRow, toCol, promotionPiece, options) {
         isCapture = true;
     }
     if (piece.toUpperCase() === 'K' && Math.abs(toCol - fromCol) === 2) {
-        isCastle = true;
-        if (toCol === 6) { board[fromRow][5] = board[fromRow][7]; board[fromRow][7] = ''; moveNotation = 'O-O'; }
-        else { board[fromRow][3] = board[fromRow][0]; board[fromRow][0] = ''; moveNotation = 'O-O-O'; }
+        if (toCol === 6) { board[fromRow][5] = board[fromRow][7]; board[fromRow][7] = ''; }
+        else { board[fromRow][3] = board[fromRow][0]; board[fromRow][0] = ''; }
     }
     board[toRow][toCol] = piece;
     board[fromRow][fromCol] = '';
@@ -2315,14 +2385,6 @@ function executeMove(fromRow, fromCol, toRow, toCol, promotionPiece, options) {
     if (toRow === 0 && toCol === 7) castlingRights.k = false;
     if (toRow === 0 && toCol === 0) castlingRights.q = false;
 
-    if (!isCastle) {
-        var files = 'abcdefgh', ranks = '87654321';
-        var pType = piece.toUpperCase();
-        if (pType === 'P') { moveNotation = (isCapture ? files[fromCol] + 'x' : '') + files[toCol] + ranks[toRow]; }
-        else { moveNotation = pType + (isCapture ? 'x' : '') + files[toCol] + ranks[toRow]; }
-        if (promotionPiece) moveNotation += '=' + promotionPiece.toUpperCase();
-    }
-
     lastMoveFrom = [fromRow, fromCol]; lastMoveTo = [toRow, toCol];
     if (piece.toUpperCase() === 'P' || isCapture) halfMoveClock = 0; else halfMoveClock++;
     if (!gameSetting.unlimited && gameSetting.increment > 0 && !isUntimedFirstMove) {
@@ -2335,7 +2397,6 @@ function executeMove(fromRow, fromCol, toRow, toCol, promotionPiece, options) {
 
     var inCheck = isInCheck(board, currentTurn);
     var hasLegal = hasAnyLegalMoves(currentTurn);
-    if (inCheck) moveNotation += hasLegal ? '+' : '#';
     addMoveToHistory(moveNotation, color, moveDurationMs, clockAfterMove);
     playMoveSound();
 
@@ -2710,8 +2771,7 @@ function formatPGNEndTime(date) {
 }
 
 function getPGNEventTag() {
-    if (gameSetting.mode === 'ai') return 'Local Chess vs AI';
-    return 'Local Chess';
+    return 'JJUGLE Game';
 }
 
 function getPGNTerminationTag() {
@@ -2722,7 +2782,6 @@ function getPGNTerminationTag() {
 
 function buildPGN() {
     var startedAt = gameStartedAt || new Date();
-    var endedAt = gameEndedAt || startedAt;
     var result = finalGameResult || '*';
     var tags = [
         ['Event', getPGNEventTag()],
@@ -2732,9 +2791,7 @@ function buildPGN() {
         ['White', gameSetting.whiteName || 'White'],
         ['Black', gameSetting.blackName || 'Black'],
         ['Result', result],
-        ['TimeControl', formatTimeControlTag()],
-        ['Termination', getPGNTerminationTag()],
-        ['EndTime', formatPGNEndTime(endedAt)]
+        ['TimeControl', formatTimeControlTag()]
     ];
 
     var lines = tags.map(function(tag) {
@@ -2748,16 +2805,7 @@ function buildPGN() {
             moves.push((Math.floor(i / 2) + 1) + '.');
         }
 
-        var suffix = move.notation;
-        var annotations = [];
-        if (move.clockAfterMove !== null && move.clockAfterMove !== undefined) {
-            annotations.push('[%clk ' + formatPGNClockValue(move.clockAfterMove) + ']');
-        }
-        if (typeof move.durationMs === 'number') {
-            annotations.push('[%timestamp ' + formatPGNTimestamp(move.durationMs) + ']');
-        }
-        if (annotations.length > 0) suffix += ' {' + annotations.join('') + '}';
-        moves.push(suffix);
+        moves.push(move.notation);
     }
     moves.push(result);
 
