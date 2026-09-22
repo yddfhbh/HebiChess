@@ -25,6 +25,19 @@ int main() {
   assert(adaptive_target_ms(3000, 12000, TimeConfidence::Low) == 6000);
   assert(adaptive_target_ms(3000, 5000, TimeConfidence::VeryLow) == 5000);
 
+  assert(update_adaptive_target_floor(0, 3000, 12000,
+                                     TimeConfidence::High, false) == 0);
+  assert(update_adaptive_target_floor(0, 3000, 12000,
+                                     TimeConfidence::High, true) == 3000);
+  assert(update_adaptive_target_floor(0, 3000, 12000,
+                                     TimeConfidence::Medium, true) == 4500);
+  assert(update_adaptive_target_floor(0, 3000, 12000,
+                                     TimeConfidence::Low, true) == 6000);
+  assert(update_adaptive_target_floor(0, 3000, 12000,
+                                     TimeConfidence::VeryLow, true) == 7500);
+  assert(update_adaptive_target_floor(3000, 3000, 12000,
+                                     TimeConfidence::VeryLow, true) == 7500);
+
   assert(choose_time_confidence({{1, 1, 2}, {100, 105, 110}, {false, false, false}, true, 80}) != TimeConfidence::High);
   assert(choose_time_confidence({{1, 1, 1}, {100, 145, 180}, {false, false, false}, true, 80}) != TimeConfidence::Medium);
   assert(choose_time_confidence({{1, 1, 1}, {100, 105, 110}, {false, false, false}, false, 0}) != TimeConfidence::High);

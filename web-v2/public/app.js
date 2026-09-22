@@ -190,6 +190,11 @@ function initEngine() {
                 var line = e.data;
                 // console.log('SF:', line); // 디버그용
 
+                if (typeof line === 'string' &&
+                    line.startsWith('info string tm ')) {
+                    console.debug('[JJUGLE TM]', line);
+                }
+
                 if (line === 'uciok') {
                     engineReady = true;
                     jjugleWorker.postMessage('isready');

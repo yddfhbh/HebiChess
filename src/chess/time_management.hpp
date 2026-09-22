@@ -90,4 +90,12 @@ inline int adaptive_target_ms(int soft_ms, int hard_ms,
       soft_ms * time_multiplier(confidence)))));
 }
 
+inline int update_adaptive_target_floor(int current_floor_ms, int soft_ms,
+                                        int hard_ms, TimeConfidence confidence,
+                                        bool evidence_ready) noexcept {
+  if (!evidence_ready) return current_floor_ms;
+  return std::max(current_floor_ms,
+                  adaptive_target_ms(soft_ms, hard_ms, confidence));
+}
+
 }  // namespace hebichess

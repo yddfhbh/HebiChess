@@ -1634,7 +1634,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   std::vector<int> best_move_history;
   std::vector<int> score_history;
   std::vector<bool> aspiration_retry_history;
-  int target_floor_ms = result.time_target_ms;
+  int target_floor_ms = 0;
   auto move_key = [](const Move& move) {
     return static_cast<int>(move.from.index()) * 64 + move.to.index();
   };
@@ -1810,9 +1810,17 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     const int elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
     const int soft_ms = limits.has_soft_deadline ? static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.soft_deadline - search_started).count()) : 0;
     const int hard_ms = limits.has_deadline ? static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.deadline - search_started).count()) : 0;
+    const bool confidence_evidence_ready = best_move_history.size() >= 3 &&
+        score_history.size() >= 3;
+    if (limits.has_soft_deadline) {
+      target_floor_ms = update_adaptive_target_floor(
+          target_floor_ms, soft_ms, hard_ms, confidence,
+          confidence_evidence_ready);
+    }
     const int target_ms = limits.has_soft_deadline
-        ? (target_floor_ms = std::max(target_floor_ms,
-              adaptive_target_ms(soft_ms, hard_ms, confidence)))
+        ? (confidence_evidence_ready
+            ? target_floor_ms
+            : adaptive_target_ms(soft_ms, hard_ms, TimeConfidence::Low))
         : 0;
     result.time_soft_ms = soft_ms;
     result.time_hard_ms = hard_ms;
