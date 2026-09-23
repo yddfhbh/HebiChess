@@ -39,6 +39,11 @@ struct RootMoveInfo {
   Move move{};
   int search_score{0};
   ScoreBound bound{ScoreBound::Exact};
+  // The actual window used to search this root move.  This is root-result
+  // metadata for diagnostics and regression tests; it is never searched on.
+  int search_alpha{-MATE_SCORE};
+  int search_beta{MATE_SCORE};
+  bool pvs_full_research{false};
   // A threshold proof is sufficient for style selection, but is not an exact
   // minimax score.  Keep that distinction explicit for callers.
   bool style_safe{false};

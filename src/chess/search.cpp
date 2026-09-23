@@ -1824,8 +1824,11 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                                          *child_accumulator, context, false);
         }
         const UndoState undo = root.make_move(move);
+        const int search_alpha = alpha;
+        const int search_beta = beta;
         int score = 0;
         const bool zero_window = limits.use_pvs && move_index > 0;
+        bool pvs_full_research = false;
         ScoreBound bound = ScoreBound::Exact;
         if (zero_window) {
           ++result.pvs_zero_window_searches;
@@ -1833,6 +1836,11 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           if (!context.stopped && score > alpha && score < beta) {
             ++result.pvs_researches;
             score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context, child);
+            pvs_full_research = true;
+            // A completed full re-search supersedes the zero-window bound.
+            // Classify it against the window that was actually searched.
+            if (score <= search_alpha) bound = ScoreBound::Upper;
+            else if (score >= search_beta) bound = ScoreBound::Lower;
           } else if (score <= alpha) {
             bound = ScoreBound::Upper;
           } else {
@@ -1840,11 +1848,18 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           }
         } else {
           score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context, child);
-          if (score >= beta) bound = ScoreBound::Lower;
+          // The first root move is normally searched with a full window.  A
+          // fail-low must not become Exact simply because alpha is unchanged.
+          if (score <= search_alpha) bound = ScoreBound::Upper;
+          else if (score >= search_beta) bound = ScoreBound::Lower;
         }
         root.unmake_move(move, undo);
         if (context.stopped) break;
         current.push_back({move, score, bound});
+        RootMoveInfo& root_info = current.back();
+        root_info.search_alpha = search_alpha;
+        root_info.search_beta = search_beta;
+        root_info.pvs_full_research = pvs_full_research;
         best_score = std::max(best_score, score);
         alpha = std::max(alpha, score);
       }

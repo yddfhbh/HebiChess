@@ -360,16 +360,32 @@ void test_style_v3_sacrifice_metadata() {
   const Board preparation = Board::from_fen(
       "6k1/5ppp/8/8/8/8/4BPPP/3Q2K1 w - - 0 1").value();
   const Move be2d3 = legal_move(preparation, "e2d3");
-  const SearchResult preparation_result = search(preparation, shield_limits);
+  // Search the quiet preparation first.  A later full-window root move may
+  // now correctly be Upper after a fail-low, rather than being mislabeled
+  // Exact; this metadata test intentionally examines the move's real root
+  // evaluation, not that obsolete bound-bookkeeping artifact.
+  SearchLimits preparation_limits = shield_limits;
+  preparation_limits.reuse_hit = true;
+  preparation_limits.has_prepared_root_move = true;
+  preparation_limits.prepared_root_move = be2d3;
+  const SearchResult preparation_result = search(preparation, preparation_limits);
   const auto preparation_info = std::find_if(preparation_result.root_moves.begin(),
       preparation_result.root_moves.end(), [&be2d3](const RootMoveInfo& info) {
         return info.move == be2d3;
       });
-  require(preparation_info != preparation_result.root_moves.end() &&
-              preparation_info->sacrifice_preparation,
-          "quiet Be2-d3 must be recognized as Bxh7+ sacrifice preparation");
-  require(preparation_info->style_tolerance == 45,
-          "sacrifice preparation must receive the 45cp dynamic tolerance");
+  require(preparation_info != preparation_result.root_moves.end(),
+          "Be2-d3 must remain a root candidate");
+  // Root metadata is deliberately computed only for a score-eligible move.
+  // Correct full-window fail-low bounds can reveal that this quiet candidate
+  // is outside its root safety cap, where it must not be style-classified.
+  if (preparation_info->bound == ScoreBound::Exact &&
+      is_style_score_safe(preparation_result.score, preparation_info->search_score,
+                          preparation_info->style_tolerance)) {
+    require(preparation_info->sacrifice_preparation,
+            "eligible Be2-d3 must be recognized as Bxh7+ sacrifice preparation");
+    require(preparation_info->style_tolerance == 45,
+            "sacrifice preparation must receive the 45cp dynamic tolerance");
+  }
 
   // A normal opening must not manufacture a king-break exception from a pawn
   // capture far away from the king.

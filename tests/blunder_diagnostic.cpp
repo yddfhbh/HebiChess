@@ -31,6 +31,8 @@ struct Options {
   std::optional<std::filesystem::path> output;
   int depth{8};
   EvalMode trace_mode{EvalMode::NNUE};
+  std::optional<std::string> prepared_root;
+  std::optional<int> reuse_previous_depth;
   bool use_tt{true};
   bool use_null_move{true};
   bool use_lmr{true};
@@ -107,6 +109,11 @@ Options parse_options(int argc, char* argv[]) {
     else if (flag == "--network") options.network = next(index, "--network");
     else if (flag == "--output") options.output = next(index, "--output");
     else if (flag == "--depth") options.depth = parse_positive(next(index, "--depth"), "--depth");
+    else if (flag == "--prepared-root") options.prepared_root = next(index, "--prepared-root");
+    else if (flag == "--reuse-previous-depth") {
+      options.reuse_previous_depth = parse_positive(
+          next(index, "--reuse-previous-depth"), "--reuse-previous-depth");
+    }
     else if (flag == "--command") {
       const std::string command = next(index, "--command");
       if (command == "trace") options.command = Command::Trace;
@@ -131,6 +138,7 @@ Options parse_options(int argc, char* argv[]) {
     } else if (flag == "--help") {
       std::cout << "Usage: HebiChessBlunderDiagnostic --fen <FEN> [--network model.hebinnue]"
                    " [--command trace|sweep|compare|static] [--depth N] [--eval nnue|hce]"
+                   " [--prepared-root uci --reuse-previous-depth N]"
                    " [--disable CONTROL] [--output result.json]\\n";
       std::exit(0);
     } else {
@@ -138,10 +146,12 @@ Options parse_options(int argc, char* argv[]) {
     }
   }
   if (options.fen.empty()) throw std::runtime_error("--fen is required");
+  if (options.prepared_root.has_value() != options.reuse_previous_depth.has_value())
+    throw std::runtime_error("--prepared-root and --reuse-previous-depth must be supplied together");
   return options;
 }
 
-SearchLimits make_limits(const Options& options, EvalMode mode, int depth,
+SearchLimits make_limits(const Board& board, const Options& options, EvalMode mode, int depth,
                          bool use_root_style_selection) {
   SearchLimits limits;
   limits.max_depth = depth;
@@ -153,6 +163,17 @@ SearchLimits make_limits(const Options& options, EvalMode mode, int depth,
   limits.use_pvs = options.use_pvs;
   limits.use_see_pruning = options.use_see_pruning;
   limits.use_aspiration = options.use_aspiration;
+  if (options.prepared_root) {
+    const auto move = parse_uci_move(board, *options.prepared_root);
+    if (!move) throw std::runtime_error("--prepared-root is not a legal root move: " +
+                                        *options.prepared_root);
+    // Deliberately diagnostic-only injection.  The production UCI path does
+    // not parse these options and never reaches this code.
+    limits.reuse_hit = true;
+    limits.has_prepared_root_move = true;
+    limits.prepared_root_move = *move;
+    limits.reuse_previous_depth = *options.reuse_previous_depth;
+  }
   // No deadline or soft deadline is ever configured in this harness.
   return limits;
 }
@@ -161,7 +182,7 @@ SearchResult run_search(const Board& board, const Options& options, EvalMode mod
                         int depth, bool use_root_style_selection) {
   clear_transposition_table();
   clear_search_heuristics();
-  return search(board, make_limits(options, mode, depth, use_root_style_selection));
+  return search(board, make_limits(board, options, mode, depth, use_root_style_selection));
 }
 
 const RootMoveInfo* objective_root(const SearchResult& result) {
@@ -197,7 +218,10 @@ void write_root_candidates(std::ostream& out, const Board& board, const SearchRe
     out << "{\"move\":\"" << json_escape(move_to_uci(item.move))
         << "\",\"search_score_cp\":" << item.search_score
         << ",\"bound\":\"" << bound_name(item.bound)
-        << "\",\"style_score\":" << item.style_score
+        << "\",\"search_alpha_cp\":" << item.search_alpha
+        << ",\"search_beta_cp\":" << item.search_beta
+        << ",\"pvs_full_research\":" << (item.pvs_full_research ? "true" : "false")
+        << ",\"style_score\":" << item.style_score
         << ",\"style_safe\":" << (item.style_safe ? "true" : "false")
         << ",\"style_tolerance_cp\":" << item.style_tolerance
         << ",\"verification\":\"" << proof_name(item.style_proof)
@@ -214,7 +238,10 @@ void write_search_record(std::ostream& out, const Board& board, const SearchResu
       << ",\"elapsed_ms\":" << result.time_elapsed_ms
       << ",\"nodes\":" << result.nodes
       << ",\"qnodes\":" << result.qnodes
-      << ",\"nps\":" << (result.time_elapsed_ms > 0
+      << ",\"aspiration_retries\":" << result.aspiration_retries
+      << ",\"root_move_ordering_first\":\""
+      << json_escape(result.root_moves.empty() ? "none" : move_to_uci(result.root_moves.front().move))
+      << "\",\"nps\":" << (result.time_elapsed_ms > 0
           ? result.nodes * 1000 / static_cast<std::uint64_t>(result.time_elapsed_ms) : 0)
       << ",\"stop_reason\":\"" << json_escape(result.time_stop_reason)
       << "\",\"pv\":" << pv_json(result.principal_variation)
@@ -232,6 +259,19 @@ std::string controls_json(const Options& options) {
       << ",\"see_pruning\":" << (options.use_see_pruning ? "true" : "false")
       << ",\"aspiration\":" << (options.use_aspiration ? "true" : "false") << '}';
   return out.str();
+}
+
+std::string reuse_json(const Options& options, const SearchResult& result) {
+  std::ostringstream out;
+  out << "{\"reuse_hit\":" << (result.reuse_hit ? "true" : "false")
+      << ",\"has_prepared_root_move\":" << (options.prepared_root ? "true" : "false")
+      << ",\"prepared_root_move\":";
+  if (options.prepared_root) out << '"' << json_escape(*options.prepared_root) << '"';
+  else out << "null";
+  out << ",\"reuse_previous_depth\":";
+  if (options.reuse_previous_depth) out << *options.reuse_previous_depth;
+  else out << "null";
+  return out.str() + '}';
 }
 
 std::string trace_json(const Board& board, const Options& options) {
@@ -253,7 +293,8 @@ std::string trace_json(const Board& board, const Options& options) {
       << ",\"style_loss_score_is_bound\":"
       << (selected != nullptr && selected->bound != ScoreBound::Exact ? "true" : "false")
       << ",\"diagnostic_failure\":" << (loss > 50 ? "true" : "false")
-      << ",\"search_controls\":" << controls_json(options) << ',';
+      << ",\"search_controls\":" << controls_json(options)
+      << ",\"reuse_state\":" << reuse_json(options, result) << ',';
   const std::string record = [&] { std::ostringstream value; write_search_record(value, board, result); return value.str(); }();
   // Keep the required trace fields top-level while sharing the record writer.
   out << record.substr(1);

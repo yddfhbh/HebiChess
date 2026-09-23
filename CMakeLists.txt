@@ -242,6 +242,16 @@ target_compile_definitions(HebiChessBlunderDiagnostic PRIVATE
   HEBICHESS_BLUNDER_DIAGNOSTIC=1
 )
 
+add_executable(HebiChessBlunderDiagnosticRegression
+  tests/blunder_diagnostic_regression.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessBlunderDiagnosticRegression PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessBlunderDiagnosticRegression)
+target_compile_definitions(HebiChessBlunderDiagnosticRegression PRIVATE
+  HEBICHESS_BLUNDER_DIAGNOSTIC=1
+)
+
 # Search-level H1 A/B targets.  These deliberately share the complete
 # production QSearch configuration; only the compile-time hidden1 loop width
 # differs.  Keep these as direct-search harnesses rather than engine targets.
@@ -454,6 +464,14 @@ add_qsearch_strength_variant(HebiChessStrengthCurrent 0 0 1)
 add_qsearch_strength_variant(HebiChessStrengthNoDeltaQtt 2 7 0)
 
 enable_testing()
+set(HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK
+    "${CMAKE_SOURCE_DIR}/hebinnue-v3-4c815d54bc6c9fbf.hebinnue" CACHE FILEPATH
+    "Optional frozen NNUE network for the local blunder diagnostic regression")
+if(EXISTS "${HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK}")
+  add_test(NAME chess_blunder_diagnostic_reuse_regression
+    COMMAND HebiChessBlunderDiagnosticRegression
+      --network "${HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK}")
+endif()
 add_test(
   NAME smoke
   COMMAND ${CMAKE_COMMAND}
