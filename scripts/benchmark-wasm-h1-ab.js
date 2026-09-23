@@ -137,6 +137,8 @@ function parseSearch(lines) {
   const final = info.at(-1);
   const tm = lines.find(line => line.startsWith('info string tm ')) || '';
   const stats = lines.find(line => line.startsWith('info string nodes ')) || '';
+  const qprofile = lines.find(line => line.startsWith('info string qprofile ')) || '';
+  const qMaxPly = parseField(qprofile, 'max_qply');
   return {
     bestmove: bestmoves.length === 1 ? bestmoves[0].split(/\s+/)[1] : null,
     bestmove_count: bestmoves.length,
@@ -146,9 +148,20 @@ function parseSearch(lines) {
     qnodes: parseField(stats, 'qnodes') ?? (final ? Number(final[5]) : 0),
     nps: parseField(tm, 'nps'),
     elapsed_ms: parseField(tm, 'elapsed'),
+    // Extract existing engine telemetry outside WASM so production search
+    // timing does not gain any instrumentation cost.
+    q_max_ply: qMaxPly,
+    telemetry_ok: qMaxPly !== null,
     errors,
     protocol_ok: bestmoves.length === 1 && Boolean(final) && errors.length === 0
   };
+}
+
+function maxQMaxPly(records, variant) {
+  return records.reduce((maximum, row) => {
+    const value = row[variant].q_max_ply;
+    return value === null ? maximum : Math.max(maximum, value);
+  }, 0);
 }
 
 function runSearch(module, variant, position, kind, go) {
@@ -251,6 +264,24 @@ async function main() {
     fixedTimePairs.map(pair => pair.h1_8), 'fixed_time');
   const fixedTimeProtocolFailures = fixedTime.records.filter(row =>
     !row.h1_4.protocol_ok || !row.h1_8.protocol_ok).map(row => row.name);
+  const qMaxPlyTelemetryFailures = [...fixedDepth.records, ...fixedTime.records]
+    .filter(row => !row.h1_4.telemetry_ok || !row.h1_8.telemetry_ok)
+    .map(row => row.name);
+  const qMaxPly = {
+    max_search_ply_limit: 128,
+    fixed_depth: {
+      h1_4: maxQMaxPly(fixedDepth.records, 'h1_4'),
+      h1_8: maxQMaxPly(fixedDepth.records, 'h1_8')
+    },
+    fixed_time: {
+      h1_4: maxQMaxPly(fixedTime.records, 'h1_4'),
+      h1_8: maxQMaxPly(fixedTime.records, 'h1_8')
+    }
+  };
+  qMaxPly.overall = {
+    h1_4: Math.max(qMaxPly.fixed_depth.h1_4, qMaxPly.fixed_time.h1_4),
+    h1_8: Math.max(qMaxPly.fixed_depth.h1_8, qMaxPly.fixed_time.h1_8)
+  };
 
   const report = {
     schema: 'hebichess-wasm-h1-ab-v1',
@@ -259,7 +290,8 @@ async function main() {
     // visible in the report, while fixed-depth parity (and valid UCI output
     // from both runs) is the correctness gate.
     status: rawMismatches.length === 0 && roundedMismatches.length === 0 &&
-      fixedDepth.mismatches.length === 0 && fixedTimeProtocolFailures.length === 0 ? 'PASS' : 'FAIL',
+      fixedDepth.mismatches.length === 0 && fixedTimeProtocolFailures.length === 0 &&
+      qMaxPlyTelemetryFailures.length === 0 ? 'PASS' : 'FAIL',
     configuration: {
       network: networkPath, network_sha256: networkSha256, corpus: corpusPath, search_fixture: fixturePath,
       depth, fixed_time_ms: timeMs, evaluator_repeats: evalRepeats,
@@ -274,12 +306,14 @@ async function main() {
         rounded_cp_mismatch_count: roundedMismatches.length, mismatches: rawMismatches }
     },
     evaluator_microbench: { h1_4: micro4, h1_8: micro8 },
+    depth_safety: { q_max_ply: qMaxPly, telemetry_failures: qMaxPlyTelemetryFailures },
     search: { fixed_depth: fixedDepth, fixed_time: { ...fixedTime, protocol_failures: fixedTimeProtocolFailures } }
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(report, null, 2) + '\n');
   console.log(JSON.stringify({ status: report.status, output: outputPath, correctness: report.correctness,
     evaluator_microbench: report.evaluator_microbench,
+    depth_safety: report.depth_safety,
     fixed_depth_mismatches: fixedDepth.mismatches, fixed_time_mismatches: fixedTime.mismatches }, null, 2));
   if (report.status !== 'PASS') process.exitCode = 1;
 }

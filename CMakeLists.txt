@@ -37,6 +37,15 @@ apply_hebichess_production_qsearch(HebiChess)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 set(HEBICHESS_WASM_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/web/public/engine" CACHE PATH "Output directory for the browser WebAssembly engine")
+# Keep the WASM memory contract in one place. All browser, Node-test, and H1
+# A/B artifacts use the same explicit stack reservation, preventing a stack
+# configuration difference from contaminating an A/B result.
+set(HEBICHESS_WASM_INITIAL_MEMORY 201326592)
+set(HEBICHESS_WASM_MAXIMUM_MEMORY 402653184)
+set(HEBICHESS_WASM_STACK_SIZE 2097152 CACHE STRING
+    "WebAssembly stack size in bytes for every HebiChess WASM engine")
+set(HEBICHESS_WASM_COMMON_LINK_FLAGS
+    "-sINITIAL_MEMORY=${HEBICHESS_WASM_INITIAL_MEMORY} -sMAXIMUM_MEMORY=${HEBICHESS_WASM_MAXIMUM_MEMORY} -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=${HEBICHESS_WASM_STACK_SIZE}")
 if(HEBICHESS_BUILD_WASM)
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "HEBICHESS_BUILD_WASM requires Emscripten (configure with emcmake cmake)")
@@ -49,7 +58,7 @@ if(HEBICHESS_BUILD_WASM)
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_OUTPUT_DIR}"
     SUFFIX ".js"
-  LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessModule -sENVIRONMENT=web,worker -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
+  LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessModule -sENVIRONMENT=web,worker -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
   )
 endif()
 
@@ -66,7 +75,7 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
     OUTPUT_NAME hebichess-node
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/node-test"
     SUFFIX ".js"
-  LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
+  LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
   )
 endif()
 
@@ -85,7 +94,7 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "HEBICHESS_BUILD_WASM_H1_AB requires Emscripten (configure with emcmake cmake)")
   endif()
-  set(HEBICHESS_WASM_H1_AB_LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessWasmH1BenchmarkModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_nnue_benchmark_fens','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  set(HEBICHESS_WASM_H1_AB_LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessWasmH1BenchmarkModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_nnue_benchmark_fens','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
   set(HEBICHESS_WASM_H1_AB_DIAGNOSTIC_LINK_FLAGS "")
   if(HEBICHESS_BUILD_WASM_H1_AB_DIAGNOSTIC)
     # Keep these checks out of every production artifact.  Both A/B variants

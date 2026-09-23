@@ -14,6 +14,12 @@ exported functions, production QSearch definitions, `HEBICHESS_QSEARCH_LAZY_CHEC
 and NNUE/network format. The sole variant-specific compile definition is
 `HEBICHESS_NNUE_HIDDEN1_VARIANT=4` or `=8`.
 
+All WASM engines share the CMake `HEBICHESS_WASM_COMMON_LINK_FLAGS` contract:
+`INITIAL_MEMORY=201326592`, `MAXIMUM_MEMORY=402653184`,
+`ALLOW_MEMORY_GROWTH=1`, and `STACK_SIZE=2097152` (2 MiB). The production
+browser target, Node test target, and both H1 artifacts therefore cannot drift
+in stack sizing.
+
 `hebichess_nnue_benchmark_fens` is exported only from these test artifacts. It
 runs the timed evaluator loops inside WASM: existing-accumulator evaluation and
 incremental update plus evaluation. It is not exported from the browser
@@ -33,13 +39,20 @@ node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-1
 
 The default run uses the tracked 100-FEN raw NNUE corpus, the tracked 10-FEN
 search fixture, fixed depth 5, fixed time 1000 ms, and 32 evaluator repeats.
-For a longer Windows-only evaluator sample, pass `--eval-repeats 128`.
+Run the full Windows acceptance twice with the required 128 evaluator repeats
+and both orders:
+
+```bat
+node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --depth 5 --time-ms 1000 --eval-repeats 128 --order h1-4-first --output runs\wasm-h1-ab-h1-4-first.json
+node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --depth 5 --time-ms 1000 --eval-repeats 128 --order h1-8-first --output runs\wasm-h1-ab-h1-8-first.json
+```
 
 ## Stack-overflow diagnosis
 
 The test-only diagnostic artifact adds `-sASSERTIONS=2` and
 `-sSTACK_OVERFLOW_CHECK=2`; browser production and the ordinary Node test
-artifact never receive these flags.  Build it into a separate output directory
+artifact never receive these diagnostic flags. It still uses the common
+explicit 2 MiB stack. Build it into a separate output directory
 so it cannot be mistaken for an ordinary A/B measurement:
 
 ```bat
@@ -56,6 +69,18 @@ to an exact variant, search mode, and position. `--order h1-4-first` (default)
 or `--order h1-8-first` reverses measurement order while retaining the actual
 artifact-to-`h1_4`/`h1_8` mapping in JSON.
 
+## Production artifact stack validation
+
+Production remains H1=4. Build its browser target with verbose output and
+confirm the final `HebiChessWasm` link command contains
+`-sSTACK_SIZE=2097152`:
+
+```bat
+call %EMSDK%\emsdk_env.bat
+emcmake cmake -S . -B build-wasm-production -DCMAKE_BUILD_TYPE=Release -DHEBICHESS_BUILD_WASM=ON
+cmake --build build-wasm-production --config Release --target HebiChessWasm --verbose
+```
+
 ## Output format
 
 `runs/wasm-h1-ab.json` has schema `hebichess-wasm-h1-ab-v1` and contains:
@@ -65,6 +90,11 @@ artifact-to-`h1_4`/`h1_8` mapping in JSON.
 - `evaluator_microbench.h1_4` and `.h1_8`: positions, transitions, repeats, and the two microseconds-per-evaluation metrics.
 - `search.fixed_depth.records`: per-position best move, score, completed depth, nodes, qnodes, NPS, and duplicate-bestmove/protocol status. This is the pass/fail search parity gate.
 - `search.fixed_time.records`: the same per-position fields for the 1000 ms performance sample. Node count and completed depth are intentionally reported rather than required to match.
+- `search.*.records.*.q_max_ply`: the maximum qsearch ply from the engine's
+  existing `SearchResult` telemetry for that search.
+- `depth_safety.q_max_ply`: per-variant maxima for fixed-depth, fixed-time,
+  and the selected fixture overall, alongside `max_search_ply_limit=128`.
+  A missing telemetry value is a failing regression result.
 
 The process exits nonzero for raw or rounded NNUE parity failure, NNUE
 hard-fail regression, malformed/duplicate bestmove output, or a fixed-depth
