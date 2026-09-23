@@ -457,7 +457,13 @@ void UciEngine::send_command(const std::string& line) {
              << " fused_check_metadata " << result.q_fused_check_metadata_moves
              << " fused_avoided_make_unmake " << result.q_fused_avoided_check_make_unmake
              << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
-             << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
+             << " tactical_movegen_calls " << result.q_tactical_movegen_calls
+             << " qsearch_total_us " << result.qsearch_total_time_us
+             << " movegen_us " << result.q_movegen_time_us
+             << " ordering_us " << result.q_order_time_us
+             << " vector_allocations " << result.q_vector_allocations
+             << " vector_reallocations " << result.q_vector_reallocations
+             << " vector_allocated_bytes " << result.q_vector_allocated_bytes;
     emit(qprofile.str());
 #else
     std::ostringstream strength;

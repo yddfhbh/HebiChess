@@ -12,6 +12,7 @@
 
 #include "chess/movegen.hpp"
 #include "chess/nnue.hpp"
+#include "chess/search.hpp"
 #include "chess/uci_engine.hpp"
 #include "chess/game_state.hpp"
 
@@ -158,6 +159,23 @@ const char* hebichess_nnue_evaluate_fen_raw(const char* fen) {
   if (!score) { output = "error NNUE unavailable"; return output.c_str(); }
   std::ostringstream value;
   value << std::setprecision(std::numeric_limits<float>::max_digits10) << *score;
+  output = value.str();
+  return output.c_str();
+}
+
+const char* hebichess_qsearch_move_buffer_layout() {
+  const hebichess::QsearchMoveBufferLayout layout = hebichess::qsearch_move_buffer_layout();
+  std::ostringstream value;
+  value << "{\"sizeof_move\":" << layout.move_size
+        << ",\"sizeof_ordered_move\":" << layout.ordered_move_size
+        << ",\"sizeof_fixed_move_list\":" << layout.fixed_move_list_size
+        << ",\"sizeof_fixed_ordered_move_list\":" << layout.fixed_ordered_move_list_size
+        << ",\"simultaneously_live_buffer_bytes\":" << layout.simultaneously_live_buffer_bytes
+        << ",\"fixed_move_list_enabled\":"
+        << (layout.fixed_move_list_enabled ? "true" : "false")
+        << ",\"fixed_and_ordered_buffers_simultaneously_live\":"
+        << (layout.fixed_and_ordered_buffers_simultaneously_live ? "true" : "false")
+        << '}';
   output = value.str();
   return output.c_str();
 }

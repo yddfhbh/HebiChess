@@ -92,7 +92,15 @@ struct SearchResult {
   std::uint64_t qsearch_total_time_us{0};
   std::uint64_t q_movegen_time_us{0};
   std::uint64_t q_order_time_us{0};
+  std::uint64_t q_pseudo_movegen_time_us{0};
+  std::uint64_t q_legal_filter_time_us{0};
+  std::uint64_t q_ordered_move_construction_time_us{0};
   std::uint64_t q_sort_time_us{0};
+  std::uint64_t q_vector_allocations{0};
+  std::uint64_t q_vector_reallocations{0};
+  std::uint64_t q_vector_allocated_bytes{0};
+  std::uint64_t q_max_tactical_moves{0};
+  std::uint64_t q_max_evasion_moves{0};
   std::uint64_t q_gives_check_time_us{0};
   std::uint64_t q_see_time_us{0};
   std::uint64_t q_nnue_evaluate_time_us{0};
@@ -206,6 +214,21 @@ struct SearchResult {
   int reuse_prepared_depth{0};
   std::vector<RootMoveInfo> root_moves{};
 };
+
+// Compile-time layout facts for the fixed QSearch move-buffer experiment.
+// They are surfaced by benchmark harnesses so stack acceptance can be based on
+// the exact compiler target rather than a source-level estimate.
+struct QsearchMoveBufferLayout {
+  std::uint64_t move_size{0};
+  std::uint64_t ordered_move_size{0};
+  std::uint64_t fixed_move_list_size{0};
+  std::uint64_t fixed_ordered_move_list_size{0};
+  std::uint64_t simultaneously_live_buffer_bytes{0};
+  bool fixed_move_list_enabled{false};
+  bool fixed_and_ordered_buffers_simultaneously_live{false};
+};
+
+QsearchMoveBufferLayout qsearch_move_buffer_layout() noexcept;
 
 struct SearchLimits {
   int max_depth{1};

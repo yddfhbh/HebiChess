@@ -26,6 +26,55 @@ bool child_gives_check(Board& board, const Move& move) {
   return result;
 }
 
+std::vector<Move> as_vector(const FixedMoveList& moves) {
+  return {moves.begin(), moves.end()};
+}
+
+void assert_fixed_lists_match_vectors(const char* fen) {
+  auto board = Board::from_fen(fen).value();
+
+  FixedMoveList fixed_full;
+  generate_pseudo_legal_moves(board, fixed_full);
+  assert(as_vector(fixed_full) == generate_pseudo_legal_moves(board));
+  Board fixed_full_board = board;
+  filter_legal_moves_in_place(fixed_full_board, fixed_full);
+  Board vector_full_board = board;
+  assert(as_vector(fixed_full) == generate_legal_moves(vector_full_board));
+
+  FixedMoveList fixed_tactical;
+  generate_pseudo_legal_tactical_moves(board, fixed_tactical);
+  assert(as_vector(fixed_tactical) == generate_pseudo_legal_tactical_moves(board));
+  Board fixed_tactical_board = board;
+  filter_legal_moves_in_place(fixed_tactical_board, fixed_tactical);
+  Board vector_tactical_board = board;
+  assert(as_vector(fixed_tactical) == generate_legal_tactical_moves(vector_tactical_board));
+}
+
+void test_fixed_move_buffers() {
+  // Promotions, promotion captures, en passant/discovered check, double-check
+  // evasions, pinned captures, and king capture/evasion all preserve the exact
+  // established vector order after in-place legality filtering.
+  for (const char* fen : {
+           "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+           "1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+           "4k3/8/8/3pP3/8/8/8/4R1K1 w - d6 0 1",
+           "4k3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+           "4r2k/8/8/8/1b6/8/4K3/8 w - - 0 1",
+           "4k3/8/8/8/8/8/3r4/4K3 w - - 0 1",
+           "k7/8/1Q1Q1Q2/1Q1Q1Q2/1Q1Q1Q2/8/8/7K w - - 0 1",
+       }) {
+    assert_fixed_lists_match_vectors(fen);
+  }
+
+  // Nine queens are legal after all eight pawns promote.  This is a deliberately
+  // dense near-maximum move fixture, rather than an arbitrary small capacity.
+  const auto dense = Board::from_fen(
+      "k7/8/1Q1Q1Q2/1Q1Q1Q2/1Q1Q1Q2/8/8/7K w - - 0 1").value();
+  Board dense_copy = dense;
+  assert(generate_legal_moves(dense_copy).size() > 100);
+  assert(kMaxPseudoLegalMoves == 416);
+}
+
 void test_fused_legal_check_metadata() {
   // Includes discovered, en-passant discovered, promotion, capture-check,
   // check-evasion, and pinned tactical positions.  Every fused item is
@@ -141,4 +190,5 @@ int main() {
   test_pawns_and_special_moves();
   test_castling_and_attacks();
   test_fused_legal_check_metadata();
+  test_fixed_move_buffers();
 }

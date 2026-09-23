@@ -168,6 +168,53 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
   endif()
 endif()
 
+# Move-buffer acceptance artifacts.  These are deliberately separate from the
+# browser engine and the H1 experiment: both use production H1=8/QSearch/QTT
+# settings and differ only in the QSearch move-list storage implementation.
+option(HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB
+       "Build Node-compatible fixed-vector versus fixed-buffer QSearch WASM engines" OFF)
+option(HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB_DIAGNOSTIC
+       "Add Emscripten stack checks to test-only move-buffer WASM A/B artifacts" OFF)
+option(HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB_PROFILE
+       "Add QSearch timing/allocation telemetry to move-buffer WASM A/B artifacts" OFF)
+set(HEBICHESS_WASM_MOVE_BUFFER_AB_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build-wasm/move-buffer-ab" CACHE PATH
+    "Output directory for Node-compatible QSearch move-buffer WASM A/B engines")
+if(HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB requires Emscripten (configure with emcmake cmake)")
+  endif()
+  set(HEBICHESS_WASM_MOVE_BUFFER_AB_LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessWasmMoveBufferBenchmarkModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_qsearch_move_buffer_layout','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  set(HEBICHESS_WASM_MOVE_BUFFER_AB_DIAGNOSTIC_LINK_FLAGS "")
+  if(HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB_DIAGNOSTIC)
+    set(HEBICHESS_WASM_MOVE_BUFFER_AB_DIAGNOSTIC_LINK_FLAGS
+        "-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2")
+  endif()
+  function(add_hebichess_wasm_move_buffer_ab target fixed)
+    add_executable(${target} src/wasm_bridge.cpp ${CHESS_SOURCES})
+    target_include_directories(${target} PRIVATE src)
+    apply_hebichess_production_nnue_search(${target})
+    target_compile_definitions(${target} PRIVATE
+      HEBICHESS_WASM=1
+      HEBICHESS_QSEARCH_FUSED_CHECKS=0
+      HEBICHESS_QSEARCH_FIXED_MOVE_LIST=${fixed}
+      HEBICHESS_QSEARCH_PROFILE=$<BOOL:${HEBICHESS_BUILD_WASM_MOVE_BUFFER_AB_PROFILE}>
+    )
+    if(fixed)
+      set(_move_buffer_variant candidate)
+    else()
+      set(_move_buffer_variant baseline)
+    endif()
+    set_target_properties(${target} PROPERTIES
+      OUTPUT_NAME hebichess
+      RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_MOVE_BUFFER_AB_OUTPUT_DIR}/${_move_buffer_variant}"
+      SUFFIX ".js"
+      LINK_FLAGS "${HEBICHESS_WASM_MOVE_BUFFER_AB_LINK_FLAGS} ${HEBICHESS_WASM_MOVE_BUFFER_AB_DIAGNOSTIC_LINK_FLAGS}"
+    )
+  endfunction()
+  add_hebichess_wasm_move_buffer_ab(HebiChessWasmQsearchMoveBufferBaseline 0)
+  add_hebichess_wasm_move_buffer_ab(HebiChessWasmQsearchMoveBufferCandidate 1)
+endif()
+
 add_executable(HebiChessTypesTest
   tests/chess_types_test.cpp
   ${CHESS_SOURCES}
@@ -270,6 +317,28 @@ add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedBaseline 0 0)
 add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedCandidate 1 0)
 add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedBaselineProfile 0 1)
 add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedCandidateProfile 1 1)
+
+# Allocation experiment: both variants use established production QSearch
+# semantics (including the unfused check path).  Only the per-node move-buffer
+# storage differs, and profile binaries add timing/capacity telemetry only.
+function(add_qsearch_move_buffer_variant target fixed profile)
+  add_executable(${target}
+    tests/search_baseline.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(${target} PRIVATE src)
+  apply_hebichess_production_nnue_search(${target})
+  target_compile_definitions(${target} PRIVATE
+    HEBICHESS_QSEARCH_FUSED_CHECKS=0
+    HEBICHESS_QSEARCH_FIXED_MOVE_LIST=${fixed}
+    HEBICHESS_QSEARCH_PROFILE=${profile}
+  )
+endfunction()
+
+add_qsearch_move_buffer_variant(HebiChessSearchQsearchMoveBufferBaseline 0 0)
+add_qsearch_move_buffer_variant(HebiChessSearchQsearchMoveBufferCandidate 1 0)
+add_qsearch_move_buffer_variant(HebiChessSearchQsearchMoveBufferBaselineProfile 0 1)
+add_qsearch_move_buffer_variant(HebiChessSearchQsearchMoveBufferCandidateProfile 1 1)
 
 add_executable(HebiChessSearchBaselineConfigTest
   tests/search_baseline_config_test.cpp

@@ -181,7 +181,15 @@ void write_search_fields(std::ostream& out, const SearchResult& r) {
       << ",\"qsearch_total_time_us\":" << r.qsearch_total_time_us
       << ",\"q_movegen_time_us\":" << r.q_movegen_time_us
       << ",\"q_order_time_us\":" << r.q_order_time_us
+      << ",\"q_pseudo_movegen_time_us\":" << r.q_pseudo_movegen_time_us
+      << ",\"q_legal_filter_time_us\":" << r.q_legal_filter_time_us
+      << ",\"q_ordered_move_construction_time_us\":" << r.q_ordered_move_construction_time_us
       << ",\"q_sort_time_us\":" << r.q_sort_time_us
+      << ",\"q_vector_allocations\":" << r.q_vector_allocations
+      << ",\"q_vector_reallocations\":" << r.q_vector_reallocations
+      << ",\"q_vector_allocated_bytes\":" << r.q_vector_allocated_bytes
+      << ",\"q_max_tactical_moves\":" << r.q_max_tactical_moves
+      << ",\"q_max_evasion_moves\":" << r.q_max_evasion_moves
       << ",\"q_gives_check_time_us\":" << r.q_gives_check_time_us
       << ",\"q_see_time_us\":" << r.q_see_time_us
       << ",\"q_nnue_evaluate_time_us\":" << r.q_nnue_evaluate_time_us
@@ -301,9 +309,20 @@ void write_json(const Options& options, const std::vector<Position>& positions,
   std::ofstream out(options.output);
   if (!out) throw std::runtime_error("cannot write JSON output: " + options.output.string());
   out << std::setprecision(12);
+  const QsearchMoveBufferLayout layout = qsearch_move_buffer_layout();
   out << "{\n\"schema\":\"hebichess-phase6-search-baseline-v1\",\n"
       << "\"network_loaded\":" << (network_loaded ? "true" : "false")
-      << ",\n\"network_status\":\"" << json_escape(network_status) << "\",\n\"positions\":[";
+      << ",\n\"network_status\":\"" << json_escape(network_status) << "\",\n"
+      << "\"qsearch_move_buffer_layout\":{"
+      << "\"sizeof_move\":" << layout.move_size
+      << ",\"sizeof_ordered_move\":" << layout.ordered_move_size
+      << ",\"sizeof_fixed_move_list\":" << layout.fixed_move_list_size
+      << ",\"sizeof_fixed_ordered_move_list\":" << layout.fixed_ordered_move_list_size
+      << ",\"simultaneously_live_buffer_bytes\":" << layout.simultaneously_live_buffer_bytes
+      << ",\"fixed_move_list_enabled\":" << (layout.fixed_move_list_enabled ? "true" : "false")
+      << ",\"fixed_and_ordered_buffers_simultaneously_live\":"
+      << (layout.fixed_and_ordered_buffers_simultaneously_live ? "true" : "false")
+      << "},\n\"positions\":[";
   for (std::size_t i = 0; i < positions.size(); ++i) {
     if (i) out << ',';
     out << "{\"name\":\"" << json_escape(positions[i].name) << "\",\"fen\":\""

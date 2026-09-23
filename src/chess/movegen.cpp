@@ -5,6 +5,27 @@
 namespace hebichess {
 namespace {
 
+thread_local MovegenAllocationProfile* active_allocation_profile = nullptr;
+
+void append_move(std::vector<Move>& moves, const Move& move) {
+#if HEBICHESS_QSEARCH_PROFILE
+  const std::size_t previous_capacity = moves.capacity();
+  moves.push_back(move);
+  if (active_allocation_profile != nullptr && moves.capacity() != previous_capacity) {
+    ++active_allocation_profile->allocations;
+    if (previous_capacity != 0) ++active_allocation_profile->reallocations;
+    active_allocation_profile->allocated_bytes += moves.capacity() * sizeof(Move);
+  }
+#else
+  moves.push_back(move);
+#endif
+}
+
+template <typename MoveList>
+void append_move(MoveList& moves, const Move& move) {
+  moves.push_back(move);
+}
+
 Square at(int file, int rank) noexcept {
   if (file < 0 || file >= 8 || rank < 0 || rank >= 8) return {};
   return Square::from_file_rank(static_cast<std::uint8_t>(file),
@@ -16,18 +37,18 @@ bool enemy_at(const Board& board, Square square, Color color) noexcept {
          board.piece_at(square).color != color;
 }
 
-void add_promotion_moves(std::vector<Move>& moves, Square from, Square to,
-                         bool capture) {
+template <typename MoveList>
+void add_promotion_moves(MoveList& moves, Square from, Square to, bool capture) {
   constexpr std::array<PieceType, 4> promotions = {
       PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight};
   for (const PieceType promotion : promotions) {
-    moves.push_back({from, to, promotion,
-                     capture ? MoveFlag::PromotionCapture : MoveFlag::Promotion});
+    append_move(moves, {from, to, promotion,
+                        capture ? MoveFlag::PromotionCapture : MoveFlag::Promotion});
   }
 }
 
-void add_pawn_moves(const Board& board, Square from, Color color,
-                    std::vector<Move>& moves) {
+template <typename MoveList>
+void add_pawn_moves(const Board& board, Square from, Color color, MoveList& moves) {
   const int direction = color == Color::White ? 1 : -1;
   const int start_rank = color == Color::White ? 1 : 6;
   const int promotion_rank = color == Color::White ? 7 : 0;
@@ -36,12 +57,11 @@ void add_pawn_moves(const Board& board, Square from, Color color,
     if (one.rank() == promotion_rank) {
       add_promotion_moves(moves, from, one, false);
     } else {
-      moves.push_back({from, one, PieceType::None, MoveFlag::Normal});
+      append_move(moves, {from, one, PieceType::None, MoveFlag::Normal});
       const Square two = at(from.file(), from.rank() + 2 * direction);
       if (from.rank() == start_rank && two.is_valid() &&
           board.piece_at(two).is_empty()) {
-        moves.push_back({from, two, PieceType::None,
-                         MoveFlag::DoublePawnPush});
+        append_move(moves, {from, two, PieceType::None, MoveFlag::DoublePawnPush});
       }
     }
   }
@@ -61,35 +81,35 @@ void add_pawn_moves(const Board& board, Square from, Color color,
       if (target.rank() == promotion_rank) {
         add_promotion_moves(moves, from, target, capture);
       } else {
-        moves.push_back({from, target, PieceType::None,
-                         en_passant ? MoveFlag::EnPassant : MoveFlag::Capture});
+        append_move(moves, {from, target, PieceType::None,
+                            en_passant ? MoveFlag::EnPassant : MoveFlag::Capture});
       }
     }
   }
 }
 
-template <std::size_t Count>
+template <std::size_t Count, typename MoveList>
 void add_sliding_moves(const Board& board, Square from, Color color,
                        const std::array<std::pair<int, int>, Count>& directions,
-                       std::vector<Move>& moves) {
+                       MoveList& moves) {
   for (const auto [df, dr] : directions) {
     for (int file = from.file() + df, rank = from.rank() + dr;; file += df, rank += dr) {
       const Square target = at(file, rank);
       if (!target.is_valid()) break;
       const Piece piece = board.piece_at(target);
       if (piece.is_empty()) {
-        moves.push_back({from, target});
+        append_move(moves, {from, target});
       } else {
-        if (piece.color != color) moves.push_back({from, target, PieceType::None,
-                                                    MoveFlag::Capture});
+        if (piece.color != color)
+          append_move(moves, {from, target, PieceType::None, MoveFlag::Capture});
         break;
       }
     }
   }
 }
 
-void add_castling(const Board& board, Square from, Color color,
-                  std::vector<Move>& moves) {
+template <typename MoveList>
+void add_castling(const Board& board, Square from, Color color, MoveList& moves) {
   const CastlingRights rights = board.castling_rights();
   const int rank = color == Color::White ? 0 : 7;
   const bool king_side = color == Color::White ? rights.white_king_side
@@ -108,20 +128,21 @@ void add_castling(const Board& board, Square from, Color color,
       clear(5, 6, rank) && !board.is_square_attacked(at(4, rank), opposite(color)) &&
       !board.is_square_attacked(at(5, rank), opposite(color)) &&
       !board.is_square_attacked(at(6, rank), opposite(color))) {
-    moves.push_back({from, at(6, rank), PieceType::None, MoveFlag::CastleKingSide});
+    append_move(moves, {from, at(6, rank), PieceType::None, MoveFlag::CastleKingSide});
   }
   if (queen_side && board.piece_at(at(0, rank)) == Piece{PieceType::Rook, color} &&
       clear(1, 3, rank) && !board.is_square_attacked(at(4, rank), opposite(color)) &&
       !board.is_square_attacked(at(3, rank), opposite(color)) &&
       !board.is_square_attacked(at(2, rank), opposite(color))) {
-    moves.push_back({from, at(2, rank), PieceType::None, MoveFlag::CastleQueenSide});
+    append_move(moves, {from, at(2, rank), PieceType::None, MoveFlag::CastleQueenSide});
   }
 }
 
 }  // namespace
 
-std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
-  std::vector<Move> moves;
+template <typename MoveList>
+void generate_pseudo_legal_moves_impl(const Board& board, MoveList& moves) {
+  moves.clear();
   const Color color = board.side_to_move();
   constexpr std::array<std::pair<int, int>, 8> knight_steps = {
       {{1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}}};
@@ -140,8 +161,8 @@ std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
         for (const auto [df, dr] : knight_steps) {
           const Square to = at(from.file() + df, from.rank() + dr);
           if (to.is_valid() && (board.piece_at(to).is_empty() || enemy_at(board, to, color)))
-            moves.push_back({from, to, PieceType::None,
-                             board.piece_at(to).is_empty() ? MoveFlag::Normal : MoveFlag::Capture});
+            append_move(moves, {from, to, PieceType::None,
+                                board.piece_at(to).is_empty() ? MoveFlag::Normal : MoveFlag::Capture});
         }
         break;
       case PieceType::Bishop: add_sliding_moves(board, from, color, diagonals, moves); break;
@@ -155,19 +176,19 @@ std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
         for (const auto [df, dr] : king_steps) {
           const Square to = at(from.file() + df, from.rank() + dr);
           if (to.is_valid() && (board.piece_at(to).is_empty() || enemy_at(board, to, color)))
-            moves.push_back({from, to, PieceType::None,
-                             board.piece_at(to).is_empty() ? MoveFlag::Normal : MoveFlag::Capture});
+            append_move(moves, {from, to, PieceType::None,
+                                board.piece_at(to).is_empty() ? MoveFlag::Normal : MoveFlag::Capture});
         }
         add_castling(board, from, color, moves);
         break;
       case PieceType::None: break;
     }
   }
-  return moves;
 }
 
-std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
-  std::vector<Move> moves;
+template <typename MoveList>
+void generate_pseudo_legal_tactical_moves_impl(const Board& board, MoveList& moves) {
+  moves.clear();
   const Color color = board.side_to_move();
   constexpr std::array<std::pair<int, int>, 8> knight_steps = {
       {{1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}}};
@@ -184,7 +205,7 @@ std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
         const Piece target_piece = board.piece_at(target);
         if (target_piece.is_empty()) continue;
         if (target_piece.color != color)
-          moves.push_back({from, target, PieceType::None, MoveFlag::Capture});
+          append_move(moves, {from, target, PieceType::None, MoveFlag::Capture});
         break;
       }
     }
@@ -210,15 +231,16 @@ std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
               board.piece_at(captured).color == opposite(color);
           if (!capture && !en_passant) continue;
           if (target.rank() == promotion_rank) add_promotion_moves(moves, from, target, true);
-          else moves.push_back({from, target, PieceType::None,
-                                en_passant ? MoveFlag::EnPassant : MoveFlag::Capture});
+          else append_move(moves, {from, target, PieceType::None,
+                                   en_passant ? MoveFlag::EnPassant : MoveFlag::Capture});
         }
         break;
       }
       case PieceType::Knight:
         for (const auto [df, dr] : knight_steps) {
           const Square to = at(from.file() + df, from.rank() + dr);
-          if (enemy_at(board, to, color)) moves.push_back({from, to, PieceType::None, MoveFlag::Capture});
+          if (enemy_at(board, to, color))
+            append_move(moves, {from, to, PieceType::None, MoveFlag::Capture});
         }
         break;
       case PieceType::Bishop: add_sliding_captures(from, diagonals); break;
@@ -230,40 +252,85 @@ std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
       case PieceType::King:
         for (const auto [df, dr] : king_steps) {
           const Square to = at(from.file() + df, from.rank() + dr);
-          if (enemy_at(board, to, color)) moves.push_back({from, to, PieceType::None, MoveFlag::Capture});
+          if (enemy_at(board, to, color))
+            append_move(moves, {from, to, PieceType::None, MoveFlag::Capture});
         }
         break;
       case PieceType::None: break;
     }
   }
+}
+
+ScopedMovegenAllocationProfile::ScopedMovegenAllocationProfile(
+    MovegenAllocationProfile* profile) noexcept
+    : previous_(active_allocation_profile) {
+#if HEBICHESS_QSEARCH_PROFILE
+  active_allocation_profile = profile;
+#else
+  (void)profile;
+#endif
+}
+
+ScopedMovegenAllocationProfile::~ScopedMovegenAllocationProfile() {
+#if HEBICHESS_QSEARCH_PROFILE
+  active_allocation_profile = previous_;
+#endif
+}
+
+std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
+  std::vector<Move> moves;
+  generate_pseudo_legal_moves_impl(board, moves);
   return moves;
 }
 
-std::vector<Move> generate_legal_moves(Board& board) {
+std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
+  std::vector<Move> moves;
+  generate_pseudo_legal_tactical_moves_impl(board, moves);
+  return moves;
+}
+
+void generate_pseudo_legal_moves(const Board& board, FixedMoveList& moves) {
+  generate_pseudo_legal_moves_impl(board, moves);
+}
+
+void generate_pseudo_legal_tactical_moves(const Board& board, FixedMoveList& moves) {
+  generate_pseudo_legal_tactical_moves_impl(board, moves);
+}
+
+std::vector<Move> filter_legal_moves(Board& board, const std::vector<Move>& pseudo_moves) {
   std::vector<Move> legal_moves;
   const Color moving_color = board.side_to_move();
-  for (const Move& move : generate_pseudo_legal_moves(board)) {
+  for (const Move& move : pseudo_moves) {
     const UndoState undo = board.make_move(move);
     const Square king = board.find_king(moving_color);
-    if (king.is_valid() && !board.is_square_attacked(king, opposite(moving_color))) {
-      legal_moves.push_back(move);
-    }
+    if (king.is_valid() && !board.is_square_attacked(king, opposite(moving_color)))
+      append_move(legal_moves, move);
     board.unmake_move(move, undo);
   }
   return legal_moves;
 }
 
-std::vector<Move> generate_legal_tactical_moves(Board& board) {
-  std::vector<Move> legal_moves;
+void filter_legal_moves_in_place(Board& board, FixedMoveList& moves) {
   const Color moving_color = board.side_to_move();
-  for (const Move& move : generate_pseudo_legal_tactical_moves(board)) {
+  const std::size_t pseudo_count = moves.size();
+  std::size_t legal_count = 0;
+  for (std::size_t index = 0; index < pseudo_count; ++index) {
+    const Move move = moves[index];
     const UndoState undo = board.make_move(move);
     const Square king = board.find_king(moving_color);
-    if (king.is_valid() && !board.is_square_attacked(king, opposite(moving_color)))
-      legal_moves.push_back(move);
+    const bool legal = king.is_valid() && !board.is_square_attacked(king, opposite(moving_color));
     board.unmake_move(move, undo);
+    if (legal) moves[legal_count++] = move;
   }
-  return legal_moves;
+  moves.truncate(legal_count);
+}
+
+std::vector<Move> generate_legal_moves(Board& board) {
+  return filter_legal_moves(board, generate_pseudo_legal_moves(board));
+}
+
+std::vector<Move> generate_legal_tactical_moves(Board& board) {
+  return filter_legal_moves(board, generate_pseudo_legal_tactical_moves(board));
 }
 
 namespace {
