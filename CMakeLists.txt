@@ -70,6 +70,41 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
   )
 endif()
 
+# Windows-only H1 A/B artifacts.  Both targets use the production WASM
+# memory/optimization settings and production QSearch configuration.  Their
+# compile definitions intentionally differ in exactly one value: the H1 dense
+# loop interleave width.  Keeping the JavaScript output name and factory name
+# identical makes the Node harness exercise the same module ABI for both
+# variants; separate directories keep the two artifacts side by side.
+option(HEBICHESS_BUILD_WASM_H1_AB "Build Node-compatible H1=4/H1=8 WASM A/B engines" OFF)
+set(HEBICHESS_WASM_H1_AB_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build-wasm/h1-ab" CACHE PATH
+    "Output directory for Node-compatible WASM H1 A/B engines")
+if(HEBICHESS_BUILD_WASM_H1_AB)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "HEBICHESS_BUILD_WASM_H1_AB requires Emscripten (configure with emcmake cmake)")
+  endif()
+  set(HEBICHESS_WASM_H1_AB_LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessWasmH1BenchmarkModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_nnue_benchmark_fens','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  function(add_hebichess_wasm_h1_ab target variant)
+    add_executable(${target} src/wasm_bridge.cpp ${CHESS_SOURCES})
+    target_include_directories(${target} PRIVATE src)
+    target_compile_definitions(${target} PRIVATE
+      HEBICHESS_WASM=1
+      HEBICHESS_WASM_H1_AB_BENCHMARK=1
+      HEBICHESS_QSEARCH_LAZY_CHECKS=0
+      HEBICHESS_NNUE_HIDDEN1_VARIANT=${variant}
+    )
+    apply_hebichess_production_qsearch(${target})
+    set_target_properties(${target} PROPERTIES
+      OUTPUT_NAME hebichess
+      RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_H1_AB_OUTPUT_DIR}/h1-${variant}"
+      SUFFIX ".js"
+      LINK_FLAGS "${HEBICHESS_WASM_H1_AB_LINK_FLAGS}"
+    )
+  endfunction()
+  add_hebichess_wasm_h1_ab(HebiChessWasmH1Interleaved4 4)
+  add_hebichess_wasm_h1_ab(HebiChessWasmH1Interleaved8 8)
+endif()
+
 add_executable(HebiChessTypesTest
   tests/chess_types_test.cpp
   ${CHESS_SOURCES}
