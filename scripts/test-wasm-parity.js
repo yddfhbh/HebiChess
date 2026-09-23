@@ -18,7 +18,7 @@ if (corpus.length !== 100 || new Set(corpus).size !== 100) throw Error('corpus m
 if (!fs.existsSync(wasmPath)) throw Error(`missing actual WASM Node artifact: ${wasmPath}`);
 
 const parse = (lines, depthWanted) => {
-  const allowed = /^(info depth \d+ score (?:cp -?\d+|mate -?\d+)(?: .*)?|info string .+|bestmove (?:[a-h][1-8][a-h][1-8][qrbn]?|none)|id .+|option .+|uciok|readyok)$/;
+  const allowed = /^(info depth \d+ score (?:cp -?\d+|mate -?\d+)(?: .*)?|info string .+|bestmove (?:(?:[a-h][1-8][a-h][1-8][qrbn]?)(?: ponder [a-h][1-8][a-h][1-8][qrbn]?)?|none)|id .+|option .+|uciok|readyok)$/;
   const malformed = lines.filter(line => line && !allowed.test(line));
   const infos = lines.map(line => line.match(/^info depth (\d+) score (cp|mate) (-?\d+)/)).filter(Boolean);
   const final = infos.filter(m => Number(m[1]) <= depthWanted).at(-1);
