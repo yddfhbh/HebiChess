@@ -37,20 +37,23 @@ changes.
 
 ## Windows/local verification
 
-Do not add the model to Git.  Copy these inputs to the same relative paths on
+Do not add the model to Git.  Copy this input to the same relative path on
 Windows before testing:
 
 - `runs/full-phase4-finalrelu-h128-128-lr1e-4/best_balanced.hebinnue`
-- `tests/data/nnue-export-parity-100.fen`
+
+`tests/data/wasm-parity-100.fen` is the tracked canonical 100-FEN corpus, so
+it is already present in a fresh checkout. The reference JSON is generated
+locally from the frozen model and is intentionally not tracked.
 
 From the repository root in an Emscripten-enabled Developer Command Prompt:
 
 ```bat
 certutil -hashfile runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue SHA256
-certutil -hashfile tests\data\nnue-export-parity-100.fen SHA256
+certutil -hashfile tests\data\wasm-parity-100.fen SHA256
 mkdir web\public\engine\models
 copy /Y runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue web\public\engine\models\hebinnue-v3-4c815d54bc6c9fbf.hebinnue
-py -3 -m training.nnue.write_wasm_parity_reference --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --positions tests\data\nnue-export-parity-100.fen --output tests\data\nnue-export-parity-100.json
+py -3 -m training.nnue.write_wasm_parity_reference --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --positions tests\data\wasm-parity-100.fen --output tests\data\nnue-export-parity-100.json
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release --config Release
 ctest --test-dir build-release -C Release --output-on-failure

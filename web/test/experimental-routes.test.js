@@ -21,7 +21,7 @@ test('experimental verification routes are available in development',async()=>{
     assert.equal((await get(value.base,'/engine-test')).status,200);
     assert.equal((await get(value.base,'/test-data/wasm-parity-100.fen')).status,200);
     const source=fs.readFileSync(`${__dirname}/../server.js`,'utf8');
-    for(const path of ['/test-data/nnue-export-parity-100.fen','/test-data/nnue-export-parity-100.json','/test-data/nnue-search-benchmark.fen']) assert.match(source,new RegExp(`['\"]${path}['\"]`));
+    for(const path of ['/test-data/wasm-parity-100.fen','/test-data/nnue-export-parity-100.json','/test-data/nnue-search-benchmark.fen']) assert.match(source,new RegExp(`['\"]${path}['\"]`));
   }
   finally { await close(value); }
 });
@@ -30,7 +30,7 @@ test('experimental verification routes are unavailable in production',async()=>{
   const value=await server(true);
   try {
     assert.equal((await get(value.base,'/engine-test')).status,404);
-    for(const path of ['/test-data/wasm-parity-100.fen','/test-data/nnue-export-parity-100.fen','/test-data/nnue-export-parity-100.json','/test-data/nnue-search-benchmark.fen']) assert.equal((await get(value.base,path)).status,404);
+    for(const path of ['/test-data/wasm-parity-100.fen','/test-data/nnue-export-parity-100.json','/test-data/nnue-search-benchmark.fen']) assert.equal((await get(value.base,path)).status,404);
   }
   finally { await close(value); }
 });

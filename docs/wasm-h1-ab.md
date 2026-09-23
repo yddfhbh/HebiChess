@@ -92,13 +92,18 @@ publish `web/public/engine`. The browser target is the actual production
 NNUE/search definitions and is used for automated loading checks:
 
 ```bat
+py -3 -m training.nnue.write_wasm_parity_reference --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --positions tests\data\wasm-parity-100.fen --output tests\data\nnue-export-parity-100.json
 node scripts\test-wasm-nnue-parity.js --wasm build-wasm-production\node-test\hebichess-node.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue
 node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --h1-4 build-wasm-production\h1-ab\h1-4\hebichess.js --h1-8 build-wasm-production\h1-ab\h1-8\hebichess.js --only checked-evasion --depth 1 --time-ms 1000 --eval-repeats 1 --output runs\wasm-production-h1-8-checked-evasion.json
 node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --h1-4 build-wasm-production\h1-ab\h1-4\hebichess.js --h1-8 build-wasm-production\h1-ab\h1-8\hebichess.js --depth 5 --time-ms 1000 --eval-repeats 128 --order h1-8-first --output runs\wasm-production-h1-8-final.json
 ```
 
-The first command verifies frozen 100-FEN raw-NNUE parity and the
-activation/checksum/truncation hard-fail path. The second requires exactly one
+The first command writes the required, intentionally untracked acceptance
+input. It evaluates the tracked canonical 100-FEN corpus with the independent
+pure-Python `.hebinnue` reader, after pinning both the frozen network SHA-256
+and corpus SHA-256. It never uses a WASM or native-engine result as a
+reference. The second command verifies those frozen 100-FEN raw-NNUE values
+and the activation/checksum/truncation hard-fail path. The third requires exactly one
 `bestmove` from each artifact and runs the 1000 ms checked-evasion smoke. The
 final command is the 100-FEN raw and rounded-CP H1=4/H1=8 parity gate plus the
 canonical fixed-depth/no-duplicate protocol regression. Its H1=8 artifact is

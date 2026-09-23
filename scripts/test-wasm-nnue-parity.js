@@ -20,10 +20,24 @@ if (actualSha256 !== expectedSha256) {
   throw Error(`network SHA256 mismatch: expected ${expectedSha256}, got ${actualSha256}`);
 }
 
-const references = JSON.parse(fs.readFileSync(referencesPath, 'utf8'));
+let references;
+try {
+  references = JSON.parse(fs.readFileSync(referencesPath, 'utf8'));
+} catch (error) {
+  if (error.code === 'ENOENT') {
+    throw Error(`missing Python reference JSON: ${referencesPath}\n` +
+      'Generate it from the frozen model with: py -3 -m training.nnue.write_wasm_parity_reference ' +
+      `--network ${value('--network')}`);
+  }
+  throw error;
+}
 if (references.network_sha256?.toLowerCase() !== actualSha256 ||
     !Array.isArray(references.samples) || references.samples.length !== 100) {
   throw Error('reference JSON must contain 100 scores for this exact network');
+}
+if (!references.samples.every(sample => typeof sample?.fen === 'string' &&
+    Number.isFinite(Number(sample.raw_cp)))) {
+  throw Error('reference JSON samples must each contain a FEN and finite Python raw_cp');
 }
 
 const loaded = require(wasmPath);
