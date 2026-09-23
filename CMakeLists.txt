@@ -127,7 +127,24 @@ add_executable(HebiChessSearchBaseline
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
 apply_hebichess_production_qsearch(HebiChessSearchBaseline)
-target_compile_definitions(HebiChessSearchBaseline PRIVATE HEBICHESS_QSEARCH_LAZY_CHECKS=0)
+target_compile_definitions(HebiChessSearchBaseline PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=4
+)
+
+# Search-level H1 A/B targets.  These deliberately share the complete
+# production QSearch configuration; only the compile-time hidden1 loop width
+# differs.  Keep these as direct-search harnesses rather than engine targets.
+add_executable(HebiChessSearchNnueH1Interleaved8
+  tests/search_baseline.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessSearchNnueH1Interleaved8 PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessSearchNnueH1Interleaved8)
+target_compile_definitions(HebiChessSearchNnueH1Interleaved8 PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+)
 
 add_executable(HebiChessSearchLazyChecks
   tests/search_baseline.cpp
@@ -142,6 +159,22 @@ add_executable(HebiChessSearchBaselineConfigTest
 )
 target_include_directories(HebiChessSearchBaselineConfigTest PRIVATE src)
 apply_hebichess_production_qsearch(HebiChessSearchBaselineConfigTest)
+target_compile_definitions(HebiChessSearchBaselineConfigTest PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=4
+  HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=4
+)
+
+add_executable(HebiChessSearchNnueH1Interleaved8ConfigTest
+  tests/search_baseline_config_test.cpp
+)
+target_include_directories(HebiChessSearchNnueH1Interleaved8ConfigTest PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessSearchNnueH1Interleaved8ConfigTest)
+target_compile_definitions(HebiChessSearchNnueH1Interleaved8ConfigTest PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+  HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=8
+)
 
 add_executable(HebiChessSearchBaselineLegacy
   tests/search_baseline.cpp
@@ -356,6 +389,18 @@ add_test(
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/search_baseline_smoke.cmake"
 )
 add_test(NAME chess_search_baseline_config COMMAND HebiChessSearchBaselineConfigTest)
+add_test(NAME chess_search_nnue_h1_interleaved8_config
+  COMMAND HebiChessSearchNnueH1Interleaved8ConfigTest
+)
+add_test(
+  NAME chess_search_nnue_h1_ab
+  COMMAND ${CMAKE_COMMAND}
+    "-DBASELINE=$<TARGET_FILE:HebiChessSearchBaseline>"
+    "-DCANDIDATE=$<TARGET_FILE:HebiChessSearchNnueH1Interleaved8>"
+    "-DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase6-search-baseline.fen"
+    "-DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/search-nnue-h1-ab-smoke"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/search_nnue_h1_ab.cmake"
+)
 add_test(NAME chess_qsearch_lazy_ab
   COMMAND ${CMAKE_COMMAND}
     -DBASELINE=$<TARGET_FILE:HebiChessSearchBaseline>

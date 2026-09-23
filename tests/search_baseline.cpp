@@ -208,7 +208,16 @@ void write_search_fields(std::ostream& out, const SearchResult& r) {
       << ",\"style_evaluations\":" << r.style_evaluations;
 }
 
-struct SearchRecord { std::string mode; std::string benchmark; int budget; std::string name; std::string fen; SearchResult result; double elapsed_ms; };
+struct SearchRecord {
+  std::string mode;
+  std::string benchmark;
+  int budget;
+  std::string name;
+  std::string fen;
+  SearchResult result;
+  double elapsed_ms;
+  std::optional<float> root_nnue_raw;
+};
 
 SearchRecord run_search(const Position& position, EvalMode mode, int depth, std::optional<int> time_ms) {
   clear_transposition_table();
@@ -223,8 +232,12 @@ SearchRecord run_search(const Position& position, EvalMode mode, int depth, std:
   }
   const auto started = std::chrono::steady_clock::now();
   const SearchResult result = search(position.board, limits);
+  // This is sampled after the timed search and is emitted solely for A/B
+  // correctness comparison.  It must not perturb search timing or semantics.
+  const std::optional<float> root_nnue_raw =
+      mode == EvalMode::NNUE ? evaluate_nnue_network_raw(position.board) : std::nullopt;
   return {mode_name(mode), time_ms ? "fixed_time" : "fixed_depth", time_ms.value_or(depth),
-          position.name, position.fen, result, milliseconds_since(started)};
+          position.name, position.fen, result, milliseconds_since(started), root_nnue_raw};
 }
 
 struct EvalMicrobench {
@@ -293,6 +306,9 @@ void write_json(const Options& options, const std::vector<Position>& positions,
         << "\",\"fen\":\"" << json_escape(item.fen) << "\",\"elapsed_ms\":" << item.elapsed_ms
         << ",\"nps\":" << item.result.nodes * 1000.0 / std::max(item.elapsed_ms, 0.001) << ',';
     write_search_fields(out, item.result);
+    out << ",\"root_nnue_raw\":";
+    if (item.root_nnue_raw) out << *item.root_nnue_raw;
+    else out << "null";
     out << '}';
   }
   out << "\n],\n\"evaluator_microbench\":[";
