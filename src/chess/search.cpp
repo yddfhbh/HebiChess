@@ -1570,7 +1570,14 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   qtt_diagnostic.trace_cutoff = limits.qtt_trace_cutoff;
 #endif
   const auto search_started = std::chrono::steady_clock::now();
-  if (limits.max_depth < 1) return result;
+  auto update_final_elapsed = [&]() {
+    result.time_elapsed_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - search_started).count());
+  };
+  if (limits.max_depth < 1) {
+    update_final_elapsed();
+    return result;
+  }
   if (limits.has_soft_deadline)
     result.time_soft_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.soft_deadline - search_started).count());
   if (limits.has_deadline)
@@ -1612,11 +1619,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
 #endif
     result.score = negamax_impl(root, 0, -MATE_SCORE, MATE_SCORE, 0, context,
                                 root_accumulator ? &*root_accumulator : nullptr);
+    update_final_elapsed();
     return result;
   }
   result.best_move = legal.front();
   if (legal.size() == 1) {
     result.time_stop_reason = "forced";
+    update_final_elapsed();
     return result;
   }
   const Square enemy_king = root.find_king(opposite(root.side_to_move()));
@@ -1648,6 +1657,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     return "low";
   };
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
+    result.attempted_depth = depth;
+    const auto iteration_started = std::chrono::steady_clock::now();
     const std::uint64_t aspiration_retries_before = result.aspiration_retries;
     const int previous_score = result.score;
     const bool mate_score = previous_score > MATE_SCORE - 1000 ||
@@ -1757,6 +1768,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       }
       completed = true;
     }
+    result.latest_iteration_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - iteration_started).count());
     if (stopped_iteration || current.size() != legal.size()) {
       if (limits.has_deadline && std::chrono::steady_clock::now() >= limits.deadline)
         result.time_stop_reason = "hard";
@@ -1848,6 +1861,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       break;
     }
   }
+  // Iteration telemetry is updated only after completed iterations.  Refresh
+  // the wall-clock value once more after the search loop so a hard-stopped
+  // partial iteration reports the actual total search duration.
+  update_final_elapsed();
   if (last_completed.empty()) {
     result.objective_time_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(

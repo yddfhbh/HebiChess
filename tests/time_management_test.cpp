@@ -5,12 +5,15 @@
 using namespace hebichess;
 
 int main() {
-  assert(allocate_time_budget(60'000, 0).soft_ms == 600);
-  assert(allocate_time_budget(300'000, 0).soft_ms == 3000);
-  assert(allocate_time_budget(600'000, 5'000).soft_ms == 5000);
-  assert(allocate_time_budget(600'000, 5'000).hard_ms == 20000);
-  assert(allocate_time_budget(0, 0, true).soft_ms == 5000);
-  assert(allocate_time_budget(0, 0, true).hard_ms == 20000);
+  assert(allocate_time_budget(60'000, 0).soft_ms == 540);
+  assert(allocate_time_budget(300'000, 0).soft_ms == 2700);
+  assert(allocate_time_budget(300'000, 0).hard_ms == 10800);
+  assert(allocate_time_budget(180'000, 0).soft_ms == 1620);
+  assert(allocate_time_budget(180'000, 0).hard_ms == 6480);
+  assert(allocate_time_budget(600'000, 5'000).soft_ms == 4500);
+  assert(allocate_time_budget(600'000, 5'000).hard_ms == 18000);
+  assert(allocate_time_budget(0, 0, true).soft_ms == 4500);
+  assert(allocate_time_budget(0, 0, true).hard_ms == 18000);
 
   const TimeEvidence high{{1, 1, 1}, {100, 105, 110}, {false, false, false}, true, 80};
   const TimeEvidence medium{{1, 1, 1}, {100, 115, 125}, {false, false, false}, true, 50};

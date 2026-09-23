@@ -13,13 +13,14 @@ struct TimeBudget {
 
 inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
                                        bool unlimited = false) noexcept {
-  if (unlimited) return {5000, 20000};
+  if (unlimited) return {4500, 18000};
   remaining_ms = std::max(0, remaining_ms);
   increment_ms = std::max(0, increment_ms);
   const int safe_remaining = std::max(1, remaining_ms -
       std::max(20, remaining_ms / 10));
   int soft = remaining_ms / 100 + (increment_ms * 40) / 100;
   soft = std::clamp(soft, 300, 5000);
+  soft = std::max(300, soft * 9 / 10);
   soft = std::min(soft, safe_remaining);
   const int requested_hard = std::max(soft * 4, soft + 3000);
   return {soft, std::min({requested_hard, 20000, safe_remaining})};

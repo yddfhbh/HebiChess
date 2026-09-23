@@ -147,6 +147,8 @@ struct SearchResult {
   int time_hard_ms{0};
   int time_target_ms{0};
   int time_elapsed_ms{0};
+  int attempted_depth{0};
+  int latest_iteration_ms{0};
   int time_stability{0};
   int time_score_swing{0};
   bool time_margin_known{false};

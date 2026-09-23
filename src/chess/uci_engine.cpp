@@ -343,6 +343,12 @@ void UciEngine::send_command(const std::string& line) {
        << " target " << result.time_target_ms
        << " elapsed " << result.time_elapsed_ms
        << " depth " << result.completed_depth
+       << " attempted_depth " << result.attempted_depth
+       << " nodes " << result.nodes
+       << " qnodes " << result.qnodes
+       << " nps " << (result.time_elapsed_ms > 0
+           ? result.nodes * 1000 / static_cast<std::uint64_t>(result.time_elapsed_ms) : 0)
+       << " latest_iteration_ms " << result.latest_iteration_ms
        << " confidence " << result.time_confidence
        << " stability " << result.time_stability
        << " swing " << result.time_score_swing
