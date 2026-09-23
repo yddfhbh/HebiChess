@@ -342,6 +342,9 @@ void UciEngine::send_command(const std::string& line) {
        << " hard " << result.time_hard_ms
        << " target " << result.time_target_ms
        << " elapsed " << result.time_elapsed_ms
+       << " objective_ms " << result.objective_time_ms
+       << " style_metadata_ms " << result.style_metadata_time_ms
+       << " style_verification_ms " << result.style_verification_time_ms
        << " depth " << result.completed_depth
        << " attempted_depth " << result.attempted_depth
        << " nodes " << result.nodes

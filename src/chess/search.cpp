@@ -659,14 +659,29 @@ SacrificeKind classify_sacrifice(const Board& before, const Move& move,
   return SacrificeKind::None;
 }
 
-int count_sacrifice_motifs(const Board& board, Color attacker) {
+struct StyleCancellation {
+  bool has_deadline{false};
+  std::chrono::steady_clock::time_point deadline{};
+  bool timed_out{false};
+
+  bool should_cancel() {
+    if (!timed_out && has_deadline && std::chrono::steady_clock::now() >= deadline)
+      timed_out = true;
+    return timed_out;
+  }
+};
+
+bool count_sacrifice_motifs(const Board& board, Color attacker,
+                            StyleCancellation& cancellation, int& motifs) {
   StyleTimer motif_timer(&SearchResult::style_sacrifice_motifs_time_us);
+  if (cancellation.should_cancel()) return false;
   Board motif_board = board;
   motif_board.set_side_to_move(attacker);
   const StyleAttackState before = style_attack_state(motif_board, attacker);
-  int motifs = 0;
+  motifs = 0;
   if (active_style_profile != nullptr) ++active_style_profile->result.style_legal_move_generations;
   for (const Move& move : generate_legal_moves(motif_board)) {
+    if (cancellation.should_cancel()) return false;
     Board after = motif_board;
     if (active_style_profile != nullptr) ++active_style_profile->result.style_child_boards;
     after.make_move(move);
@@ -687,7 +702,7 @@ int count_sacrifice_motifs(const Board& board, Color attacker) {
          kind == SacrificeKind::ExchangeSacrifice);
     if (kind != SacrificeKind::None && concrete_capture && ++motifs == 4) break;
   }
-  return motifs;
+  return !cancellation.should_cancel();
 }
 
 struct RootStyleContext {
@@ -750,7 +765,9 @@ int style_score_from_metadata(const RootStyleContext& context, const Move& move,
 
 void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
                                   const Board& after, bool use_style_v3,
-                                  bool calculate_sacrifice_motifs) {
+                                  bool calculate_sacrifice_motifs,
+                                  StyleCancellation& cancellation) {
+  if (cancellation.should_cancel()) return;
   const Board& before = context.before;
   const Color attacker = context.attacker;
   Board check_probe = before;
@@ -768,9 +785,13 @@ void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
                     after_attack.open_lines > context.before_attack.open_lines;
   info.style_tolerance = AGGRESSION_TOLERANCE_CP;
   if (use_style_v3 && calculate_sacrifice_motifs && is_quiet_move(info.move)) {
-    if (context.before_sacrifice_motifs < 0)
-      context.before_sacrifice_motifs = count_sacrifice_motifs(before, attacker);
-    after_attack.sacrifice_motifs = count_sacrifice_motifs(after, attacker);
+    int motifs = 0;
+    if (context.before_sacrifice_motifs < 0) {
+      if (!count_sacrifice_motifs(before, attacker, cancellation, motifs)) return;
+      context.before_sacrifice_motifs = motifs;
+    }
+    if (!count_sacrifice_motifs(after, attacker, cancellation, motifs)) return;
+    after_attack.sacrifice_motifs = motifs;
     info.sacrifice_motif_delta = after_attack.sacrifice_motifs - context.before_sacrifice_motifs;
     info.sacrifice_preparation = after_attack.sacrifice_motifs > context.before_sacrifice_motifs;
   }
@@ -1878,15 +1899,45 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   auto& current = last_completed;
   const int depth = result.completed_depth;
   const int objective_best = last_objective_best;
+  result.style_verification_eval_mode = limits.eval_mode;
+  const auto metadata_started = std::chrono::steady_clock::now();
+  StyleCancellation style_cancellation{limits.has_deadline, limits.deadline};
+  StyleProfile profile{result};
+  StyleProfile* const previous_profile = active_style_profile;
+  auto objective_move = std::max_element(current.begin(), current.end(),
+      [](const RootMoveInfo& a, const RootMoveInfo& b) {
+        if (a.bound != ScoreBound::Exact) return true;
+        if (b.bound != ScoreBound::Exact) return false;
+        return a.search_score < b.search_score;
+      });
+  auto finish_objective_fallback = [&](const char* reason) {
+    active_style_profile = previous_profile;
+    result.time_stop_reason = reason;
+    result.best_move = objective_move->move;
+    result.score = objective_best;
+    result.root_moves = std::move(current);
+    result.main_nodes = result.nodes - result.qnodes;
+    update_final_elapsed();
+    return result;
+  };
   // A move farther than the hard 50cp cap can never be selected by v3.2.
   // Analyse only final exact eligible root moves, sharing immutable before
   // state and a single child board per candidate.
-  const auto metadata_started = std::chrono::steady_clock::now();
-  StyleProfile profile{result};
-  StyleProfile* const previous_profile = active_style_profile;
   if (limits.profile_style_metadata) active_style_profile = &profile;
+  if (style_cancellation.should_cancel()) {
+    result.style_metadata_time_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - metadata_started).count());
+    return finish_objective_fallback("hard_style_metadata");
+  }
   RootStyleContext style_context = make_root_style_context(position);
   for (RootMoveInfo& info : current) {
+    if (style_cancellation.should_cancel()) {
+      result.style_metadata_time_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - metadata_started).count());
+      return finish_objective_fallback("hard_style_metadata");
+    }
     const int loss = objective_best - info.search_score;
     const int maximum_loss = limits.use_style_v3 ? 50 : AGGRESSION_TOLERANCE_CP;
     const Piece moving = root.piece_at(info.move.from);
@@ -1903,13 +1954,24 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     if (active_style_profile != nullptr) ++active_style_profile->result.style_child_boards;
     child.make_move(info.move);
     populate_root_style_metadata(style_context, info, child, limits.use_style_v3,
-                                 limits.use_style_v3 && loss <= 50);
+                                 limits.use_style_v3 && loss <= 50, style_cancellation);
+    if (style_cancellation.should_cancel()) {
+      result.style_metadata_time_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - metadata_started).count());
+      return finish_objective_fallback("hard_style_metadata");
+    }
     ++result.style_evaluations;
   }
   active_style_profile = previous_profile;
   result.root_style_metadata_time_us += static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - metadata_started).count());
+  result.style_metadata_time_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - metadata_started).count());
+  if (style_cancellation.should_cancel())
+    return finish_objective_fallback("hard_style_metadata");
   const Square root_king = root.find_king(root.side_to_move());
   const bool root_in_check = root_king.is_valid() &&
       root.is_square_attacked(root_king, opposite(root.side_to_move()));
@@ -1927,11 +1989,6 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       evasion.unmake_move(info.move, undo);
       return safe;
   };
-  auto objective_move = std::max_element(current.begin(), current.end(), [](const RootMoveInfo& a, const RootMoveInfo& b) {
-      if (a.bound != ScoreBound::Exact) return true;
-      if (b.bound != ScoreBound::Exact) return false;
-      return a.search_score < b.search_score;
-  });
   for (RootMoveInfo& info : current) {
     if (info.bound == ScoreBound::Exact) {
       info.style_safe = is_style_score_safe(objective_best, info.search_score,
@@ -1958,6 +2015,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   }
   std::vector<RootMoveInfo*> candidates;
   for (RootMoveInfo& info : current) {
+    if (style_cancellation.should_cancel())
+      return finish_objective_fallback("hard_style_metadata");
     if (&info == &*objective_move || info.bound == ScoreBound::Exact) continue;
     ++result.root_style_candidates;
     if (limits.use_style_v3 &&
@@ -1992,7 +2051,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   if (candidates.size() > kMaxStyleVerificationCandidates)
     candidates.resize(kMaxStyleVerificationCandidates);
   result.root_style_shortlist = candidates.size();
+  if (style_cancellation.should_cancel())
+    return finish_objective_fallback("hard_style_metadata");
   const auto verification_started = std::chrono::steady_clock::now();
+  if (style_cancellation.should_cancel()) {
+    result.style_verification_time_ms = 0;
+    return finish_objective_fallback("hard_style_verification");
+  }
   SearchContext verification{result.nodes, result.qnodes, limits.has_deadline,
                              limits.deadline, false, limits.use_tt ? &tt : nullptr, &result,
                              limits.use_see_pruning,
@@ -2008,6 +2073,12 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
 #endif
   result.style_verification_eval_mode = verification.eval_mode;
   for (RootMoveInfo* candidate : candidates) {
+    if (style_cancellation.should_cancel()) {
+      result.style_verification_time_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - verification_started).count());
+      return finish_objective_fallback("hard_style_verification");
+    }
     if (candidate->style_score < chosen->style_score) {
       ++result.root_style_prefilter_skips;
       continue;
@@ -2034,7 +2105,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     result.root_style_verification_nodes += result.nodes - before_verification;
     if (verification.stopped) {
       ++result.root_style_verification_timeouts;
-      break;
+      result.style_verification_time_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - verification_started).count());
+      return finish_objective_fallback("hard_style_verification");
     }
     candidate->style_safe = proof >= threshold;
     if (candidate->style_safe) {
@@ -2054,6 +2128,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   result.style_verification_time_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - verification_started).count());
+  if (style_cancellation.should_cancel())
+    return finish_objective_fallback("hard_style_verification");
   if (!verification.stopped && !mate_found) {
     for (RootMoveInfo& info : current) if (info.style_safe)
       info.see_score = move_see(position, info.move, &result);

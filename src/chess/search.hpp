@@ -131,6 +131,7 @@ struct SearchResult {
   std::uint64_t style_sacrifice_calculations{0};
   std::uint64_t style_child_boards{0};
   std::uint64_t objective_time_ms{0};
+  std::uint64_t style_metadata_time_ms{0};
   std::uint64_t style_verification_time_ms{0};
   std::uint64_t style_verification_max_ms{0};
   std::uint64_t style_verification_reserve_ms{0};

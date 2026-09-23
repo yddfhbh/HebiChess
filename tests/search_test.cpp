@@ -606,6 +606,8 @@ void test_game1_bxa6_replay_and_v32_reserve() {
   timed.eval_mode = EvalMode::NNUE;
   const SearchResult result = search(concrete, timed);
   require(result.completed_depth > 0, "v3.2 must retain a completed objective iteration");
+  require(result.time_elapsed_ms >= result.objective_time_ms,
+          "total elapsed telemetry must include style processing");
   require(result.style_verification_reserve_active,
           "concrete root candidates must activate the verification reserve");
   require(result.style_verification_reserve_ms == 125,
@@ -614,6 +616,12 @@ void test_game1_bxa6_replay_and_v32_reserve() {
           "v3.2 must bound root verification shortlist to four moves");
   require(result.style_verification_eval_mode == EvalMode::NNUE,
           "style threshold verification must inherit limits.eval_mode");
+
+  SearchLimits expired = timed;
+  expired.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+  const SearchResult expired_result = search(concrete, expired);
+  require(expired_result.style_evaluations == 0,
+          "an expired hard deadline must skip root style metadata");
 }
 
 }  // namespace
