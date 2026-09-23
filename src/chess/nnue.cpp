@@ -560,11 +560,22 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
   sink = sink + stage_sum;
 
   stage_sum = 0.0F;
-  const auto hidden2_started = std::chrono::steady_clock::now();
+  const auto hidden1_activation_started = std::chrono::steady_clock::now();
   for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
     for (NnueEvaluatorStageScratch& value : scratch) {
       for (std::size_t i = 0; i < network.hidden1_dimensions; ++i)
         value.hidden1[i] = clipped_relu(value.hidden1_sums[i]);
+      stage_sum += value.hidden1[0];
+    }
+  }
+  const auto hidden1_activation_elapsed =
+      std::chrono::steady_clock::now() - hidden1_activation_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto hidden2_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (NnueEvaluatorStageScratch& value : scratch) {
       for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
         float sum = network.hidden2_bias[o];
         const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
@@ -596,6 +607,7 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
       profile_us_per_evaluation(rebuild_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(clip_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(hidden1_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(hidden1_activation_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(hidden2_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(output_elapsed, boards.size(), repeats)};
 }

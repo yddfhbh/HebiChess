@@ -533,14 +533,15 @@ int main() {
   print_evaluation_timing("mixed_realistic", benchmarks.mixed);
   const double stage_total = benchmarks.stages.accumulator_rebuild_us +
       benchmarks.stages.clip_precompute_us + benchmarks.stages.hidden1_dense_us +
-      benchmarks.stages.hidden1_activation_hidden2_us + benchmarks.stages.output_us;
+      benchmarks.stages.hidden1_activation_us + benchmarks.stages.hidden2_dense_us +
+      benchmarks.stages.output_us;
   print_stage("feature_enumeration_plus_accumulator_rebuild",
               benchmarks.stages.accumulator_rebuild_us, stage_total);
   print_stage("accumulator_clipping_precompute", benchmarks.stages.clip_precompute_us,
               stage_total);
   print_stage("hidden1_dense", benchmarks.stages.hidden1_dense_us, stage_total);
-  print_stage("hidden1_activation_plus_hidden2",
-              benchmarks.stages.hidden1_activation_hidden2_us, stage_total);
+  print_stage("hidden1_activation", benchmarks.stages.hidden1_activation_us, stage_total);
+  print_stage("hidden2_dense", benchmarks.stages.hidden2_dense_us, stage_total);
   print_stage("output_layer", benchmarks.stages.output_us, stage_total);
   return 0;
 }

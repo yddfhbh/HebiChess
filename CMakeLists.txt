@@ -166,9 +166,11 @@ target_include_directories(HebiChessNnueIncrementalAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueIncrementalAccumulatorTest
   PRIVATE HEBICHESS_NNUE_TEST_PROFILE=1)
 
-# Phase 6-3A architecture-neutral hidden1 A/B harness.  Each executable is
+# Architecture-neutral NNUE evaluator A/B harness. Each executable is
 # independently compiled, so the selected dense loop is a compile-time choice
-# only; the production engine has no setting or diagnostic toggle.
+# only; the production engine has no setting or diagnostic toggle. By default
+# it uses a deterministic v3 network; Windows runs may pass --network with the
+# frozen production 256/128/128 v3 file.
 function(add_nnue_hidden1_dense_variant suffix interleave)
   add_executable(HebiChessNnueHidden1Dense${suffix}
     tests/nnue_hidden1_dense_benchmark.cpp
@@ -335,6 +337,15 @@ set_tests_properties(chess_nnue_clip_precompute PROPERTIES
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 add_test(NAME chess_nnue_incremental_accumulator COMMAND HebiChessNnueIncrementalAccumulatorTest)
+foreach(nnue_variant Legacy Interleaved2 Interleaved4 Interleaved8)
+  add_test(
+    NAME chess_nnue_hidden1_dense_${nnue_variant}
+    COMMAND HebiChessNnueHidden1Dense${nnue_variant} --verify-only
+  )
+  set_tests_properties(chess_nnue_hidden1_dense_${nnue_variant} PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+endforeach()
 add_test(NAME chess_nnue_search_accumulator COMMAND HebiChessNnueSearchAccumulatorTest)
 add_test(
   NAME chess_search_baseline

@@ -45,7 +45,8 @@ struct NnueEvaluatorStageProfile {
   double accumulator_rebuild_us;
   double clip_precompute_us;
   double hidden1_dense_us;
-  double hidden1_activation_hidden2_us;
+  double hidden1_activation_us;
+  double hidden2_dense_us;
   double output_us;
 };
 
