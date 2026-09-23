@@ -108,6 +108,8 @@ void UciEngine::send_command(const std::string& line) {
     reset_book_random_state();
     clear_transposition_table();
     clear_search_heuristics();
+    reuse_cache_valid_ = false;
+    reuse_hit_ = false;
   } else if (command == "setoption") {
     std::string name_token, name, value_token;
     input >> name_token >> name >> value_token;
@@ -166,21 +168,31 @@ void UciEngine::send_command(const std::string& line) {
       if (value.empty()) {
         clear_nnue_network();
         clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
         if (eval_mode_ == EvalMode::NNUE) eval_mode_ = EvalMode::HCE;
         emit("info string NNUE network cleared");
       } else if (load_nnue_network(value, error)) {
         clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
         emit("info string NNUE network loaded " + value);
       } else {
         emit("info string error " + error);
       }
 #endif
     } else if (name == "EvalMode" && value == "HCE") {
+      if (eval_mode_ != EvalMode::HCE) clear_transposition_table();
       eval_mode_ = EvalMode::HCE;
+      reuse_cache_valid_ = false;
+      reuse_hit_ = false;
       emit("info string EvalMode HCE");
     } else if (name == "EvalMode" && value == "NNUE") {
       if (nnue_network_available()) {
+        if (eval_mode_ != EvalMode::NNUE) clear_transposition_table();
         eval_mode_ = EvalMode::NNUE;
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
         emit("info string EvalMode NNUE");
       } else {
         emit("info string error EvalMode NNUE unavailable: no network loaded; retaining " +
@@ -224,7 +236,10 @@ void UciEngine::send_command(const std::string& line) {
         next.make_move(*move);
       }
     }
-    if (valid) board_ = next;
+    if (valid) {
+      board_ = next;
+      reuse_hit_ = reuse_cache_valid_ && board_.zobrist_key() == expected_position_key_;
+    }
     else emit("info string error invalid position");
   } else if (command == "eval") {
     const EvalBreakdown e = evaluate_breakdown(board_, board_.side_to_move());
@@ -272,6 +287,10 @@ void UciEngine::send_command(const std::string& line) {
     SearchLimits limits;
     limits.max_depth = 64;
     limits.eval_mode = eval_mode_;
+    limits.reuse_hit = reuse_hit_;
+    limits.has_prepared_root_move = reuse_hit_;
+    limits.prepared_root_move = prepared_response_;
+    limits.reuse_previous_depth = prepared_depth_;
     bool has_movetime = false;
     int movetime = 0, wtime = 0, btime = 0, winc = 0, binc = 0;
     std::string option;
@@ -299,6 +318,7 @@ void UciEngine::send_command(const std::string& line) {
         time_budget.soft_ms = std::min(time_budget.soft_ms, max_move_time_ms_);
         time_budget.hard_ms = std::min(time_budget.hard_ms, max_move_time_ms_);
       }
+      limits.reuse_verification_ms = std::max(350, std::min(1200, time_budget.soft_ms * 35 / 100));
       limits.has_deadline = true;
       const auto now = std::chrono::steady_clock::now();
       limits.deadline = now + std::chrono::milliseconds(time_budget.hard_ms);
@@ -334,6 +354,15 @@ void UciEngine::send_command(const std::string& line) {
       info << " nodes " << nodes << " qnodes " << qnodes;
       output_(info.str());
     });
+    std::ostringstream pv_line;
+    pv_line << "info string reuse pv";
+    for (const Move& move : result.principal_variation) pv_line << ' ' << move_to_uci(move);
+    pv_line << " expected_reply "
+            << (result.principal_variation.size() >= 2 ? move_to_uci(result.principal_variation[1]) : "none")
+            << " prepared_response "
+            << (result.principal_variation.size() >= 3 ? move_to_uci(result.principal_variation[2]) : "none")
+            << " prepared_depth " << result.completed_depth;
+    emit(pv_line.str());
     // Strength runners deliberately receive only identity and result data.
     // The normal detailed search record remains available to normal UCI
     // clients, while timed strength binaries compile all QTT profiling out.
@@ -342,6 +371,9 @@ void UciEngine::send_command(const std::string& line) {
     tm << "info string tm soft " << result.time_soft_ms
        << " hard " << result.time_hard_ms
        << " early_budget " << (result.early_budget ? 1 : 0)
+       << " reuse_hit " << (result.reuse_hit ? 1 : 0)
+       << " reuse_verified " << (result.reuse_verified ? 1 : 0)
+       << " reuse_fast_stop " << (result.reuse_fast_stop ? 1 : 0)
        << " target " << result.time_target_ms
        << " elapsed " << result.time_elapsed_ms
        << " objective_ms " << result.objective_time_ms
@@ -400,7 +432,23 @@ void UciEngine::send_command(const std::string& line) {
              << " completed_depth " << result.completed_depth;
     emit(strength.str());
 #endif
-    emit("bestmove " + move_to_uci(result.best_move));
+    if (result.principal_variation.size() >= 2)
+      emit("bestmove " + move_to_uci(result.best_move) +
+           " ponder " + move_to_uci(result.principal_variation[1]));
+    else emit("bestmove " + move_to_uci(result.best_move));
+    reuse_cache_valid_ = false;
+    if (result.principal_variation.size() >= 3) {
+      Board expected = board_;
+      const UndoState chosen_undo = expected.make_move(result.principal_variation[0]);
+      (void)chosen_undo;
+      expected.make_move(result.principal_variation[1]);
+      expected_position_key_ = expected.zobrist_key();
+      expected_reply_ = result.principal_variation[1];
+      prepared_response_ = result.principal_variation[2];
+      prepared_depth_ = result.completed_depth;
+      reuse_cache_valid_ = true;
+    }
+    reuse_hit_ = false;
   } else if (!command.empty() && command != "quit") {
     emit("info string error unsupported command");
   }

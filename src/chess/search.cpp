@@ -1667,6 +1667,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   std::vector<int> score_history;
   std::vector<bool> aspiration_retry_history;
   int target_floor_ms = 0;
+  int reuse_best_streak = 0;
   auto move_key = [](const Move& move) {
     return static_cast<int>(move.from.index()) * 64 + move.to.index();
   };
@@ -1730,6 +1731,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       std::sort(root_order.begin(), root_order.end(), [](const OrderedMove& a, const OrderedMove& b) {
         return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
       });
+      if (limits.reuse_hit && limits.has_prepared_root_move) {
+        for (OrderedMove& item : root_order)
+          if (item.move == limits.prepared_root_move) item.score += 20000000;
+        std::sort(root_order.begin(), root_order.end(), [](const OrderedMove& a, const OrderedMove& b) {
+          return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
+        });
+      }
       for (std::size_t move_index = 0; move_index < root_order.size(); ++move_index) {
         const Move& move = root_order[move_index].move;
         if (context.should_stop()) break;
@@ -1878,6 +1886,20 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         objective_best < -MATE_SCORE + 1000;
     const bool hard_reached = limits.has_deadline && now >= limits.deadline;
     const bool target_reached = limits.has_soft_deadline && target_ms > 0 && elapsed_ms >= target_ms;
+    if (limits.reuse_hit && limits.has_prepared_root_move) {
+      if (objective_best_move == limits.prepared_root_move &&
+          result.aspiration_retries == aspiration_retries_before &&
+          result.time_score_swing <= 60) ++reuse_best_streak;
+      else reuse_best_streak = 0;
+      const int verification_depth = std::max(4, limits.reuse_previous_depth - 2);
+      if (reuse_best_streak >= 2 && depth >= verification_depth &&
+          elapsed_ms >= std::max(350, limits.reuse_verification_ms)) {
+        result.reuse_verified = true;
+        result.reuse_fast_stop = true;
+        result.time_stop_reason = "reuse_target";
+        break;
+      }
+    }
     if (hard_reached || target_reached || (legal.size() == 1) || mate_confirmed) {
       result.time_stop_reason = hard_reached ? "hard" : legal.size() == 1 ? "forced" :
           mate_confirmed ? "mate" : "target";
@@ -2155,13 +2177,45 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   return result;
 }
 
+std::vector<Move> extract_principal_variation(const Board& board,
+                                              const Move& root_move,
+                                              int max_plies) {
+  std::vector<Move> pv;
+  if (max_plies <= 0) return pv;
+  Board current = board;
+  std::vector<ZobristKey> seen{current.zobrist_key()};
+  std::optional<Move> next = root_move;
+  for (int ply = 0; ply < max_plies; ++ply) {
+    if (!next) break;
+    const std::vector<Move> legal = generate_legal_moves(current);
+    if (std::find(legal.begin(), legal.end(), *next) == legal.end()) break;
+    const Move move = *next;
+    pv.push_back(move);
+    current.make_move(move);
+    if (std::find(seen.begin(), seen.end(), current.zobrist_key()) != seen.end()) break;
+    seen.push_back(current.zobrist_key());
+    const TTEntry* entry = transposition_table().probe(current.zobrist_key());
+    if (entry == nullptr || !entry->best_move) break;
+    next = entry->best_move;
+  }
+  return pv;
+}
+
 SearchResult search(const Board& position, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration) {
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
-  return search_impl(position, limits, on_iteration, true, nullptr);
+  SearchResult result = search_impl(position, limits, on_iteration, true, nullptr);
 #else
-  return search_impl(position, limits, on_iteration);
+  SearchResult result = search_impl(position, limits, on_iteration);
 #endif
+  result.principal_variation = extract_principal_variation(position, result.best_move);
+  result.reuse_hit = limits.reuse_hit;
+  result.reuse_prepared_depth = result.completed_depth;
+  if (result.principal_variation.size() >= 2)
+    result.reuse_expected = move_to_uci(result.principal_variation[1]);
+  if (result.principal_variation.size() >= 3)
+    result.reuse_prepared = move_to_uci(result.principal_variation[2]);
+  return result;
 }
 
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC

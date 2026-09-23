@@ -36,6 +36,12 @@ class UciEngine {
   std::uint64_t book_seed_{0};
   std::uint64_t book_game_counter_{0};
   std::uint64_t book_random_state_{0};
+  bool reuse_cache_valid_{false};
+  bool reuse_hit_{false};
+  ZobristKey expected_position_key_{0};
+  Move expected_reply_{};
+  Move prepared_response_{};
+  int prepared_depth_{0};
   Output output_;
 };
 

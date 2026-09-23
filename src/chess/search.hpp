@@ -157,6 +157,13 @@ struct SearchResult {
   int time_margin{0};
   std::string time_confidence{"low"};
   std::string time_stop_reason{"depth"};
+  std::vector<Move> principal_variation{};
+  bool reuse_hit{false};
+  bool reuse_verified{false};
+  bool reuse_fast_stop{false};
+  std::string reuse_expected{};
+  std::string reuse_prepared{};
+  int reuse_prepared_depth{0};
   std::vector<RootMoveInfo> root_moves{};
 };
 
@@ -173,6 +180,11 @@ struct SearchLimits {
   bool use_lmr{true};
   bool use_pvs{true};
   bool use_aspiration{true};
+  bool reuse_hit{false};
+  bool has_prepared_root_move{false};
+  Move prepared_root_move{};
+  int reuse_previous_depth{0};
+  int reuse_verification_ms{0};
   // Diagnostic switch only: false reproduces the v2.1 root safety margin.
   bool use_style_v3{true};
   // -1 selects the v3.2 adaptive reserve.  A non-negative value is intended
@@ -212,6 +224,9 @@ int quiescence(Board& board, int alpha, int beta, int ply);
 SearchResult search(const Board& board, int max_depth);
 SearchResult search(const Board& board, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration = {});
+std::vector<Move> extract_principal_variation(const Board& board,
+                                              const Move& root_move,
+                                              int max_plies = 6);
 void clear_transposition_table() noexcept;
 void clear_search_heuristics() noexcept;
 
