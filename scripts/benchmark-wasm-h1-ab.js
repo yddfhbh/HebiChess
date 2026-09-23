@@ -20,6 +20,15 @@ const positive = (name, fallback) => {
   if (!Number.isInteger(parsed) || parsed <= 0) throw Error(`${name} must be a positive integer`);
   return parsed;
 };
+const verboseProgress = args.includes('--verbose-progress');
+const onlyPosition = option('--only');
+const order = option('--order') || 'h1-4-first';
+if (!['h1-4-first', 'h1-8-first'].includes(order)) {
+  throw Error('--order must be h1-4-first or h1-8-first');
+}
+const progress = message => {
+  if (verboseProgress) console.error(`[progress] ${message}`);
+};
 
 const networkPath = option('--network') && path.resolve(root, option('--network'));
 const h1_4_path = path.resolve(root, option('--h1-4') || 'build-wasm/h1-ab/h1-4/hebichess.js');
@@ -142,15 +151,33 @@ function parseSearch(lines) {
   };
 }
 
-function runSearch(module, fen, go) {
+function runSearch(module, variant, position, kind, go) {
+  progress(`${kind} ${variant} ${position.name}: start`);
   command(module, 'ucinewgame');
-  command(module, `position fen ${fen}`);
+  command(module, `position fen ${position.fen}`);
   const started = performance.now();
   const result = parseSearch(command(module, go));
   result.wall_elapsed_ms = performance.now() - started;
   if (result.nps === null && result.wall_elapsed_ms > 0)
     result.nps = Math.round(result.nodes * 1000 / result.wall_elapsed_ms);
+  progress(`${kind} ${variant} ${position.name}: done (${result.wall_elapsed_ms.toFixed(1)} ms, ` +
+    `bestmove_count=${result.bestmove_count}, depth=${result.completed_depth})`);
   return result;
+}
+
+function runSearchPair(position, kind, go, h1_4, h1_8) {
+  // Variant labels stay attached to their actual artifact regardless of run
+  // order, so reverse-order measurements cannot invert report semantics.
+  if (order === 'h1-4-first') {
+    return {
+      h1_4: runSearch(h1_4, 'h1_4', position, kind, go),
+      h1_8: runSearch(h1_8, 'h1_8', position, kind, go)
+    };
+  }
+  return {
+    h1_8: runSearch(h1_8, 'h1_8', position, kind, go),
+    h1_4: runSearch(h1_4, 'h1_4', position, kind, go)
+  };
 }
 
 function pairRows(positions, left, right, kind) {
@@ -173,7 +200,12 @@ async function main() {
     throw Error(`network SHA256 mismatch: expected ${expectedNetworkSha256}, got ${networkSha256}`);
   }
   const corpus = readFenCorpus(corpusPath);
-  const positions = readSearchFixture(fixturePath);
+  const fixturePositions = readSearchFixture(fixturePath);
+  const positions = onlyPosition ? fixturePositions.filter(position => position.name === onlyPosition) : fixturePositions;
+  if (positions.length === 0) {
+    throw Error(`--only '${onlyPosition}' does not match a position in ${fixturePath}`);
+  }
+  progress(`selected ${positions.length}/${fixturePositions.length} search position(s); order=${order}`);
   const h1_4 = await createModule(h1_4_path);
   const h1_8 = await createModule(h1_8_path);
   for (const [label, module] of [['h1_4', h1_4], ['h1_8', h1_8]]) {
@@ -194,20 +226,29 @@ async function main() {
   });
   const roundedMismatches = rawMismatches.filter(item => item.h1_4_rounded_cp !== item.h1_8_rounded_cp);
 
-  const micro4 = JSON.parse(h1_4.ccall('hebichess_nnue_benchmark_fens', 'string', ['string', 'number'], [
-    fs.readFileSync(corpusPath, 'utf8'), evalRepeats
-  ]));
-  const micro8 = JSON.parse(h1_8.ccall('hebichess_nnue_benchmark_fens', 'string', ['string', 'number'], [
-    fs.readFileSync(corpusPath, 'utf8'), evalRepeats
-  ]));
+  const benchmarkFens = fs.readFileSync(corpusPath, 'utf8');
+  const runMicrobench = (module, variant) => {
+    progress(`evaluator_microbench ${variant}: start`);
+    const result = JSON.parse(module.ccall('hebichess_nnue_benchmark_fens', 'string', ['string', 'number'], [
+      benchmarkFens, evalRepeats
+    ]));
+    progress(`evaluator_microbench ${variant}: done`);
+    return result;
+  };
+  const micro = order === 'h1-4-first'
+    ? { h1_4: runMicrobench(h1_4, 'h1_4'), h1_8: runMicrobench(h1_8, 'h1_8') }
+    : { h1_8: runMicrobench(h1_8, 'h1_8'), h1_4: runMicrobench(h1_4, 'h1_4') };
+  const { h1_4: micro4, h1_8: micro8 } = micro;
   if (!micro4.ok || !micro8.ok) throw Error(`WASM evaluator microbench failed: ${JSON.stringify({ micro4, micro8 })}`);
 
-  const fixedDepth = pairRows(positions,
-    positions.map(position => runSearch(h1_4, position.fen, `go depth ${depth}`)),
-    positions.map(position => runSearch(h1_8, position.fen, `go depth ${depth}`)), 'fixed_depth');
-  const fixedTime = pairRows(positions,
-    positions.map(position => runSearch(h1_4, position.fen, `go movetime ${timeMs}`)),
-    positions.map(position => runSearch(h1_8, position.fen, `go movetime ${timeMs}`)), 'fixed_time');
+  const fixedDepthPairs = positions.map(position =>
+    runSearchPair(position, 'fixed_depth', `go depth ${depth}`, h1_4, h1_8));
+  const fixedDepth = pairRows(positions, fixedDepthPairs.map(pair => pair.h1_4),
+    fixedDepthPairs.map(pair => pair.h1_8), 'fixed_depth');
+  const fixedTimePairs = positions.map(position =>
+    runSearchPair(position, 'fixed_time', `go movetime ${timeMs}`, h1_4, h1_8));
+  const fixedTime = pairRows(positions, fixedTimePairs.map(pair => pair.h1_4),
+    fixedTimePairs.map(pair => pair.h1_8), 'fixed_time');
   const fixedTimeProtocolFailures = fixedTime.records.filter(row =>
     !row.h1_4.protocol_ok || !row.h1_8.protocol_ok).map(row => row.name);
 
@@ -222,6 +263,7 @@ async function main() {
     configuration: {
       network: networkPath, network_sha256: networkSha256, corpus: corpusPath, search_fixture: fixturePath,
       depth, fixed_time_ms: timeMs, evaluator_repeats: evalRepeats,
+      selected_search_positions: positions.map(position => position.name), order,
       targets: { h1_4: h1_4_path, h1_8: h1_8_path },
       h1_4_artifact_sha256: crypto.createHash('sha256').update(fs.readFileSync(h1_4_path)).digest('hex'),
       h1_8_artifact_sha256: crypto.createHash('sha256').update(fs.readFileSync(h1_8_path)).digest('hex')

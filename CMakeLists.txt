@@ -79,11 +79,21 @@ endif()
 option(HEBICHESS_BUILD_WASM_H1_AB "Build Node-compatible H1=4/H1=8 WASM A/B engines" OFF)
 set(HEBICHESS_WASM_H1_AB_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build-wasm/h1-ab" CACHE PATH
     "Output directory for Node-compatible WASM H1 A/B engines")
+option(HEBICHESS_BUILD_WASM_H1_AB_DIAGNOSTIC
+    "Add Emscripten assertions and stack-overflow checks to test-only H1 A/B WASM artifacts" OFF)
 if(HEBICHESS_BUILD_WASM_H1_AB)
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "HEBICHESS_BUILD_WASM_H1_AB requires Emscripten (configure with emcmake cmake)")
   endif()
   set(HEBICHESS_WASM_H1_AB_LINK_FLAGS "--no-entry -O3 -sINITIAL_MEMORY=201326592 -sMAXIMUM_MEMORY=402653184 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessWasmH1BenchmarkModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_nnue_benchmark_fens','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  set(HEBICHESS_WASM_H1_AB_DIAGNOSTIC_LINK_FLAGS "")
+  if(HEBICHESS_BUILD_WASM_H1_AB_DIAGNOSTIC)
+    # Keep these checks out of every production artifact.  Both A/B variants
+    # receive the identical instrumentation so their only variant-specific
+    # compilation definition remains the H1 loop interleave width.
+    set(HEBICHESS_WASM_H1_AB_DIAGNOSTIC_LINK_FLAGS
+      "-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2")
+  endif()
   function(add_hebichess_wasm_h1_ab target variant)
     add_executable(${target} src/wasm_bridge.cpp ${CHESS_SOURCES})
     target_include_directories(${target} PRIVATE src)
@@ -98,7 +108,7 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
       OUTPUT_NAME hebichess
       RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_H1_AB_OUTPUT_DIR}/h1-${variant}"
       SUFFIX ".js"
-      LINK_FLAGS "${HEBICHESS_WASM_H1_AB_LINK_FLAGS}"
+      LINK_FLAGS "${HEBICHESS_WASM_H1_AB_LINK_FLAGS} ${HEBICHESS_WASM_H1_AB_DIAGNOSTIC_LINK_FLAGS}"
     )
   endfunction()
   add_hebichess_wasm_h1_ab(HebiChessWasmH1Interleaved4 4)
