@@ -1,8 +1,9 @@
 # WASM H1=4 versus H1=8 A/B
 
 This is a Windows acceptance benchmark for the frozen v3 NNUE model. It does
-not replace the browser production artifact and does not change the production
-default: `HebiChessWasm` remains H1=4.
+not replace the browser production artifact. `HebiChessWasm` and the native
+`HebiChess` production engine use H1=8; the dedicated H1=4 target remains the
+explicit reference baseline.
 
 The two test-only Emscripten targets are:
 
@@ -11,8 +12,8 @@ The two test-only Emscripten targets are:
 
 They have the same sources, `-O3`, memory flags, Node module factory name,
 exported functions, production QSearch definitions, `HEBICHESS_QSEARCH_LAZY_CHECKS=0`,
-and NNUE/network format. The sole variant-specific compile definition is
-`HEBICHESS_NNUE_HIDDEN1_VARIANT=4` or `=8`.
+and NNUE/network format. The sole NNUE/search variant-specific compile
+definition is `HEBICHESS_NNUE_HIDDEN1_VARIANT=4` or `=8`.
 
 All WASM engines share the CMake `HEBICHESS_WASM_COMMON_LINK_FLAGS` contract:
 `INITIAL_MEMORY=201326592`, `MAXIMUM_MEMORY=402653184`,
@@ -71,15 +72,37 @@ artifact-to-`h1_4`/`h1_8` mapping in JSON.
 
 ## Production artifact stack validation
 
-Production remains H1=4. Build its browser target with verbose output and
-confirm the final `HebiChessWasm` link command contains
-`-sSTACK_SIZE=2097152`:
+Production uses H1=8. Configure all three production-equivalent targets
+together: CMake fails configuration if `HebiChessWasm` and
+`HebiChessWasmH1Interleaved8` do not share every NNUE/search definition
+(H1=8, lazy checks off, and the accepted production QSearch definitions).
+The browser and Node module ABI definitions intentionally remain different.
+Build with verbose output and confirm the final `HebiChessWasm` link command
+contains `-sSTACK_SIZE=2097152`:
 
 ```bat
 call %EMSDK%\emsdk_env.bat
-emcmake cmake -S . -B build-wasm-production -DCMAKE_BUILD_TYPE=Release -DHEBICHESS_BUILD_WASM=ON
-cmake --build build-wasm-production --config Release --target HebiChessWasm --verbose
+emcmake cmake -S . -B build-wasm-production -DCMAKE_BUILD_TYPE=Release -DHEBICHESS_BUILD_WASM=ON -DHEBICHESS_BUILD_WASM_NODE_TEST=ON -DHEBICHESS_BUILD_WASM_H1_AB=ON -DHEBICHESS_WASM_OUTPUT_DIR=build-wasm-production/browser -DHEBICHESS_WASM_NODE_TEST_OUTPUT_DIR=build-wasm-production/node-test -DHEBICHESS_WASM_H1_AB_OUTPUT_DIR=build-wasm-production/h1-ab
+cmake --build build-wasm-production --config Release --target HebiChessWasm HebiChessWasmNodeTest HebiChessWasmH1Interleaved4 HebiChessWasmH1Interleaved8 --verbose -j 1
 ```
+
+This writes only staging artifacts below `build-wasm-production`; it does not
+publish `web/public/engine`. The browser target is the actual production
+`HebiChessWasm` build. Its Node-compatible twin receives the same shared
+NNUE/search definitions and is used for automated loading checks:
+
+```bat
+node scripts\test-wasm-nnue-parity.js --wasm build-wasm-production\node-test\hebichess-node.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue
+node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --h1-4 build-wasm-production\h1-ab\h1-4\hebichess.js --h1-8 build-wasm-production\h1-ab\h1-8\hebichess.js --only checked-evasion --depth 1 --time-ms 1000 --eval-repeats 1 --output runs\wasm-production-h1-8-checked-evasion.json
+node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --h1-4 build-wasm-production\h1-ab\h1-4\hebichess.js --h1-8 build-wasm-production\h1-ab\h1-8\hebichess.js --depth 5 --time-ms 1000 --eval-repeats 128 --order h1-8-first --output runs\wasm-production-h1-8-final.json
+```
+
+The first command verifies frozen 100-FEN raw-NNUE parity and the
+activation/checksum/truncation hard-fail path. The second requires exactly one
+`bestmove` from each artifact and runs the 1000 ms checked-evasion smoke. The
+final command is the 100-FEN raw and rounded-CP H1=4/H1=8 parity gate plus the
+canonical fixed-depth/no-duplicate protocol regression. Its H1=8 artifact is
+configuration-locked to the browser production target.
 
 ## Output format
 

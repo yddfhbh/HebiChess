@@ -12,7 +12,7 @@ set(CHESS_SOURCES
   src/chess/uci_engine.cpp src/chess/opening_book.cpp
 )
 
-# Phase 6-4B final production configuration.  Keep the accepted search
+# Phase 6-4B final production configuration.  Keep the accepted NNUE/search
 # definitions shared by every production engine target so they cannot drift.
 set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_DELTA_PRUNING=1
@@ -21,10 +21,38 @@ set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_TT_PROFILE=0
   HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
 )
+set(HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+)
 function(apply_hebichess_production_qsearch target)
   target_compile_definitions(${target} PRIVATE
     ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
   )
+endfunction()
+function(apply_hebichess_production_nnue_search target)
+  apply_hebichess_production_qsearch(${target})
+  target_compile_definitions(${target} PRIVATE
+    ${HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS}
+  )
+endfunction()
+
+# Fail configuration when the browser production target and its H1=8
+# production-equivalent benchmark ever diverge in NNUE/search settings. Their
+# module ABI and browser/Node definitions intentionally differ and are not
+# compared here.
+function(assert_hebichess_nnue_search_config_matches reference candidate)
+  get_target_property(_reference_definitions ${reference} COMPILE_DEFINITIONS)
+  get_target_property(_candidate_definitions ${candidate} COMPILE_DEFINITIONS)
+  foreach(_required IN LISTS HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
+                             HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS)
+    list(FIND _reference_definitions "${_required}" _reference_index)
+    list(FIND _candidate_definitions "${_required}" _candidate_index)
+    if(_reference_index EQUAL -1 OR _candidate_index EQUAL -1)
+      message(FATAL_ERROR
+        "${reference} and ${candidate} must share ${_required} in their production NNUE/search configuration")
+    endif()
+  endforeach()
 endfunction()
 
 add_executable(HebiChess
@@ -33,7 +61,7 @@ add_executable(HebiChess
 )
 
 target_include_directories(HebiChess PRIVATE src)
-apply_hebichess_production_qsearch(HebiChess)
+apply_hebichess_production_nnue_search(HebiChess)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 set(HEBICHESS_WASM_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/web/public/engine" CACHE PATH "Output directory for the browser WebAssembly engine")
@@ -53,7 +81,7 @@ if(HEBICHESS_BUILD_WASM)
   add_executable(HebiChessWasm src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasm PRIVATE src)
   target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1)
-  apply_hebichess_production_qsearch(HebiChessWasm)
+  apply_hebichess_production_nnue_search(HebiChessWasm)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_OUTPUT_DIR}"
@@ -63,6 +91,8 @@ if(HEBICHESS_BUILD_WASM)
 endif()
 
 option(HEBICHESS_BUILD_WASM_NODE_TEST "Build the test-only Node-compatible WebAssembly engine" OFF)
+set(HEBICHESS_WASM_NODE_TEST_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/build-wasm/node-test" CACHE PATH
+    "Output directory for the Node-compatible production-equivalent WASM test engine")
 if(HEBICHESS_BUILD_WASM_NODE_TEST)
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "HEBICHESS_BUILD_WASM_NODE_TEST requires Emscripten (configure with emcmake cmake)")
@@ -70,10 +100,10 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
   add_executable(HebiChessWasmNodeTest src/wasm_bridge.cpp ${CHESS_SOURCES})
   target_include_directories(HebiChessWasmNodeTest PRIVATE src)
   target_compile_definitions(HebiChessWasmNodeTest PRIVATE HEBICHESS_WASM=1)
-  apply_hebichess_production_qsearch(HebiChessWasmNodeTest)
+  apply_hebichess_production_nnue_search(HebiChessWasmNodeTest)
   set_target_properties(HebiChessWasmNodeTest PROPERTIES
     OUTPUT_NAME hebichess-node
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build-wasm/node-test"
+    RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_NODE_TEST_OUTPUT_DIR}"
     SUFFIX ".js"
   LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessNodeTestModule -sENVIRONMENT=web,worker,node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
   )
@@ -109,10 +139,20 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
     target_compile_definitions(${target} PRIVATE
       HEBICHESS_WASM=1
       HEBICHESS_WASM_H1_AB_BENCHMARK=1
-      HEBICHESS_QSEARCH_LAZY_CHECKS=0
-      HEBICHESS_NNUE_HIDDEN1_VARIANT=${variant}
     )
-    apply_hebichess_production_qsearch(${target})
+    if(variant EQUAL 8)
+      apply_hebichess_production_nnue_search(${target})
+    else()
+      # Retain the H1=4 reference artifact as an explicit baseline.  It must
+      # not inherit the production H1=8 default.
+      target_compile_definitions(${target} PRIVATE
+        HEBICHESS_QSEARCH_LAZY_CHECKS=0
+        HEBICHESS_NNUE_HIDDEN1_VARIANT=4
+      )
+      target_compile_definitions(${target} PRIVATE
+        ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
+      )
+    endif()
     set_target_properties(${target} PROPERTIES
       OUTPUT_NAME hebichess
       RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_H1_AB_OUTPUT_DIR}/h1-${variant}"
@@ -122,6 +162,10 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
   endfunction()
   add_hebichess_wasm_h1_ab(HebiChessWasmH1Interleaved4 4)
   add_hebichess_wasm_h1_ab(HebiChessWasmH1Interleaved8 8)
+  if(HEBICHESS_BUILD_WASM)
+    assert_hebichess_nnue_search_config_matches(
+      HebiChessWasm HebiChessWasmH1Interleaved8)
+  endif()
 endif()
 
 add_executable(HebiChessTypesTest
@@ -194,18 +238,16 @@ add_executable(HebiChessSearchNnueH1Interleaved8
   ${CHESS_SOURCES}
 )
 target_include_directories(HebiChessSearchNnueH1Interleaved8 PRIVATE src)
-apply_hebichess_production_qsearch(HebiChessSearchNnueH1Interleaved8)
-target_compile_definitions(HebiChessSearchNnueH1Interleaved8 PRIVATE
-  HEBICHESS_QSEARCH_LAZY_CHECKS=0
-  HEBICHESS_NNUE_HIDDEN1_VARIANT=8
-)
+apply_hebichess_production_nnue_search(HebiChessSearchNnueH1Interleaved8)
 
 add_executable(HebiChessSearchLazyChecks
   tests/search_baseline.cpp
   ${CHESS_SOURCES}
 )
 target_include_directories(HebiChessSearchLazyChecks PRIVATE src)
-apply_hebichess_production_qsearch(HebiChessSearchLazyChecks)
+target_compile_definitions(HebiChessSearchLazyChecks PRIVATE
+  ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
+)
 target_compile_definitions(HebiChessSearchLazyChecks PRIVATE HEBICHESS_QSEARCH_LAZY_CHECKS=1)
 
 add_executable(HebiChessSearchBaselineConfigTest
@@ -219,14 +261,12 @@ target_compile_definitions(HebiChessSearchBaselineConfigTest PRIVATE
   HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=4
 )
 
-add_executable(HebiChessSearchNnueH1Interleaved8ConfigTest
+add_executable(HebiChessProductionNnueSearchConfigTest
   tests/search_baseline_config_test.cpp
 )
-target_include_directories(HebiChessSearchNnueH1Interleaved8ConfigTest PRIVATE src)
-apply_hebichess_production_qsearch(HebiChessSearchNnueH1Interleaved8ConfigTest)
-target_compile_definitions(HebiChessSearchNnueH1Interleaved8ConfigTest PRIVATE
-  HEBICHESS_QSEARCH_LAZY_CHECKS=0
-  HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+target_include_directories(HebiChessProductionNnueSearchConfigTest PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessProductionNnueSearchConfigTest)
+target_compile_definitions(HebiChessProductionNnueSearchConfigTest PRIVATE
   HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=8
 )
 
@@ -443,8 +483,8 @@ add_test(
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/search_baseline_smoke.cmake"
 )
 add_test(NAME chess_search_baseline_config COMMAND HebiChessSearchBaselineConfigTest)
-add_test(NAME chess_search_nnue_h1_interleaved8_config
-  COMMAND HebiChessSearchNnueH1Interleaved8ConfigTest
+add_test(NAME chess_production_nnue_search_config
+  COMMAND HebiChessProductionNnueSearchConfigTest
 )
 add_test(
   NAME chess_search_nnue_h1_ab

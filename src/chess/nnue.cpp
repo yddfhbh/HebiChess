@@ -76,11 +76,11 @@ struct Network {
 
 std::optional<Network>& loaded_network() { static std::optional<Network> value; return value; }
 
-// The normal engine build uses the accepted four-output dense loop.
-// Benchmark-only targets override this at compile time; there is no runtime
-// switch in the engine, UCI, or WASM surface.
+// The normal engine build uses the accepted eight-output dense loop.
+// The dedicated H1=4 reference targets override this at compile time; there
+// is no runtime switch in the engine, UCI, or WASM surface.
 #ifndef HEBICHESS_NNUE_HIDDEN1_VARIANT
-#define HEBICHESS_NNUE_HIDDEN1_VARIANT 4
+#define HEBICHESS_NNUE_HIDDEN1_VARIANT 8
 #endif
 
 static_assert(HEBICHESS_NNUE_HIDDEN1_VARIANT == 1 ||

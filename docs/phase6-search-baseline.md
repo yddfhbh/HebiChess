@@ -34,9 +34,11 @@ Each search record contains elapsed time, nodes, main/qnode split and ratio, NPS
 
 `HebiChessSearchBaseline` is explicitly frozen at
 `HEBICHESS_NNUE_HIDDEN1_VARIANT=4`.  The otherwise identical candidate is
-`HebiChessSearchNnueH1Interleaved8`, compiled with variant `8`.  Both use
-production QSearch (`delta=1`, `QTT variant=2`, cutoff mask `7`, profile and
-diagnostic `0`) and `HEBICHESS_QSEARCH_LAZY_CHECKS=0`.
+`HebiChessSearchNnueH1Interleaved8`, which shares the same production
+NNUE/search definition set as `HebiChess`: variant `8`, production QSearch
+(`delta=1`, `QTT variant=2`, cutoff mask `7`, profile and diagnostic `0`), and
+`HEBICHESS_QSEARCH_LAZY_CHECKS=0`. `HebiChessSearchBaseline` remains the
+explicit H1=4 reference and is never allowed to inherit that default.
 
 The following Windows commands produce directly comparable ten-FEN NNUE
 reports: each includes fixed depth and the requested 1-second search.  The
@@ -60,3 +62,28 @@ v3 evaluator parity across the canonical 100-position corpus, run:
 ```powershell
 .\build-release\Release\HebiChessNnueHidden1DenseInterleaved8.exe --network $network --corpus tests\data\wasm-parity-100.fen --verify-only
 ```
+
+## H1=8 production-promotion acceptance
+
+Build the actual native production engine and the explicit H1=4/H1=8
+production-equivalent verification targets with a single job:
+
+```powershell
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release --target HebiChess HebiChessSearchBaseline HebiChessSearchNnueH1Interleaved8 HebiChessNnueHidden1DenseInterleaved4 HebiChessNnueHidden1DenseInterleaved8 HebiChessProductionNnueSearchConfigTest -j 1
+ctest --test-dir build-release -C Release -R "chess_(search_baseline_config|production_nnue_search_config)" --output-on-failure -j 1
+```
+
+Use the frozen SHA-checked `$network` from above, then run both 100-FEN raw
+parity checks and the canonical ten-FEN fixed-depth comparison:
+
+```powershell
+.\build-release\Release\HebiChessNnueHidden1DenseInterleaved4.exe --network $network --corpus tests\data\wasm-parity-100.fen --verify-only
+.\build-release\Release\HebiChessNnueHidden1DenseInterleaved8.exe --network $network --corpus tests\data\wasm-parity-100.fen --verify-only
+cmake -DBASELINE=".\build-release\Release\HebiChessSearchBaseline.exe" -DCANDIDATE=".\build-release\Release\HebiChessSearchNnueH1Interleaved8.exe" -DFIXTURE="tests\data\phase6-search-baseline.fen" -DNETWORK="$network" -DDEPTH=5 -DTIME_MS=1000 -DOUTPUT_DIR="runs\h1-8-production-acceptance" -P tests\search_nnue_h1_ab.cmake
+```
+
+Both evaluator checks must report zero raw and rounded-CP mismatches against
+the frozen reference; therefore H1=4 and production-equivalent H1=8 are exact
+on the same 100 FENs. The final command hard-fails on a canonical fixed-depth
+bestmove, score, completed-depth, or root raw-NNUE difference.
