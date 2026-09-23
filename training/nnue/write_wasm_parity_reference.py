@@ -27,12 +27,33 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_text(path: Path) -> str:
+    """Read a UTF-8 corpus with all line endings normalized to LF."""
+    with path.open(encoding="utf-8", newline="") as source:
+        return source.read().replace("\r\n", "\n").replace("\r", "\n")
+
+
+def canonical_text_sha256(path: Path) -> str:
+    """Return the SHA256 of the UTF-8, LF-normalized corpus text."""
+    return hashlib.sha256(canonical_text(path).encode("utf-8")).hexdigest()
+
+
 def fens(path: Path) -> list[str]:
-    result = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+    result = [line.strip() for line in canonical_text(path).splitlines()
               if line.strip() and not line.lstrip().startswith("#")]
     if len(result) != 100 or len(set(result)) != 100:
         raise ValueError(f"expected 100 unique FENs in {path}, got {len(result)}")
     return result
+
+
+def reference_samples(network, positions: Path) -> list[dict[str, float | str]]:
+    samples = []
+    for fen in fens(positions):
+        raw_cp = network.evaluate(fen)
+        if not math.isfinite(raw_cp):
+            raise SystemExit(f"non-finite Python raw NNUE score for {fen}")
+        samples.append({"fen": fen, "raw_cp": raw_cp})
+    return samples
 
 
 def main() -> None:
@@ -48,18 +69,13 @@ def main() -> None:
     actual_sha = sha256(args.network)
     if actual_sha.lower() != args.expected_network_sha256.lower():
         raise SystemExit(f"network SHA256 mismatch: expected {args.expected_network_sha256}, got {actual_sha}")
-    positions_sha = sha256(args.positions)
+    positions_sha = canonical_text_sha256(args.positions)
     if positions_sha.lower() != args.expected_positions_sha256.lower():
         raise SystemExit(f"positions SHA256 mismatch: expected {args.expected_positions_sha256}, got {positions_sha}")
     network = load(args.network)
     if network.format_version != 3 or network.final_hidden_activation != "relu":
         raise SystemExit("browser candidate must be HEBINNUE v3 with RELU final hidden activation")
-    samples = []
-    for fen in fens(args.positions):
-        raw_cp = network.evaluate(fen)
-        if not math.isfinite(raw_cp):
-            raise SystemExit(f"non-finite Python raw NNUE score for {fen}")
-        samples.append({"fen": fen, "raw_cp": raw_cp})
+    samples = reference_samples(network, args.positions)
     args.output.write_text(json.dumps({"network_sha256": actual_sha,
                                        "positions_sha256": positions_sha,
                                        "samples": samples}, indent=2) + "\n",

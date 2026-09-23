@@ -43,14 +43,17 @@ Windows before testing:
 - `runs/full-phase4-finalrelu-h128-128-lr1e-4/best_balanced.hebinnue`
 
 `tests/data/wasm-parity-100.fen` is the tracked canonical 100-FEN corpus, so
-it is already present in a fresh checkout. The reference JSON is generated
-locally from the frozen model and is intentionally not tracked.
+it is already present in a fresh checkout. Its `positions_sha256` is the
+canonical UTF-8 LF-normalized corpus SHA256 (not the checkout's raw file-byte
+SHA256), which keeps verification identical on Windows CRLF checkouts. The
+reference JSON is generated locally from the frozen model and is intentionally
+not tracked.
 
 From the repository root in an Emscripten-enabled Developer Command Prompt:
 
 ```bat
 certutil -hashfile runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue SHA256
-certutil -hashfile tests\data\wasm-parity-100.fen SHA256
+rem Raw corpus bytes can differ after Windows CRLF checkout; the generator verifies canonical UTF-8 LF-normalized SHA256.
 mkdir web\public\engine\models
 copy /Y runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue web\public\engine\models\hebinnue-v3-4c815d54bc6c9fbf.hebinnue
 py -3 -m training.nnue.write_wasm_parity_reference --network runs\full-phase4-finalrelu-h128-128-lr1e-4\best_balanced.hebinnue --positions tests\data\wasm-parity-100.fen --output tests\data\nnue-export-parity-100.json
@@ -66,8 +69,9 @@ npm test
 node server.js
 ```
 
-Confirm the two SHA-256 values from the task before continuing.  With the
-server running, use Chrome at these local URLs:
+Confirm the model SHA-256 from the task before continuing; the generator
+independently verifies the corpus's canonical UTF-8 LF-normalized SHA256.
+With the server running, use Chrome at these local URLs:
 
 - `http://127.0.0.1:3400/engine-test` — existing HCE smoke.
 - `http://127.0.0.1:3400/public/wasm-nnue-parity.html` — 100 raw scores;

@@ -100,9 +100,9 @@ node scripts\benchmark-wasm-h1-ab.js --network runs\full-phase4-finalrelu-h128-1
 
 The first command writes the required, intentionally untracked acceptance
 input. It evaluates the tracked canonical 100-FEN corpus with the independent
-pure-Python `.hebinnue` reader, after pinning both the frozen network SHA-256
-and corpus SHA-256. It never uses a WASM or native-engine result as a
-reference. The second command verifies those frozen 100-FEN raw-NNUE values
+pure-Python `.hebinnue` reader, after pinning the frozen network raw-byte
+SHA-256 and the corpus's canonical UTF-8 LF-normalized `positions_sha256`.
+It never uses a WASM or native-engine result as a reference. The second command verifies those frozen 100-FEN raw-NNUE values
 and the activation/checksum/truncation hard-fail path. The third requires exactly one
 `bestmove` from each artifact and runs the 1000 ms checked-evasion smoke. The
 final command is the 100-FEN raw and rounded-CP H1=4/H1=8 parity gate plus the
