@@ -45,7 +45,7 @@ JSON fixed-depth records include `bestmove`, `score_cp`, `completed_depth`, and
 `q_nnue_evals` for the performance comparison.
 
 ```powershell
-cmake --build build-release --config Release --target HebiChessSearchBaseline HebiChessSearchNnueH1Interleaved8
+cmake --build build-release --config Release --target HebiChessSearchBaseline HebiChessSearchNnueH1Interleaved8 HebiChessNnueHidden1DenseInterleaved8
 $fixture = "tests\data\phase6-search-baseline.fen"
 .\build-release\Release\HebiChessSearchBaseline.exe --fixture $fixture --depth 5 --time-ms 1000 --modes nnue --network $network --eval-warmup 1 --eval-iters 1 --eval-samples 1 --output "runs\h1-4-search-ab.json"
 .\build-release\Release\HebiChessSearchNnueH1Interleaved8.exe --fixture $fixture --depth 5 --time-ms 1000 --modes nnue --network $network --eval-warmup 1 --eval-iters 1 --eval-samples 1 --output "runs\h1-8-search-ab.json"
