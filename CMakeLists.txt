@@ -230,6 +230,18 @@ target_compile_definitions(HebiChessSearchBaseline PRIVATE
   HEBICHESS_NNUE_HIDDEN1_VARIANT=4
 )
 
+# Separate diagnostic executable: its JSON harness is never linked into the
+# production UCI target and introduces no production options or output.
+add_executable(HebiChessBlunderDiagnostic
+  tests/blunder_diagnostic.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessBlunderDiagnostic PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessBlunderDiagnostic)
+target_compile_definitions(HebiChessBlunderDiagnostic PRIVATE
+  HEBICHESS_BLUNDER_DIAGNOSTIC=1
+)
+
 # Search-level H1 A/B targets.  These deliberately share the complete
 # production QSearch configuration; only the compile-time hidden1 loop width
 # differs.  Keep these as direct-search harnesses rather than engine targets.

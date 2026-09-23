@@ -17,6 +17,17 @@ constexpr int MATE_SCORE = 30000;
 
 enum class ScoreBound : std::uint8_t { Exact, Lower, Upper };
 
+// Keep exact scores, threshold proofs, and prefilter decisions distinct for
+// diagnostic consumers of root-style results.
+enum class StyleProofResult : std::uint8_t {
+  NotRun,
+  ExactScore,
+  PrefilterSkipped,
+  UpperBoundRejected,
+  ThresholdProven,
+  ThresholdRejected,
+};
+
 enum class SacrificeKind : std::uint8_t {
   None,
   MinorOrPawnSacrifice,
@@ -32,6 +43,7 @@ struct RootMoveInfo {
   // minimax score.  Keep that distinction explicit for callers.
   bool style_safe{false};
   int style_score{0};
+  StyleProofResult style_proof{StyleProofResult::NotRun};
   bool sacrifice_candidate{false};
   SacrificeKind sacrifice_kind{SacrificeKind::None};
   int style_tolerance{AGGRESSION_TOLERANCE_CP};
@@ -210,6 +222,9 @@ struct SearchLimits {
   int reuse_verification_ms{0};
   // Diagnostic switch only: false reproduces the v2.1 root safety margin.
   bool use_style_v3{true};
+  // Used by the separately built diagnostic harness for objective-only
+  // experiments.  Normal UCI searches leave root style selection enabled.
+  bool use_root_style_selection{true};
   // -1 selects the v3.2 adaptive reserve.  A non-negative value is intended
   // for controlled benchmarks of the root verification budget.
   int style_verification_reserve_ms{-1};

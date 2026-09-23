@@ -1,0 +1,14 @@
+{
+  "schema": "jjugle-blunder-corpus/v1",
+  "cases": [
+    {
+      "fen": "<full FEN before JJUGLE move>",
+      "jjugle_move": "e2e4",
+      "reference_best_move": "d2d4",
+      "reference_score_before": 32,
+      "reference_score_after": -285,
+      "estimated_cp_loss": 317,
+      "note": "Replace this illustrative record with a verified game position."
+    }
+  ]
+}

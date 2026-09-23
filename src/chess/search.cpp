@@ -1995,6 +1995,12 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   result.objective_time_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - search_started).count());
+  if (!limits.use_root_style_selection) {
+    // Diagnostic-only objective sweeps stop after the completed root search.
+    // The default follows the existing production style-selection path.
+    result.main_nodes = result.nodes - result.qnodes;
+    return result;
+  }
   auto& current = last_completed;
   const int depth = result.completed_depth;
   const int objective_best = last_objective_best;
@@ -2092,6 +2098,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     if (info.bound == ScoreBound::Exact) {
       info.style_safe = is_style_score_safe(objective_best, info.search_score,
                                              info.style_tolerance);
+      info.style_proof = StyleProofResult::ExactScore;
       if (info.style_safe) ++result.root_style_verified;
       else ++result.root_style_rejected;
     }
@@ -2121,6 +2128,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     if (limits.use_style_v3 &&
         !(info.sacrifice_candidate || info.king_break || info.sacrifice_preparation ||
           info.style_tolerance > AGGRESSION_TOLERANCE_CP)) {
+      info.style_proof = StyleProofResult::PrefilterSkipped;
       ++result.root_style_prefilter_skips;
       continue;
     }
@@ -2131,11 +2139,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
            (info.search_score == objective_best &&
             (info.move.from.index() < objective_move->move.from.index() ||
              (info.move.from == objective_move->move.from && info.move.to.index() < objective_move->move.to.index()))))))) {
+      info.style_proof = StyleProofResult::PrefilterSkipped;
       ++result.root_style_prefilter_skips;
       continue;
     }
     if (info.bound == ScoreBound::Upper &&
         !is_style_score_safe(objective_best, info.search_score, info.style_tolerance)) {
+      info.style_proof = StyleProofResult::UpperBoundRejected;
       ++result.root_style_rejected;
       continue;
     }
@@ -2211,6 +2221,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     }
     candidate->style_safe = proof >= threshold;
     if (candidate->style_safe) {
+      candidate->style_proof = StyleProofResult::ThresholdProven;
       ++result.root_style_verified;
       ++result.root_style_verification_proven;
       if (candidate->style_score > chosen->style_score ||
@@ -2222,7 +2233,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                candidate->move.to.index() < chosen->move.to.index())))))) {
         chosen = candidate;
       }
-    } else ++result.root_style_rejected;
+    } else {
+      candidate->style_proof = StyleProofResult::ThresholdRejected;
+      ++result.root_style_rejected;
+    }
   }
   result.style_verification_time_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
