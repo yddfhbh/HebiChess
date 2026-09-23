@@ -454,6 +454,8 @@ void UciEngine::send_command(const std::string& line) {
              << " gives_check_for_delta_exception " << result.q_gives_check_for_delta_exception
              << " gives_check_for_ordering " << result.q_gives_check_for_ordering
              << " evasion_check_ordering_calls " << result.q_evasion_check_ordering_calls
+             << " fused_check_metadata " << result.q_fused_check_metadata_moves
+             << " fused_avoided_make_unmake " << result.q_fused_avoided_check_make_unmake
              << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
              << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
     emit(qprofile.str());

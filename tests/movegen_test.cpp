@@ -17,6 +17,45 @@ bool has_move(const std::vector<Move>& moves, Square from, Square to,
   });
 }
 
+bool child_gives_check(Board& board, const Move& move) {
+  const Color mover = board.side_to_move();
+  const UndoState undo = board.make_move(move);
+  const Square enemy_king = board.find_king(board.side_to_move());
+  const bool result = enemy_king.is_valid() && board.is_square_attacked(enemy_king, mover);
+  board.unmake_move(move, undo);
+  return result;
+}
+
+void test_fused_legal_check_metadata() {
+  // Includes discovered, en-passant discovered, promotion, capture-check,
+  // check-evasion, and pinned tactical positions.  Every fused item is
+  // compared against the established child-board attack semantics.
+  for (const char* fen : {
+           "4k3/8/8/8/8/4B3/4R3/4K3 w - - 0 1",
+           "4k3/8/8/3pP3/8/8/8/4R1K1 w - d6 0 1",
+           "k7/1P6/8/8/8/8/8/4K3 w - - 0 1",
+           "4k3/4p3/8/8/8/8/4R3/4K3 w - - 0 1",
+           "k3r3/8/8/8/8/8/8/4K3 w - - 0 1",
+           "k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1",
+       }) {
+    auto board = Board::from_fen(fen).value();
+    const auto legal = generate_legal_moves(board);
+    const auto fused = generate_legal_moves_with_check(board);
+    assert(fused.size() == legal.size());
+    for (std::size_t index = 0; index < legal.size(); ++index) {
+      assert(fused[index].move == legal[index]);
+      assert(fused[index].gives_check == child_gives_check(board, legal[index]));
+    }
+    const auto tactical = generate_legal_tactical_moves(board);
+    const auto fused_tactical = generate_legal_tactical_moves_with_check(board);
+    assert(fused_tactical.size() == tactical.size());
+    for (std::size_t index = 0; index < tactical.size(); ++index) {
+      assert(fused_tactical[index].move == tactical[index]);
+      assert(fused_tactical[index].gives_check == child_gives_check(board, tactical[index]));
+    }
+  }
+}
+
 void test_initial_and_piece_moves() {
   assert(generate_pseudo_legal_moves(Board::initial()).size() == 20);
 
@@ -101,4 +140,5 @@ int main() {
   test_initial_and_piece_moves();
   test_pawns_and_special_moves();
   test_castling_and_attacks();
+  test_fused_legal_check_metadata();
 }

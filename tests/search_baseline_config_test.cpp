@@ -20,6 +20,9 @@
 #ifndef HEBICHESS_QSEARCH_LAZY_CHECKS
 #define HEBICHESS_QSEARCH_LAZY_CHECKS 0
 #endif
+#ifndef HEBICHESS_QSEARCH_FUSED_CHECKS
+#define HEBICHESS_QSEARCH_FUSED_CHECKS 0
+#endif
 #ifndef HEBICHESS_NNUE_HIDDEN1_VARIANT
 #define HEBICHESS_NNUE_HIDDEN1_VARIANT 8
 #endif
@@ -39,6 +42,8 @@ static_assert(HEBICHESS_QSEARCH_TT_DIAGNOSTIC == 0,
               "SearchBaseline must keep QTT diagnostics disabled");
 static_assert(HEBICHESS_QSEARCH_LAZY_CHECKS == 0,
               "SearchBaseline must keep lazy QSearch checks disabled");
+static_assert(HEBICHESS_QSEARCH_FUSED_CHECKS == 0,
+              "Production targets must not enable the fused-check experiment");
 static_assert(HEBICHESS_NNUE_HIDDEN1_VARIANT == HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT,
               "SearchBaseline must use its selected hidden1 loop variant");
 

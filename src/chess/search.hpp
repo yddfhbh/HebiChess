@@ -82,6 +82,23 @@ struct SearchResult {
   std::uint64_t q_gives_check_for_delta_exception{0};
   std::uint64_t q_gives_check_for_ordering{0};
   std::uint64_t q_evasion_check_ordering_calls{0};
+  // Candidate-only telemetry.  A fused item has already made the child board
+  // for legality filtering, so it avoids the old second make/unmake inside
+  // gives_check().  Production keeps these at zero until promotion.
+  std::uint64_t q_fused_check_metadata_moves{0};
+  std::uint64_t q_fused_avoided_check_make_unmake{0};
+  // Filled only by HEBICHESS_QSEARCH_PROFILE benchmark binaries.  The
+  // production compilation has no clock reads in these paths.
+  std::uint64_t qsearch_total_time_us{0};
+  std::uint64_t q_movegen_time_us{0};
+  std::uint64_t q_order_time_us{0};
+  std::uint64_t q_sort_time_us{0};
+  std::uint64_t q_gives_check_time_us{0};
+  std::uint64_t q_see_time_us{0};
+  std::uint64_t q_nnue_evaluate_time_us{0};
+  std::uint64_t q_nnue_update_time_us{0};
+  std::uint64_t qtt_probe_time_us{0};
+  std::uint64_t qtt_store_time_us{0};
   std::uint64_t q_full_legal_movegen_calls{0};
   std::uint64_t q_tactical_movegen_calls{0};
   std::uint64_t qdelta_prunes{0};

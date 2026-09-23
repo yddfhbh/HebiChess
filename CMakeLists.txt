@@ -250,6 +250,27 @@ target_compile_definitions(HebiChessSearchLazyChecks PRIVATE
 )
 target_compile_definitions(HebiChessSearchLazyChecks PRIVATE HEBICHESS_QSEARCH_LAZY_CHECKS=1)
 
+# QSearch fused-legality/check-metadata experiment.  These targets are kept
+# separate from HebiChess and all release-equivalent benchmarks so the
+# candidate can be rejected without changing production code generation.
+function(add_qsearch_fused_checks_variant target fused profile)
+  add_executable(${target}
+    tests/search_baseline.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(${target} PRIVATE src)
+  apply_hebichess_production_nnue_search(${target})
+  target_compile_definitions(${target} PRIVATE
+    HEBICHESS_QSEARCH_FUSED_CHECKS=${fused}
+    HEBICHESS_QSEARCH_PROFILE=${profile}
+  )
+endfunction()
+
+add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedBaseline 0 0)
+add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedCandidate 1 0)
+add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedBaselineProfile 0 1)
+add_qsearch_fused_checks_variant(HebiChessSearchQsearchFusedCandidateProfile 1 1)
+
 add_executable(HebiChessSearchBaselineConfigTest
   tests/search_baseline_config_test.cpp
 )

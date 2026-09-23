@@ -266,4 +266,39 @@ std::vector<Move> generate_legal_tactical_moves(Board& board) {
   return legal_moves;
 }
 
+namespace {
+
+std::vector<LegalMoveWithCheck> generate_legal_moves_with_check_impl(
+    Board& board, const std::vector<Move>& pseudo_moves) {
+  std::vector<LegalMoveWithCheck> legal_moves;
+  legal_moves.reserve(pseudo_moves.size());
+  const Color moving_color = board.side_to_move();
+  for (const Move& move : pseudo_moves) {
+    const UndoState undo = board.make_move(move);
+    const Square own_king = board.find_king(moving_color);
+    const bool legal = own_king.is_valid() &&
+        !board.is_square_attacked(own_king, opposite(moving_color));
+    // This intentionally uses the fully mutated child board and the same
+    // attack query as gives_check().  It therefore covers discovered checks,
+    // promotion checks, and en-passant discoveries without approximation.
+    const Square opponent_king = board.find_king(board.side_to_move());
+    const bool gives_check = legal && opponent_king.is_valid() &&
+        board.is_square_attacked(opponent_king, moving_color);
+    board.unmake_move(move, undo);
+    if (legal) legal_moves.push_back({move, gives_check});
+  }
+  return legal_moves;
+}
+
+}  // namespace
+
+std::vector<LegalMoveWithCheck> generate_legal_moves_with_check(Board& board) {
+  return generate_legal_moves_with_check_impl(board, generate_pseudo_legal_moves(board));
+}
+
+std::vector<LegalMoveWithCheck> generate_legal_tactical_moves_with_check(Board& board) {
+  return generate_legal_moves_with_check_impl(board,
+                                               generate_pseudo_legal_tactical_moves(board));
+}
+
 }  // namespace hebichess

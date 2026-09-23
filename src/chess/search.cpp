@@ -32,6 +32,17 @@ namespace {
 #define HEBICHESS_QSEARCH_LAZY_CHECKS 0
 #endif
 
+// The fused legal-filter/check-metadata path is an experiment-only switch.
+// Production remains on the established two-pass path until its separate
+// candidate benchmarks and parity gates are accepted.
+#ifndef HEBICHESS_QSEARCH_FUSED_CHECKS
+#define HEBICHESS_QSEARCH_FUSED_CHECKS 0
+#endif
+
+#ifndef HEBICHESS_QSEARCH_PROFILE
+#define HEBICHESS_QSEARCH_PROFILE 0
+#endif
+
 #ifndef HEBICHESS_QSEARCH_TT_CUTOFF_MASK
 #if HEBICHESS_QSEARCH_TT_VARIANT == 2
 #define HEBICHESS_QSEARCH_TT_CUTOFF_MASK 7
@@ -154,6 +165,29 @@ class StyleTimer {
   std::chrono::steady_clock::time_point started_{};
 };
 
+class QsearchProfileTimer {
+ public:
+  QsearchProfileTimer(SearchResult* result, std::uint64_t SearchResult::*field)
+      : result_(result), field_(field) {
+#if HEBICHESS_QSEARCH_PROFILE
+    if (result_ != nullptr) started_ = std::chrono::steady_clock::now();
+#endif
+  }
+  ~QsearchProfileTimer() {
+#if HEBICHESS_QSEARCH_PROFILE
+    if (result_ != nullptr) {
+      result_->*field_ += static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - started_).count());
+    }
+#endif
+  }
+ private:
+  SearchResult* result_;
+  std::uint64_t SearchResult::*field_;
+  std::chrono::steady_clock::time_point started_{};
+};
+
 struct SearchHeuristics {
   std::array<std::array<Move, 2>, MAX_SEARCH_PLY> killers{};
   std::array<std::array<std::array<int, Square::kSquareCount>,
@@ -252,6 +286,9 @@ struct SearchContext {
 int evaluate_search_position(const Board& board, SearchContext& context,
                              const NnueAccumulator* accumulator,
                              bool qsearch) {
+  QsearchProfileTimer profile_timer(
+      qsearch && context.eval_mode == EvalMode::NNUE ? context.result : nullptr,
+      &SearchResult::q_nnue_evaluate_time_us);
   if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
       nnue_network_available()) {
     ++context.result->q_nnue_evals;
@@ -283,6 +320,9 @@ int evaluate_search_position(const Board& board, SearchContext& context,
 const NnueAccumulator* make_child_accumulator(
     const Board& parent, const Move& move, const NnueAccumulator* parent_accumulator,
     NnueAccumulator& child_accumulator, SearchContext& context, bool qsearch) {
+  QsearchProfileTimer profile_timer(
+      qsearch && context.eval_mode == EvalMode::NNUE ? context.result : nullptr,
+      &SearchResult::q_nnue_update_time_us);
   if (parent_accumulator == nullptr ||
       !update_nnue_accumulator(parent, move, *parent_accumulator, child_accumulator)) {
     return nullptr;
@@ -376,14 +416,20 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
                                      bool qsearch = false,
                                      bool qsearch_evasion = false,
                                      const std::optional<int>& qsearch_stand_pat = std::nullopt,
-                                     const std::optional<int>& qsearch_alpha = std::nullopt) {
+                                     const std::optional<int>& qsearch_alpha = std::nullopt,
+                                     const std::vector<bool>* gives_check_metadata = nullptr) {
+  QsearchProfileTimer order_timer(qsearch ? result : nullptr, &SearchResult::q_order_time_us);
   std::vector<OrderedMove> ordered;
   ordered.reserve(moves.size());
-  for (const Move& move : moves) {
+  for (std::size_t move_index = 0; move_index < moves.size(); ++move_index) {
+    const Move& move = moves[move_index];
     OrderedMove item;
     item.move = move;
     item.capture = is_capture(move);
-    item.see = move_see(board, move, result);
+    {
+      QsearchProfileTimer see_timer(qsearch ? result : nullptr, &SearchResult::q_see_time_us);
+      item.see = move_see(board, move, result);
+    }
     if (qsearch && result != nullptr && (item.capture || move.is_promotion())) {
       ++result->q_see_calls;
     }
@@ -407,10 +453,21 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
       }
     }
 #endif
-    item.gives_check = calculate_check && gives_check(board, move);
+    const bool has_fused_check = gives_check_metadata != nullptr;
+    {
+      QsearchProfileTimer check_timer(
+          qsearch && !has_fused_check ? result : nullptr, &SearchResult::q_gives_check_time_us);
+      item.gives_check = has_fused_check ? gives_check_metadata->at(move_index)
+                                         : calculate_check && gives_check(board, move);
+    }
     if (qsearch && include_checks && result != nullptr) {
       if (calculate_check) {
-        ++result->q_gives_check_calls;
+        if (has_fused_check) {
+          ++result->q_fused_check_metadata_moves;
+          ++result->q_fused_avoided_check_make_unmake;
+        } else {
+          ++result->q_gives_check_calls;
+        }
         if (qsearch_evasion) ++result->q_evasion_check_ordering_calls;
         else if (item.capture && item.see < -100) ++result->q_gives_check_for_see_exception;
         else ++result->q_gives_check_for_ordering;
@@ -442,9 +499,12 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
     if (tt_move.has_value() && move == *tt_move) item.score += 5000000;
     ordered.push_back(item);
   }
-  std::sort(ordered.begin(), ordered.end(), [](const OrderedMove& a, const OrderedMove& b) {
-    return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
-  });
+  {
+    QsearchProfileTimer sort_timer(qsearch ? result : nullptr, &SearchResult::q_sort_time_us);
+    std::sort(ordered.begin(), ordered.end(), [](const OrderedMove& a, const OrderedMove& b) {
+      return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
+    });
+  }
   return ordered;
 }
 
@@ -1040,7 +1100,11 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       ) {
     qtt = &qsearch_transposition_table();
     qtt_key = board.zobrist_key();
-    const TTEntry* qtt_entry = qtt->probe(qtt_key);
+    const TTEntry* qtt_entry = nullptr;
+    {
+      QsearchProfileTimer qtt_probe_timer(context.result, &SearchResult::qtt_probe_time_us);
+      qtt_entry = qtt->probe(qtt_key);
+    }
     int qtt_score = 0;
     bool qtt_window_reusable = false;
     bool qtt_reusable_subtree = false;
@@ -1180,8 +1244,11 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     if (qtt == nullptr) return;
     const TTBound bound = score <= original_alpha ? TTBound::Upper
                         : score >= original_beta ? TTBound::Lower : TTBound::Exact;
-    const TTStoreResult stored = qtt->store(qtt_key, 0, score_to_tt(score, ply), bound,
-                                            std::nullopt);
+    TTStoreResult stored{};
+    {
+      QsearchProfileTimer qtt_store_timer(context.result, &SearchResult::qtt_store_time_us);
+      stored = qtt->store(qtt_key, 0, score_to_tt(score, ply), bound, std::nullopt);
+    }
 #if HEBICHESS_QSEARCH_TT_PROFILE
     if (context.result != nullptr && stored.stored) {
       ++context.result->qtt_stores;
@@ -1209,7 +1276,22 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 #else
   const auto store_qtt = [](int) {};
 #endif
-  const std::vector<Move> legal = in_check ? generate_legal_moves(board) : std::vector<Move>{};
+  std::vector<Move> legal;
+  std::vector<bool> legal_checks;
+  if (in_check) {
+    QsearchProfileTimer movegen_timer(context.result, &SearchResult::q_movegen_time_us);
+#if HEBICHESS_QSEARCH_FUSED_CHECKS
+    const auto generated = generate_legal_moves_with_check(board);
+    legal.reserve(generated.size());
+    legal_checks.reserve(generated.size());
+    for (const LegalMoveWithCheck& item : generated) {
+      legal.push_back(item.move);
+      legal_checks.push_back(item.gives_check);
+    }
+#else
+    legal = generate_legal_moves(board);
+#endif
+  }
   if (in_check && context.result != nullptr) {
     ++context.result->q_full_legal_movegen_calls;
     context.result->q_check_evasion_generated += legal.size();
@@ -1225,7 +1307,13 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       return score;
     }
     const auto evasions = order_moves(board, legal, context.result, context.heuristics, ply,
-                                      std::nullopt, true, true, true);
+                                      std::nullopt, true, true, true, std::nullopt, std::nullopt,
+#if HEBICHESS_QSEARCH_FUSED_CHECKS
+                                      &legal_checks
+#else
+                                      nullptr
+#endif
+    );
     int best = -MATE_SCORE;
     for (std::size_t order = 0; order < evasions.size(); ++order) {
       const OrderedMove& item = evasions[order];
@@ -1307,7 +1395,22 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   if (trace_index) context.qsearch_window_trace->at(*trace_index).alpha_after_stand_pat = alpha;
 #endif
 
-  const std::vector<Move> tactical_moves = generate_legal_tactical_moves(board);
+  std::vector<Move> tactical_moves;
+  std::vector<bool> tactical_checks;
+  {
+    QsearchProfileTimer movegen_timer(context.result, &SearchResult::q_movegen_time_us);
+#if HEBICHESS_QSEARCH_FUSED_CHECKS
+    const auto generated_tactical = generate_legal_tactical_moves_with_check(board);
+    tactical_moves.reserve(generated_tactical.size());
+    tactical_checks.reserve(generated_tactical.size());
+    for (const LegalMoveWithCheck& item : generated_tactical) {
+      tactical_moves.push_back(item.move);
+      tactical_checks.push_back(item.gives_check);
+    }
+#else
+    tactical_moves = generate_legal_tactical_moves(board);
+#endif
+  }
   if (context.result != nullptr) {
     ++context.result->q_tactical_movegen_calls;
     context.result->q_tactical_generated += tactical_moves.size();
@@ -1324,7 +1427,13 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return 0;
   }
   const auto tactical = order_moves(board, tactical_moves, context.result, nullptr, ply,
-                                    std::nullopt, true, true, false, stand_pat, alpha);
+                                    std::nullopt, true, true, false, stand_pat, alpha,
+#if HEBICHESS_QSEARCH_FUSED_CHECKS
+                                    &tactical_checks
+#else
+                                    nullptr
+#endif
+  );
   for (std::size_t order = 0; order < tactical.size(); ++order) {
     const OrderedMove& item = tactical[order];
     const Move& move = item.move;
@@ -1441,7 +1550,12 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
                  SearchContext& context, const NnueAccumulator* accumulator = nullptr,
                  bool was_null_move = false) {
   if (context.should_stop()) return 0;
-  if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context, accumulator);
+  if (depth <= 0) {
+    // Each negamax-to-QSearch transition owns one complete qsearch tree;
+    // timing here avoids double-counting recursive qsearch calls.
+    QsearchProfileTimer qsearch_timer(context.result, &SearchResult::qsearch_total_time_us);
+    return quiescence_impl(board, alpha, beta, ply, context, accumulator);
+  }
   const int original_alpha = alpha;
   const int original_beta = beta;
   std::optional<Move> tt_move;

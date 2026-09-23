@@ -176,6 +176,18 @@ void write_search_fields(std::ostream& out, const SearchResult& r) {
       << ",\"q_gives_check_for_delta_exception\":" << r.q_gives_check_for_delta_exception
       << ",\"q_gives_check_for_ordering\":" << r.q_gives_check_for_ordering
       << ",\"q_evasion_check_ordering_calls\":" << r.q_evasion_check_ordering_calls
+      << ",\"q_fused_check_metadata_moves\":" << r.q_fused_check_metadata_moves
+      << ",\"q_fused_avoided_check_make_unmake\":" << r.q_fused_avoided_check_make_unmake
+      << ",\"qsearch_total_time_us\":" << r.qsearch_total_time_us
+      << ",\"q_movegen_time_us\":" << r.q_movegen_time_us
+      << ",\"q_order_time_us\":" << r.q_order_time_us
+      << ",\"q_sort_time_us\":" << r.q_sort_time_us
+      << ",\"q_gives_check_time_us\":" << r.q_gives_check_time_us
+      << ",\"q_see_time_us\":" << r.q_see_time_us
+      << ",\"q_nnue_evaluate_time_us\":" << r.q_nnue_evaluate_time_us
+      << ",\"q_nnue_update_time_us\":" << r.q_nnue_update_time_us
+      << ",\"qtt_probe_time_us\":" << r.qtt_probe_time_us
+      << ",\"qtt_store_time_us\":" << r.qtt_store_time_us
       << ",\"q_full_legal_movegen_calls\":" << r.q_full_legal_movegen_calls
       << ",\"q_tactical_movegen_calls\":" << r.q_tactical_movegen_calls
       << ",\"qtt_probes\":" << r.qtt_probes << ",\"qtt_hits\":" << r.qtt_hits

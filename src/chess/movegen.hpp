@@ -7,12 +7,22 @@
 
 namespace hebichess {
 
+// QSearch can reuse this metadata after a legal-move filter.  It is kept
+// separate from the ordinary move-generation API so main search continues to
+// use its established path unchanged.
+struct LegalMoveWithCheck {
+  Move move{};
+  bool gives_check{false};
+};
+
 std::vector<Move> generate_pseudo_legal_moves(const Board& board);
 // Captures, en passant, and promotions only.  This is intended for
 // non-check quiescence nodes; callers still need legal-move filtering.
 std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board);
 std::vector<Move> generate_legal_moves(Board& board);
 std::vector<Move> generate_legal_tactical_moves(Board& board);
+std::vector<LegalMoveWithCheck> generate_legal_moves_with_check(Board& board);
+std::vector<LegalMoveWithCheck> generate_legal_tactical_moves_with_check(Board& board);
 
 inline std::vector<Move> generate_legal_moves(const Board& board) {
   Board copy = board;
