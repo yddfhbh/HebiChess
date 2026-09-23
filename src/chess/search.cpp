@@ -247,6 +247,10 @@ struct SearchContext {
 int evaluate_search_position(const Board& board, SearchContext& context,
                              const NnueAccumulator* accumulator,
                              bool qsearch) {
+  if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
+      nnue_network_available()) {
+    ++context.result->q_nnue_evals;
+  }
 #if HEBICHESS_QSEARCH_TT_PROFILE
   if (context.result != nullptr) ++context.result->eval_calls;
 #endif
@@ -293,6 +297,10 @@ const NnueAccumulator* make_child_accumulator(
       ++context.nnue_counters->en_passant_incremental_update_count;
   }
 #endif
+  if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
+      nnue_network_available()) {
+    ++context.result->q_nnue_incremental_updates;
+  }
   return &child_accumulator;
 }
 
@@ -359,7 +367,8 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
                                      SearchResult* result,
                                      SearchHeuristics* heuristics, int ply,
                                      const std::optional<Move>& tt_move = std::nullopt,
-                                     bool include_checks = false) {
+                                     bool include_checks = false,
+                                     bool qsearch = false) {
   std::vector<OrderedMove> ordered;
   ordered.reserve(moves.size());
   for (const Move& move : moves) {
@@ -367,11 +376,15 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
     item.move = move;
     item.capture = is_capture(move);
     item.see = move_see(board, move, result);
+    if (qsearch && result != nullptr && (item.capture || move.is_promotion())) {
+      ++result->q_see_calls;
+    }
     // Check detection requires make/unmake and dominates NPS if performed for
     // every legal move at every main-search node.  Main search probes it only
     // for an otherwise reducible late quiet move; qsearch needs it for its
     // tactical pruning exceptions.
     item.gives_check = include_checks && gives_check(board, move);
+    if (qsearch && include_checks && result != nullptr) ++result->q_gives_check_calls;
     const Piece victim = board.piece_at(move.to);
     if (item.capture && item.see >= 0) item.score += 4000000 + item.see * 10;
     else if (move.is_promotion()) item.score += 3000000 + item.see * 10;
@@ -947,6 +960,12 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   const Square king = board.find_king(side);
   const bool in_check = king.is_valid() &&
                         board.is_square_attacked(king, opposite(side));
+  if (context.result != nullptr) {
+    if (in_check) ++context.result->q_in_check_nodes;
+    else ++context.result->q_non_check_nodes;
+    context.result->q_max_ply = std::max(context.result->q_max_ply,
+                                        static_cast<std::uint64_t>(std::max(0, ply)));
+  }
   const int original_alpha = alpha;
   const int original_beta = beta;
 
@@ -992,15 +1011,15 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     int qtt_score = 0;
     bool qtt_window_reusable = false;
     bool qtt_reusable_subtree = false;
-#if HEBICHESS_QSEARCH_TT_PROFILE
     if (context.result != nullptr) {
       ++context.result->qtt_probes;
       ++context.result->qtt_non_check_probes;
+#if HEBICHESS_QSEARCH_TT_PROFILE
 #if HEBICHESS_QSEARCH_TT_VARIANT == 2
       ++context.result->qtt_active_probes;
 #endif
-    }
 #endif
+    }
     if (qtt_entry != nullptr) {
       qtt_score = score_from_tt(qtt_entry->score, ply);
       const int cutoff_bit = qtt_entry->bound == TTBound::Exact ? QTT_EXACT_CUTOFF
@@ -1017,11 +1036,11 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
             (context.qtt_diagnostic->bound_mask & cutoff_bit) != 0;
       }
 #endif
-#if HEBICHESS_QSEARCH_TT_PROFILE
       if (context.result != nullptr) {
         ++context.result->qtt_hits;
         ++context.result->qtt_same_position_repeats;
         ++context.result->qtt_non_check_hits;
+#if HEBICHESS_QSEARCH_TT_PROFILE
         if (qtt_entry->bound == TTBound::Exact) ++context.result->qtt_exact_hits;
         if (qtt_entry->bound == TTBound::Lower) ++context.result->qtt_lower_hits;
         if (qtt_entry->bound == TTBound::Upper) ++context.result->qtt_upper_hits;
@@ -1031,8 +1050,8 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 #if HEBICHESS_QSEARCH_TT_VARIANT == 2
         ++context.result->qtt_active_hits;
 #endif
-      }
 #endif
+      }
       // C1 is intentionally cutoff-only: it does not feed a move back into
       // ordering, and this branch is already known to be a non-check node.
       if (qtt_reusable_subtree) {
@@ -1115,9 +1134,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
         if (!qtt_reusable_subtree) {
           // Continue into ordinary QSearch after a diagnostic-only shadow.
         } else {
-  #if HEBICHESS_QSEARCH_TT_PROFILE
+#if HEBICHESS_QSEARCH_TT_PROFILE
         if (context.result != nullptr) ++context.result->qtt_active_cutoffs;
-  #endif
+#endif
+        if (context.result != nullptr) ++context.result->qtt_cutoffs;
         return qtt_score;
         }
       }
@@ -1157,6 +1177,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   const auto store_qtt = [](int) {};
 #endif
   const std::vector<Move> legal = in_check ? generate_legal_moves(board) : std::vector<Move>{};
+  if (in_check && context.result != nullptr) {
+    ++context.result->q_full_legal_movegen_calls;
+    context.result->q_check_evasion_generated += legal.size();
+  }
 
   if (in_check) {
     if (legal.empty()) {
@@ -1168,7 +1192,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       return score;
     }
     const auto evasions = order_moves(board, legal, context.result, context.heuristics, ply,
-                                      std::nullopt, true);
+                                      std::nullopt, true, true);
     int best = -MATE_SCORE;
     for (std::size_t order = 0; order < evasions.size(); ++order) {
       const OrderedMove& item = evasions[order];
@@ -1191,6 +1215,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       }
 #endif
       std::optional<NnueAccumulator> child_accumulator;
+      if (context.result != nullptr) ++context.result->q_check_evasion_searched;
       const NnueAccumulator* child = nullptr;
       if (accumulator != nullptr) {
         child_accumulator.emplace();
@@ -1236,6 +1261,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   if (trace_index) context.qsearch_window_trace->at(*trace_index).stand_pat = stand_pat;
 #endif
   if (stand_pat >= beta) {
+    if (context.result != nullptr) ++context.result->q_stand_pat_beta_cutoffs;
     store_qtt(beta);
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
     if (trace_index) context.qsearch_window_trace->at(*trace_index).alpha_after_stand_pat = alpha;
@@ -1249,7 +1275,15 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 #endif
 
   const std::vector<Move> tactical_moves = generate_legal_tactical_moves(board);
+  if (context.result != nullptr) {
+    ++context.result->q_tactical_movegen_calls;
+    context.result->q_tactical_generated += tactical_moves.size();
+  }
   if (tactical_moves.empty() && generate_legal_moves(board).empty()) {
+    if (context.result != nullptr) {
+      ++context.result->q_stalemate_full_movegen_calls;
+      ++context.result->q_full_legal_movegen_calls;
+    }
     store_qtt(0);
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
     finish_trace(QsearchReturnKind::Stalemate, 0);
@@ -1257,7 +1291,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return 0;
   }
   const auto tactical = order_moves(board, tactical_moves, context.result, nullptr, ply,
-                                    std::nullopt, true);
+                                    std::nullopt, true, true);
   for (std::size_t order = 0; order < tactical.size(); ++order) {
     const OrderedMove& item = tactical[order];
     const Move& move = item.move;
@@ -1281,7 +1315,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     }
 #endif
     if (context.use_see_pruning && capture && see < -100 && !check && !promotion) {
-      if (context.result != nullptr) ++context.result->see_prunes;
+      if (context.result != nullptr) {
+        ++context.result->see_prunes;
+        ++context.result->q_see_pruned;
+      }
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
       if (trace_move_index)
         context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).see_rejected = true;
@@ -1302,7 +1339,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 #endif
     if (!disable_delta_pruning && capture && !check && !promotion &&
         stand_pat + piece_value(victim.type) + DELTA_MARGIN_CP < alpha) {
-      if (context.result != nullptr) ++context.result->qdelta_prunes;
+      if (context.result != nullptr) {
+        ++context.result->qdelta_prunes;
+        ++context.result->q_delta_pruned;
+      }
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
       if (trace_move_index)
         context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).delta_rejected = true;
@@ -1320,6 +1360,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     }
 #endif
     std::optional<NnueAccumulator> child_accumulator;
+    if (context.result != nullptr) ++context.result->q_tactical_searched;
     const NnueAccumulator* child = nullptr;
     if (accumulator != nullptr) {
       child_accumulator.emplace();

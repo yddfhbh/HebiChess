@@ -194,6 +194,10 @@ function initEngine() {
                     line.startsWith('info string tm ')) {
                     console.debug('[JJUGLE TM]', line);
                 }
+                if (typeof line === 'string' &&
+                    line.startsWith('info string qprofile ')) {
+                    console.debug('[JJUGLE QPROFILE]', line);
+                }
 
                 if (line === 'uciok') {
                     engineReady = true;

@@ -427,6 +427,31 @@ void UciEngine::send_command(const std::string& line) {
           << " aspiration_fail_highs " << result.aspiration_fail_highs
           << " aspiration_fail_lows " << result.aspiration_fail_lows;
     emit(stats.str());
+    std::ostringstream qprofile;
+    qprofile << "info string qprofile"
+             << " qnodes " << result.qnodes
+             << " qnode_percent " << (result.nodes > 0 ? result.qnodes * 100 / result.nodes : 0)
+             << " stand_pat_cutoffs " << result.q_stand_pat_beta_cutoffs
+             << " in_check_nodes " << result.q_in_check_nodes
+             << " non_check_nodes " << result.q_non_check_nodes
+             << " tactical_generated " << result.q_tactical_generated
+             << " tactical_searched " << result.q_tactical_searched
+             << " see_pruned " << result.q_see_pruned
+             << " delta_pruned " << result.q_delta_pruned
+             << " stalemate_full_movegen " << result.q_stalemate_full_movegen_calls
+             << " max_qply " << result.q_max_ply
+             << " qtt_probes " << result.qtt_probes
+             << " qtt_hits " << result.qtt_hits
+             << " qtt_cutoffs " << result.qtt_cutoffs
+             << " nnue_evals " << result.q_nnue_evals
+             << " nnue_updates " << result.q_nnue_incremental_updates
+             << " check_evasion_generated " << result.q_check_evasion_generated
+             << " check_evasion_searched " << result.q_check_evasion_searched
+             << " see_calls " << result.q_see_calls
+             << " gives_check_calls " << result.q_gives_check_calls
+             << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
+             << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
+    emit(qprofile.str());
 #else
     std::ostringstream strength;
     strength << "info string strength_stats"

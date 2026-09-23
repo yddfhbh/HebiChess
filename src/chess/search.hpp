@@ -62,6 +62,23 @@ struct SearchResult {
   std::uint64_t nodes{0};
   std::uint64_t main_nodes{0};
   std::uint64_t qnodes{0};
+  std::uint64_t q_stand_pat_beta_cutoffs{0};
+  std::uint64_t q_in_check_nodes{0};
+  std::uint64_t q_non_check_nodes{0};
+  std::uint64_t q_tactical_generated{0};
+  std::uint64_t q_tactical_searched{0};
+  std::uint64_t q_see_pruned{0};
+  std::uint64_t q_delta_pruned{0};
+  std::uint64_t q_stalemate_full_movegen_calls{0};
+  std::uint64_t q_max_ply{0};
+  std::uint64_t q_check_evasion_generated{0};
+  std::uint64_t q_check_evasion_searched{0};
+  std::uint64_t q_nnue_evals{0};
+  std::uint64_t q_nnue_incremental_updates{0};
+  std::uint64_t q_see_calls{0};
+  std::uint64_t q_gives_check_calls{0};
+  std::uint64_t q_full_legal_movegen_calls{0};
+  std::uint64_t q_tactical_movegen_calls{0};
   std::uint64_t qdelta_prunes{0};
   // QSearch-TT variants are compile-time test binaries only. Production
   // compiles variant 0, which neither creates nor probes a QSearch table.
@@ -86,6 +103,7 @@ struct SearchResult {
   std::uint64_t qtt_active_probes{0};
   std::uint64_t qtt_active_hits{0};
   std::uint64_t qtt_active_cutoffs{0};
+  std::uint64_t qtt_cutoffs{0};
   std::uint64_t qtt_stores{0};
   std::uint64_t qtt_replacements{0};
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC

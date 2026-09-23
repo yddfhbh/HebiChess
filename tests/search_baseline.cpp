@@ -156,6 +156,25 @@ void write_search_fields(std::ostream& out, const SearchResult& r) {
       << "\"score_cp\":" << r.score << ",\"completed_depth\":" << r.completed_depth
       << ",\"nodes\":" << r.nodes << ",\"main_nodes\":" << r.main_nodes
       << ",\"qnodes\":" << r.qnodes << ",\"qnodes_total_ratio\":" << ratio(r.qnodes, r.nodes)
+      << ",\"q_stand_pat_beta_cutoffs\":" << r.q_stand_pat_beta_cutoffs
+      << ",\"q_in_check_nodes\":" << r.q_in_check_nodes
+      << ",\"q_non_check_nodes\":" << r.q_non_check_nodes
+      << ",\"q_tactical_generated\":" << r.q_tactical_generated
+      << ",\"q_tactical_searched\":" << r.q_tactical_searched
+      << ",\"q_see_pruned\":" << r.q_see_pruned
+      << ",\"q_delta_pruned\":" << r.q_delta_pruned
+      << ",\"q_stalemate_full_movegen_calls\":" << r.q_stalemate_full_movegen_calls
+      << ",\"q_max_ply\":" << r.q_max_ply
+      << ",\"q_check_evasion_generated\":" << r.q_check_evasion_generated
+      << ",\"q_check_evasion_searched\":" << r.q_check_evasion_searched
+      << ",\"q_nnue_evals\":" << r.q_nnue_evals
+      << ",\"q_nnue_incremental_updates\":" << r.q_nnue_incremental_updates
+      << ",\"q_see_calls\":" << r.q_see_calls
+      << ",\"q_gives_check_calls\":" << r.q_gives_check_calls
+      << ",\"q_full_legal_movegen_calls\":" << r.q_full_legal_movegen_calls
+      << ",\"q_tactical_movegen_calls\":" << r.q_tactical_movegen_calls
+      << ",\"qtt_probes\":" << r.qtt_probes << ",\"qtt_hits\":" << r.qtt_hits
+      << ",\"qtt_cutoffs\":" << r.qtt_cutoffs
       << ",\"qdelta_prunes\":" << r.qdelta_prunes
       << ",\"tt_probes\":" << r.tt_probes << ",\"tt_hits\":" << r.tt_hits
       << ",\"tt_hit_rate\":" << ratio(r.tt_hits, r.tt_probes)
