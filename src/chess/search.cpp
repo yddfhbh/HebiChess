@@ -28,6 +28,10 @@ namespace {
 #define HEBICHESS_QSEARCH_DELTA_PRUNING 1
 #endif
 
+#ifndef HEBICHESS_QSEARCH_LAZY_CHECKS
+#define HEBICHESS_QSEARCH_LAZY_CHECKS 0
+#endif
+
 #ifndef HEBICHESS_QSEARCH_TT_CUTOFF_MASK
 #if HEBICHESS_QSEARCH_TT_VARIANT == 2
 #define HEBICHESS_QSEARCH_TT_CUTOFF_MASK 7
@@ -67,6 +71,7 @@ void clear_qsearch_transposition_table() noexcept {
 constexpr int MAX_SEARCH_PLY = 128;
 constexpr int MAX_HISTORY = 32768;
 constexpr int ASPIRATION_INITIAL_WINDOW_CP = 35;
+constexpr int QSEARCH_DELTA_MARGIN_CP = 120;
 
 constexpr int QTT_EXACT_CUTOFF = 1;
 constexpr int QTT_LOWER_CUTOFF = 2;
@@ -368,7 +373,10 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
                                      SearchHeuristics* heuristics, int ply,
                                      const std::optional<Move>& tt_move = std::nullopt,
                                      bool include_checks = false,
-                                     bool qsearch = false) {
+                                     bool qsearch = false,
+                                     bool qsearch_evasion = false,
+                                     const std::optional<int>& qsearch_stand_pat = std::nullopt,
+                                     const std::optional<int>& qsearch_alpha = std::nullopt) {
   std::vector<OrderedMove> ordered;
   ordered.reserve(moves.size());
   for (const Move& move : moves) {
@@ -383,8 +391,33 @@ std::vector<OrderedMove> order_moves(Board& board, const std::vector<Move>& move
     // every legal move at every main-search node.  Main search probes it only
     // for an otherwise reducible late quiet move; qsearch needs it for its
     // tactical pruning exceptions.
-    item.gives_check = include_checks && gives_check(board, move);
-    if (qsearch && include_checks && result != nullptr) ++result->q_gives_check_calls;
+    bool calculate_check = include_checks;
+#if HEBICHESS_QSEARCH_LAZY_CHECKS
+    if (qsearch && include_checks) {
+      if (qsearch_evasion) {
+        calculate_check = false;
+      } else if (move.is_promotion()) {
+        calculate_check = false;
+      } else if (item.capture && item.see >= 0) {
+        const bool delta_candidate = qsearch_stand_pat.has_value() && qsearch_alpha.has_value() &&
+            *qsearch_stand_pat + piece_value(
+                move.flag == MoveFlag::EnPassant ? PieceType::Pawn : board.piece_at(move.to).type) +
+                QSEARCH_DELTA_MARGIN_CP < *qsearch_alpha;
+        calculate_check = delta_candidate;
+      }
+    }
+#endif
+    item.gives_check = calculate_check && gives_check(board, move);
+    if (qsearch && include_checks && result != nullptr) {
+      if (calculate_check) {
+        ++result->q_gives_check_calls;
+        if (qsearch_evasion) ++result->q_evasion_check_ordering_calls;
+        else if (item.capture && item.see < -100) ++result->q_gives_check_for_see_exception;
+        else ++result->q_gives_check_for_ordering;
+      } else {
+        ++result->q_gives_check_skipped;
+      }
+    }
     const Piece victim = board.piece_at(move.to);
     if (item.capture && item.see >= 0) item.score += 4000000 + item.see * 10;
     else if (move.is_promotion()) item.score += 3000000 + item.see * 10;
@@ -1192,7 +1225,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       return score;
     }
     const auto evasions = order_moves(board, legal, context.result, context.heuristics, ply,
-                                      std::nullopt, true, true);
+                                      std::nullopt, true, true, true);
     int best = -MATE_SCORE;
     for (std::size_t order = 0; order < evasions.size(); ++order) {
       const OrderedMove& item = evasions[order];
@@ -1291,7 +1324,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return 0;
   }
   const auto tactical = order_moves(board, tactical_moves, context.result, nullptr, ply,
-                                    std::nullopt, true, true);
+                                    std::nullopt, true, true, false, stand_pat, alpha);
   for (std::size_t order = 0; order < tactical.size(); ++order) {
     const OrderedMove& item = tactical[order];
     const Move& move = item.move;
@@ -1331,14 +1364,13 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     // all pre-existing targets retain byte-for-byte search semantics.
     const Piece victim = move.flag == MoveFlag::EnPassant
         ? Piece{PieceType::Pawn, opposite(side)} : board.piece_at(move.to);
-    constexpr int DELTA_MARGIN_CP = 120;
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
     const bool disable_delta_pruning = context.qsearch_diagnostic_disable_delta_pruning;
 #else
     constexpr bool disable_delta_pruning = false;
 #endif
     if (!disable_delta_pruning && capture && !check && !promotion &&
-        stand_pat + piece_value(victim.type) + DELTA_MARGIN_CP < alpha) {
+        stand_pat + piece_value(victim.type) + QSEARCH_DELTA_MARGIN_CP < alpha) {
       if (context.result != nullptr) {
         ++context.result->qdelta_prunes;
         ++context.result->q_delta_pruned;
@@ -1348,6 +1380,13 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
         context.qsearch_window_trace->at(*trace_index).moves.at(*trace_move_index).delta_rejected = true;
 #endif
       continue;
+    }
+#endif
+#if HEBICHESS_QSEARCH_LAZY_CHECKS
+    if (capture && !promotion && check &&
+        stand_pat + piece_value(victim.type) + QSEARCH_DELTA_MARGIN_CP < alpha &&
+        context.result != nullptr) {
+      ++context.result->q_gives_check_for_delta_exception;
     }
 #endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC

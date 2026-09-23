@@ -127,6 +127,15 @@ add_executable(HebiChessSearchBaseline
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
 apply_hebichess_production_qsearch(HebiChessSearchBaseline)
+target_compile_definitions(HebiChessSearchBaseline PRIVATE HEBICHESS_QSEARCH_LAZY_CHECKS=0)
+
+add_executable(HebiChessSearchLazyChecks
+  tests/search_baseline.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessSearchLazyChecks PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessSearchLazyChecks)
+target_compile_definitions(HebiChessSearchLazyChecks PRIVATE HEBICHESS_QSEARCH_LAZY_CHECKS=1)
 
 add_executable(HebiChessSearchBaselineConfigTest
   tests/search_baseline_config_test.cpp
@@ -336,3 +345,10 @@ add_test(
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/search_baseline_smoke.cmake"
 )
 add_test(NAME chess_search_baseline_config COMMAND HebiChessSearchBaselineConfigTest)
+add_test(NAME chess_qsearch_lazy_ab
+  COMMAND ${CMAKE_COMMAND}
+    -DBASELINE=$<TARGET_FILE:HebiChessSearchBaseline>
+    -DLAZY=$<TARGET_FILE:HebiChessSearchLazyChecks>
+    -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase6-search-baseline.fen
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/qsearch_lazy_ab.cmake
+)

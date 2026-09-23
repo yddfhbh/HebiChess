@@ -77,6 +77,11 @@ struct SearchResult {
   std::uint64_t q_nnue_incremental_updates{0};
   std::uint64_t q_see_calls{0};
   std::uint64_t q_gives_check_calls{0};
+  std::uint64_t q_gives_check_skipped{0};
+  std::uint64_t q_gives_check_for_see_exception{0};
+  std::uint64_t q_gives_check_for_delta_exception{0};
+  std::uint64_t q_gives_check_for_ordering{0};
+  std::uint64_t q_evasion_check_ordering_calls{0};
   std::uint64_t q_full_legal_movegen_calls{0};
   std::uint64_t q_tactical_movegen_calls{0};
   std::uint64_t qdelta_prunes{0};

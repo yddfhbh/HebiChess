@@ -1,0 +1,46 @@
+if(NOT DEFINED BASELINE OR NOT DEFINED LAZY OR NOT DEFINED FIXTURE)
+  message(FATAL_ERROR "BASELINE, LAZY, and FIXTURE are required")
+endif()
+
+set(BASELINE_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/qsearch-lazy-baseline.json")
+set(LAZY_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/qsearch-lazy-lazy.json")
+foreach(binary IN ITEMS baseline lazy)
+  if(binary STREQUAL "baseline")
+    set(engine "${BASELINE}")
+    set(report "${BASELINE_OUTPUT}")
+  else()
+    set(engine "${LAZY}")
+    set(report "${LAZY_OUTPUT}")
+  endif()
+  execute_process(
+    COMMAND "${engine}" --fixture "${FIXTURE}" --output "${report}"
+            --depth 4 --time-ms 1 --modes hce --eval-warmup 1 --eval-iters 1 --eval-samples 1
+    RESULT_VARIABLE result
+    OUTPUT_VARIABLE stdout
+    ERROR_VARIABLE stderr
+  )
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "${binary} qsearch A/B smoke failed (${result}): ${stdout}${stderr}")
+  endif()
+endforeach()
+
+file(READ "${BASELINE_OUTPUT}" baseline_report)
+file(READ "${LAZY_OUTPUT}" lazy_report)
+string(REGEX MATCHALL "\"benchmark\":\"fixed_depth\"[^\n]*" baseline_records "${baseline_report}")
+string(REGEX MATCHALL "\"benchmark\":\"fixed_depth\"[^\n]*" lazy_records "${lazy_report}")
+list(LENGTH baseline_records baseline_count)
+list(LENGTH lazy_records lazy_count)
+if(NOT baseline_count EQUAL lazy_count OR baseline_count LESS 10)
+  message(FATAL_ERROR "expected at least 10 fixed-depth records in both A/B reports")
+endif()
+math(EXPR last_index "${baseline_count} - 1")
+foreach(index RANGE ${last_index})
+  list(GET baseline_records ${index} baseline_record)
+  list(GET lazy_records ${index} lazy_record)
+  foreach(record_name IN ITEMS baseline_record lazy_record)
+    string(REGEX REPLACE ".*\"name\":\"([^\"]+)\".*\"bestmove\":\"([^\"]+)\".*\"score_cp\":(-?[0-9]+).*\"completed_depth\":([0-9]+).*" "\\1|\\2|\\3|\\4" ${record_name} "${${record_name}}")
+  endforeach()
+  if(NOT baseline_record STREQUAL lazy_record)
+    message(FATAL_ERROR "fixed-depth mismatch at record ${index}: ${baseline_record} vs ${lazy_record}")
+  endif()
+endforeach()

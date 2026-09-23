@@ -171,6 +171,11 @@ void write_search_fields(std::ostream& out, const SearchResult& r) {
       << ",\"q_nnue_incremental_updates\":" << r.q_nnue_incremental_updates
       << ",\"q_see_calls\":" << r.q_see_calls
       << ",\"q_gives_check_calls\":" << r.q_gives_check_calls
+      << ",\"q_gives_check_skipped\":" << r.q_gives_check_skipped
+      << ",\"q_gives_check_for_see_exception\":" << r.q_gives_check_for_see_exception
+      << ",\"q_gives_check_for_delta_exception\":" << r.q_gives_check_for_delta_exception
+      << ",\"q_gives_check_for_ordering\":" << r.q_gives_check_for_ordering
+      << ",\"q_evasion_check_ordering_calls\":" << r.q_evasion_check_ordering_calls
       << ",\"q_full_legal_movegen_calls\":" << r.q_full_legal_movegen_calls
       << ",\"q_tactical_movegen_calls\":" << r.q_tactical_movegen_calls
       << ",\"qtt_probes\":" << r.qtt_probes << ",\"qtt_hits\":" << r.qtt_hits

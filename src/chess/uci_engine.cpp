@@ -449,6 +449,11 @@ void UciEngine::send_command(const std::string& line) {
              << " check_evasion_searched " << result.q_check_evasion_searched
              << " see_calls " << result.q_see_calls
              << " gives_check_calls " << result.q_gives_check_calls
+             << " gives_check_skipped " << result.q_gives_check_skipped
+             << " gives_check_for_see_exception " << result.q_gives_check_for_see_exception
+             << " gives_check_for_delta_exception " << result.q_gives_check_for_delta_exception
+             << " gives_check_for_ordering " << result.q_gives_check_for_ordering
+             << " evasion_check_ordering_calls " << result.q_evasion_check_ordering_calls
              << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
              << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
     emit(qprofile.str());
