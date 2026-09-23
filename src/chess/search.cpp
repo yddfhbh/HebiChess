@@ -1603,6 +1603,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     result.time_soft_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.soft_deadline - search_started).count());
   if (limits.has_deadline)
     result.time_hard_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.deadline - search_started).count());
+  result.early_budget = limits.has_deadline && limits.has_soft_deadline &&
+      result.time_hard_ms <= 15000 && result.time_hard_ms > result.time_soft_ms + 3500;
   if (limits.has_soft_deadline)
     result.time_target_ms = adaptive_target_ms(result.time_soft_ms, result.time_hard_ms, TimeConfidence::Low);
   result.time_confidence = "low";

@@ -292,7 +292,8 @@ void UciEngine::send_command(const std::string& line) {
       } else {
         const int remaining = board_.side_to_move() == Color::White ? wtime : btime;
         const int increment = board_.side_to_move() == Color::White ? winc : binc;
-        time_budget = allocate_time_budget(remaining, increment);
+        time_budget = allocate_time_budget(remaining, increment, false,
+                                           board_.fullmove_number());
       }
       if (max_move_time_ms_ > 0) {
         time_budget.soft_ms = std::min(time_budget.soft_ms, max_move_time_ms_);
@@ -340,6 +341,7 @@ void UciEngine::send_command(const std::string& line) {
     std::ostringstream tm;
     tm << "info string tm soft " << result.time_soft_ms
        << " hard " << result.time_hard_ms
+       << " early_budget " << (result.early_budget ? 1 : 0)
        << " target " << result.time_target_ms
        << " elapsed " << result.time_elapsed_ms
        << " objective_ms " << result.objective_time_ms

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <cstdint>
 
 namespace hebichess {
 
@@ -12,8 +13,13 @@ struct TimeBudget {
 };
 
 inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
-                                       bool unlimited = false) noexcept {
-  if (unlimited) return {4500, 18000};
+                                       bool unlimited = false,
+                                       std::uint32_t fullmove_number = 16) noexcept {
+  const bool early_budget = fullmove_number <= 15;
+  if (unlimited) {
+    const int hard = early_budget ? 15000 : 18000;
+    return {4500, hard};
+  }
   remaining_ms = std::max(0, remaining_ms);
   increment_ms = std::max(0, increment_ms);
   const int safe_remaining = std::max(1, remaining_ms -
@@ -22,8 +28,11 @@ inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
   soft = std::clamp(soft, 300, 5000);
   soft = std::max(300, soft * 9 / 10);
   soft = std::min(soft, safe_remaining);
-  const int requested_hard = std::max(soft * 4, soft + 3000);
-  return {soft, std::min({requested_hard, 20000, safe_remaining})};
+  const int requested_hard = early_budget
+      ? std::max(soft * 5, soft + 4000)
+      : std::max(soft * 4, soft + 3000);
+  const int cap = early_budget ? 15000 : 20000;
+  return {soft, std::min({requested_hard, cap, safe_remaining})};
 }
 
 enum class TimeConfidence { High, Medium, Low, VeryLow };
