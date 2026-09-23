@@ -3,7 +3,7 @@ if(NOT DEFINED BASELINE OR NOT DEFINED FIXTURE OR NOT DEFINED OUTPUT)
 endif()
 execute_process(
   COMMAND "${BASELINE}" --fixture "${FIXTURE}" --output "${OUTPUT}"
-          --depth 1 --time-ms 5 --modes hce,nnue --eval-warmup 1 --eval-iters 4 --eval-samples 1
+          --depth 1 --time-ms 100 --modes hce,nnue --eval-warmup 1 --eval-iters 4 --eval-samples 1
   RESULT_VARIABLE result
   OUTPUT_VARIABLE stdout
   ERROR_VARIABLE stderr
@@ -16,6 +16,10 @@ string(FIND "${report}" "hebichess-phase6-search-baseline-v1" schema_at)
 string(FIND "${report}" "critical-phase4-index-13" critical_at)
 string(FIND "${report}" "\"eval_mode\":\"HCE\"" hce_at)
 string(FIND "${report}" "NNUE unavailable" nnue_at)
-if(schema_at EQUAL -1 OR critical_at EQUAL -1 OR hce_at EQUAL -1 OR nnue_at EQUAL -1)
+string(REGEX MATCH "\"qtt_probes\":[1-9][0-9]*" qtt_probes_match "${report}")
+string(REGEX MATCH "\"qtt_hits\":[1-9][0-9]*" qtt_hits_match "${report}")
+string(REGEX MATCH "\"qtt_cutoffs\":[1-9][0-9]*" qtt_cutoffs_match "${report}")
+if(schema_at EQUAL -1 OR critical_at EQUAL -1 OR hce_at EQUAL -1 OR nnue_at EQUAL -1 OR
+   qtt_probes_match STREQUAL "" OR qtt_hits_match STREQUAL "" OR qtt_cutoffs_match STREQUAL "")
   message(FATAL_ERROR "search baseline smoke produced an incomplete report")
 endif()

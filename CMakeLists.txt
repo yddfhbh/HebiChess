@@ -126,6 +126,13 @@ add_executable(HebiChessSearchBaseline
   ${CHESS_SOURCES}
 )
 target_include_directories(HebiChessSearchBaseline PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessSearchBaseline)
+
+add_executable(HebiChessSearchBaselineConfigTest
+  tests/search_baseline_config_test.cpp
+)
+target_include_directories(HebiChessSearchBaselineConfigTest PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessSearchBaselineConfigTest)
 
 add_executable(HebiChessSearchBaselineLegacy
   tests/search_baseline.cpp
@@ -324,7 +331,8 @@ add_test(
   NAME chess_search_baseline
   COMMAND ${CMAKE_COMMAND}
     "-DBASELINE=$<TARGET_FILE:HebiChessSearchBaseline>"
-    "-DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase6-search-baseline.fen"
+    "-DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase6-search-baseline-smoke.fen"
     "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/phase6-search-baseline-smoke.json"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/search_baseline_smoke.cmake"
 )
+add_test(NAME chess_search_baseline_config COMMAND HebiChessSearchBaselineConfigTest)
