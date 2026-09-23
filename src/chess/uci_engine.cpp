@@ -383,6 +383,8 @@ void UciEngine::send_command(const std::string& line) {
        << " attempted_depth " << result.attempted_depth
        << " nodes " << result.nodes
        << " qnodes " << result.qnodes
+       << " qnode_percent " << (result.nodes > 0
+           ? result.qnodes * 100 / result.nodes : 0)
        << " nps " << (result.time_elapsed_ms > 0
            ? result.nodes * 1000 / static_cast<std::uint64_t>(result.time_elapsed_ms) : 0)
        << " latest_iteration_ms " << result.latest_iteration_ms

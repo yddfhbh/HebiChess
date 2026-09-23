@@ -1577,11 +1577,6 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                          NnueSearchAccumulatorCounters* nnue_counters
 #endif
                          ) {
-#if HEBICHESS_QSEARCH_TT_VARIANT != 0
-  // QTT lifetime is one root search.  This also makes a later EvalFile reload
-  // safe even if a host forgets to issue ucinewgame.
-  clear_qsearch_transposition_table();
-#endif
   SearchResult result;
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   QsearchTtDiagnosticState qtt_diagnostic;

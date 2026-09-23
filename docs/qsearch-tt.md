@@ -8,7 +8,7 @@ runtime toggle.
 
 | Setting | Production value |
 | --- | ---: |
-| `HEBICHESS_QSEARCH_DELTA_PRUNING` | `0` |
+| `HEBICHESS_QSEARCH_DELTA_PRUNING` | `1` |
 | `HEBICHESS_QSEARCH_TT_VARIANT` | `2` (active accepted variant) |
 | `HEBICHESS_QSEARCH_TT_CUTOFF_MASK` | `7` (`Exact|Lower|Upper`) |
 | `HEBICHESS_QSEARCH_TT_PROFILE` | `0` |
@@ -29,8 +29,8 @@ delta margin or formula.  QSearch TT behavior and the rest of NNUE/search
 behavior are otherwise unchanged.
 
 QTT uses its separate table at non-check qsearch nodes only, with existing TT
-score/bound conventions and no QTT move ordering.  Its lifetime is one root
-search and it is also cleared by `clear_transposition_table()`.
+score/bound conventions and no QTT move ordering.  Its lifetime spans the
+game like the main TT and it is cleared by `clear_transposition_table()`.
 
 ## Acceptance evidence
 

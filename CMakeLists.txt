@@ -15,7 +15,7 @@ set(CHESS_SOURCES
 # Phase 6-4B final production configuration.  Keep the accepted search
 # definitions shared by every production engine target so they cannot drift.
 set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
-  HEBICHESS_QSEARCH_DELTA_PRUNING=0
+  HEBICHESS_QSEARCH_DELTA_PRUNING=1
   HEBICHESS_QSEARCH_TT_VARIANT=2
   HEBICHESS_QSEARCH_TT_CUTOFF_MASK=7
   HEBICHESS_QSEARCH_TT_PROFILE=0

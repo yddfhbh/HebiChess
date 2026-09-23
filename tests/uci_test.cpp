@@ -301,6 +301,43 @@ void test_uci_max_move_time_option() {
   engine.send_command("setoption name MaxMoveTime value 600001");
   assert(has_line(output, "info string error invalid MaxMoveTime"));
 }
+
+void test_pv_ponder_and_expected_reply_reuse() {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  engine.send_command("position startpos");
+  engine.send_command("go depth 4");
+  std::string bestmove;
+  std::string ponder;
+  for (const std::string& line : output) {
+    if (line.rfind("bestmove ", 0) == 0) {
+      bestmove = line.substr(9, 5);
+      const std::size_t marker = line.find(" ponder ");
+      if (marker != std::string::npos) ponder = line.substr(marker + 8, 5);
+    }
+  }
+  require(!bestmove.empty() && !ponder.empty(), "search did not emit ponder move");
+  output.clear();
+  engine.send_command("position startpos moves " + bestmove + " " + ponder);
+  engine.send_command("go depth 4");
+  require(std::any_of(output.begin(), output.end(), [](const std::string& line) {
+    return line.find("reuse_hit 1") != std::string::npos;
+  }), "expected reply did not produce reuse_hit");
+
+  Board after_best = Board::initial();
+  const Move first = *parse_uci_move(after_best, bestmove);
+  after_best.make_move(first);
+  const auto legal_reply = generate_legal_moves(after_best);
+  require(legal_reply.size() > 1, "reuse deviation fixture lacked alternate reply");
+  std::string deviation = move_to_uci(legal_reply.front());
+  if (deviation == ponder) deviation = move_to_uci(legal_reply[1]);
+  output.clear();
+  engine.send_command("position startpos moves " + bestmove + " " + deviation);
+  engine.send_command("go depth 2");
+  require(std::any_of(output.begin(), output.end(), [](const std::string& line) {
+    return line.find("reuse_hit 0") != std::string::npos;
+  }), "deviating reply unexpectedly produced reuse_hit");
+}
 }
 
 int main() {
@@ -308,5 +345,6 @@ int main() {
   test_serialization_and_timeout_integrity();
   test_eval_breakdown_uci_output();
   test_uci_max_move_time_option();
+  test_pv_ponder_and_expected_reply_reuse();
   test_uci_opening_book_path();
 }
