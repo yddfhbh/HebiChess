@@ -22,7 +22,7 @@ using namespace hebichess;
 
 namespace {
 
-enum class Command { Trace, Sweep, Compare, StaticAudit };
+enum class Command { Trace, Sweep, Compare, StaticAudit, NullTrace };
 
 struct Options {
   Command command{Command::Trace};
@@ -33,12 +33,14 @@ struct Options {
   EvalMode trace_mode{EvalMode::NNUE};
   std::optional<std::string> prepared_root;
   std::optional<int> reuse_previous_depth;
+  std::optional<std::string> forced_root;
   bool use_tt{true};
   bool use_null_move{true};
   bool use_lmr{true};
   bool use_pvs{true};
   bool use_see_pruning{true};
   bool use_aspiration{true};
+  DiagnosticNullMovePolicy null_move_policy{DiagnosticNullMovePolicy::Production};
 };
 
 std::string json_escape(std::string_view value) {
@@ -87,6 +89,22 @@ std::string proof_name(StyleProofResult proof) {
   return "unknown";
 }
 
+std::string null_move_policy_name(DiagnosticNullMovePolicy policy) {
+  switch (policy) {
+    case DiagnosticNullMovePolicy::Production: return "production";
+    case DiagnosticNullMovePolicy::DisableNoHeavyTwoMinors: return "a_disable_two_minors";
+    case DiagnosticNullMovePolicy::DisableNoHeavySideOneMinor: return "b_disable_side_one_minor";
+    case DiagnosticNullMovePolicy::ContinueOnLowMaterialFailHigh: return "c_continue_fail_high";
+    case DiagnosticNullMovePolicy::VerifyLowMaterialFailHigh: return "d_verify_fail_high";
+    case DiagnosticNullMovePolicy::VerifyLowMaterialFailHighNullFree: return "e_verify_null_free";
+    case DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthSix: return "f_skip_depth6";
+    case DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixNullFree: return "g_verify_depth6_null_free";
+    case DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree: return "h_verify_depth6_margin71_null_free";
+    case DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree: return "i_verify_depth6_width70_null_free";
+  }
+  return "unknown";
+}
+
 int parse_positive(const std::string& value, const char* flag) {
   try {
     const int parsed = std::stoi(value);
@@ -120,7 +138,8 @@ Options parse_options(int argc, char* argv[]) {
       else if (command == "sweep") options.command = Command::Sweep;
       else if (command == "compare") options.command = Command::Compare;
       else if (command == "static") options.command = Command::StaticAudit;
-      else throw std::runtime_error("--command accepts trace, sweep, compare, or static");
+      else if (command == "null-trace") options.command = Command::NullTrace;
+      else throw std::runtime_error("--command accepts trace, sweep, compare, static, or null-trace");
     } else if (flag == "--eval") {
       const std::string mode = next(index, "--eval");
       if (mode == "nnue" || mode == "NNUE") options.trace_mode = EvalMode::NNUE;
@@ -135,11 +154,27 @@ Options parse_options(int argc, char* argv[]) {
       else if (control == "see-pruning") options.use_see_pruning = false;
       else if (control == "aspiration") options.use_aspiration = false;
       else throw std::runtime_error("--disable accepts tt, null-move, lmr, pvs, see-pruning, or aspiration");
+    } else if (flag == "--nmp-policy") {
+      const std::string policy = next(index, "--nmp-policy");
+      if (policy == "production") options.null_move_policy = DiagnosticNullMovePolicy::Production;
+      else if (policy == "a") options.null_move_policy = DiagnosticNullMovePolicy::DisableNoHeavyTwoMinors;
+      else if (policy == "b") options.null_move_policy = DiagnosticNullMovePolicy::DisableNoHeavySideOneMinor;
+      else if (policy == "c") options.null_move_policy = DiagnosticNullMovePolicy::ContinueOnLowMaterialFailHigh;
+      else if (policy == "d") options.null_move_policy = DiagnosticNullMovePolicy::VerifyLowMaterialFailHigh;
+      else if (policy == "e") options.null_move_policy = DiagnosticNullMovePolicy::VerifyLowMaterialFailHighNullFree;
+      else if (policy == "f") options.null_move_policy = DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthSix;
+      else if (policy == "g") options.null_move_policy = DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixNullFree;
+      else if (policy == "h") options.null_move_policy = DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree;
+      else if (policy == "i") options.null_move_policy = DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree;
+      else throw std::runtime_error("--nmp-policy accepts production or a through i");
+    } else if (flag == "--force-root") {
+      options.forced_root = next(index, "--force-root");
     } else if (flag == "--help") {
       std::cout << "Usage: HebiChessBlunderDiagnostic --fen <FEN> [--network model.hebinnue]"
-                   " [--command trace|sweep|compare|static] [--depth N] [--eval nnue|hce]"
+                   " [--command trace|sweep|compare|static|null-trace] [--depth N] [--eval nnue|hce]"
+                   " [--force-root uci]"
                    " [--prepared-root uci --reuse-previous-depth N]"
-                   " [--disable CONTROL] [--output result.json]\\n";
+                   " [--disable CONTROL] [--nmp-policy production|a|b|c|d|e|f|g|h|i] [--output result.json]\\n";
       std::exit(0);
     } else {
       throw std::runtime_error("unknown option: " + flag);
@@ -156,6 +191,7 @@ SearchLimits make_limits(const Board& board, const Options& options, EvalMode mo
   SearchLimits limits;
   limits.max_depth = depth;
   limits.eval_mode = mode;
+  limits.eval_mode = mode;
   limits.use_root_style_selection = use_root_style_selection;
   limits.use_tt = options.use_tt;
   limits.use_null_move = options.use_null_move;
@@ -163,6 +199,7 @@ SearchLimits make_limits(const Board& board, const Options& options, EvalMode mo
   limits.use_pvs = options.use_pvs;
   limits.use_see_pruning = options.use_see_pruning;
   limits.use_aspiration = options.use_aspiration;
+  limits.null_move_diagnostic_policy = options.null_move_policy;
   if (options.prepared_root) {
     const auto move = parse_uci_move(board, *options.prepared_root);
     if (!move) throw std::runtime_error("--prepared-root is not a legal root move: " +
@@ -239,6 +276,14 @@ void write_search_record(std::ostream& out, const Board& board, const SearchResu
       << ",\"nodes\":" << result.nodes
       << ",\"qnodes\":" << result.qnodes
       << ",\"aspiration_retries\":" << result.aspiration_retries
+      << ",\"null_attempts\":" << result.null_attempts
+      << ",\"null_cutoffs\":" << result.null_cutoffs
+      << ",\"null_policy_skips\":" << result.null_policy_skips
+      << ",\"null_policy_rejected_cutoffs\":" << result.null_policy_rejected_cutoffs
+      << ",\"null_policy_verification_searches\":" << result.null_policy_verification_searches
+      << ",\"null_policy_verified_cutoffs\":" << result.null_policy_verified_cutoffs
+      << ",\"null_policy_verification_nodes\":" << result.null_policy_verification_nodes
+      << ",\"null_policy_verification_qnodes\":" << result.null_policy_verification_qnodes
       << ",\"root_move_ordering_first\":\""
       << json_escape(result.root_moves.empty() ? "none" : move_to_uci(result.root_moves.front().move))
       << "\",\"nps\":" << (result.time_elapsed_ms > 0
@@ -257,7 +302,9 @@ std::string controls_json(const Options& options) {
       << ",\"lmr\":" << (options.use_lmr ? "true" : "false")
       << ",\"pvs\":" << (options.use_pvs ? "true" : "false")
       << ",\"see_pruning\":" << (options.use_see_pruning ? "true" : "false")
-      << ",\"aspiration\":" << (options.use_aspiration ? "true" : "false") << '}';
+      << ",\"aspiration\":" << (options.use_aspiration ? "true" : "false")
+      << ",\"nmp_policy\":\"" << null_move_policy_name(options.null_move_policy)
+      << "\"}";
   return out.str();
 }
 
@@ -299,6 +346,68 @@ std::string trace_json(const Board& board, const Options& options) {
   // Keep the required trace fields top-level while sharing the record writer.
   out << record.substr(1);
   return out.str();
+}
+
+std::string null_trace_json(const Board& board, const Options& options) {
+  std::vector<NullMoveTrace> events;
+  set_null_move_trace_callback_for_diagnostic(
+      [&events](const NullMoveTrace& trace) { events.push_back(trace); });
+  clear_transposition_table();
+  clear_search_heuristics();
+  const SearchLimits limits = make_limits(board, options, options.trace_mode,
+                                          options.depth, true);
+  SearchResult result;
+  if (options.forced_root) {
+    const auto move = parse_uci_move(board, *options.forced_root);
+    if (!move) throw std::runtime_error("--force-root is not a legal root move: " +
+                                        *options.forced_root);
+    result = search_forced_root_move_for_null_diagnostic(board, *move, limits);
+  } else {
+    result = search(board, limits);
+  }
+  set_null_move_trace_callback_for_diagnostic({});
+  std::uint64_t cutoffs = 0;
+  std::uint64_t oracle_checks = 0;
+  std::uint64_t false_cutoffs = 0;
+  for (const NullMoveTrace& event : events) {
+    cutoffs += event.cutoff;
+    oracle_checks += event.oracle_score.has_value();
+    false_cutoffs += event.false_cutoff;
+  }
+  std::ostringstream out;
+  out << "{\"kind\":\"null_move_trace\",\"fen_before\":\""
+      << json_escape(board.to_fen()) << "\",\"eval_mode\":\""
+      << mode_name(options.trace_mode) << "\",\"search_controls\":"
+      << controls_json(options) << ",\"forced_root\":";
+  if (options.forced_root) out << '\"' << json_escape(*options.forced_root) << '\"';
+  else out << "null";
+  out << ",\"totals\":{\"null_attempts\":" << events.size()
+      << ",\"null_cutoffs\":" << cutoffs
+      << ",\"oracle_checks\":" << oracle_checks
+      << ",\"false_null_cutoffs\":" << false_cutoffs
+      << ",\"nodes\":" << result.nodes << ",\"qnodes\":" << result.qnodes
+      << ",\"aspiration_retries\":" << result.aspiration_retries << "},\"result\":";
+  write_search_record(out, board, result);
+  out << ",\"events\":[";
+  for (std::size_t index = 0; index < events.size(); ++index) {
+    if (index != 0) out << ',';
+    const NullMoveTrace& event = events[index];
+    out << "{\"fen\":\"" << json_escape(event.fen) << "\",\"root_move\":";
+    if (event.has_root_move) out << '\"' << move_to_uci(event.root_move) << '\"';
+    else out << "null";
+    out << ",\"ply\":" << event.ply << ",\"depth\":" << event.depth
+        << ",\"alpha\":" << event.alpha << ",\"beta\":" << event.beta
+        << ",\"reduction\":" << event.reduction << ",\"null_score\":"
+        << event.null_score << ",\"cutoff\":" << (event.cutoff ? "true" : "false")
+        << ",\"side_to_move\":\""
+        << (event.side_to_move == Color::White ? "white" : "black")
+        << "\",\"material\":\"" << json_escape(event.material) << "\",\"oracle_score\":";
+    if (event.oracle_score) out << *event.oracle_score; else out << "null";
+    out << ",\"oracle_reaches_beta\":"
+        << (event.oracle_reaches_beta ? "true" : "false")
+        << ",\"false_cutoff\":" << (event.false_cutoff ? "true" : "false") << '}';
+  }
+  return out.str() + "]}";
 }
 
 std::string sweep_json(const Board& board, const Options& options) {
@@ -366,7 +475,8 @@ void write_output(const std::optional<std::filesystem::path>& output, const std:
 
 bool needs_nnue(const Options& options) {
   return options.command == Command::Compare || options.command == Command::StaticAudit ||
-      (options.command == Command::Trace || options.command == Command::Sweep) &&
+      (options.command == Command::Trace || options.command == Command::Sweep ||
+       options.command == Command::NullTrace) &&
           options.trace_mode == EvalMode::NNUE;
 }
 
@@ -389,6 +499,7 @@ int main(int argc, char* argv[]) {
       case Command::Sweep: json = sweep_json(*board, options); break;
       case Command::Compare: json = compare_json(*board, options); break;
       case Command::StaticAudit: json = static_audit_json(*board); break;
+      case Command::NullTrace: json = null_trace_json(*board, options); break;
     }
     write_output(options.output, json);
     if (options.command == Command::Trace) std::cout << "[JJUGLE BLUNDER TRACE] ";

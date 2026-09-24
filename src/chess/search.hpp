@@ -142,6 +142,16 @@ struct SearchResult {
   std::uint64_t history_cutoffs{0};
   std::uint64_t null_attempts{0};
   std::uint64_t null_cutoffs{0};
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  // Never present in production builds. These distinguish a diagnostic
+  // policy's skipped/rejected proof from an ordinary NMP cutoff.
+  std::uint64_t null_policy_skips{0};
+  std::uint64_t null_policy_rejected_cutoffs{0};
+  std::uint64_t null_policy_verification_searches{0};
+  std::uint64_t null_policy_verified_cutoffs{0};
+  std::uint64_t null_policy_verification_nodes{0};
+  std::uint64_t null_policy_verification_qnodes{0};
+#endif
   std::uint64_t lmr_attempts{0};
   std::uint64_t lmr_researches{0};
   std::uint64_t lmr_reduced_search_nodes{0};
@@ -207,6 +217,21 @@ struct SearchResult {
   std::vector<RootMoveInfo> root_moves{};
 };
 
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+enum class DiagnosticNullMovePolicy : std::uint8_t {
+  Production,
+  DisableNoHeavyTwoMinors,
+  DisableNoHeavySideOneMinor,
+  ContinueOnLowMaterialFailHigh,
+  VerifyLowMaterialFailHigh,
+  VerifyLowMaterialFailHighNullFree,
+  SkipNoHeavyTwoMinorsDepthSix,
+  VerifyNoHeavyTwoMinorsDepthSixNullFree,
+  VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree,
+  VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree,
+};
+#endif
+
 struct SearchLimits {
   int max_depth{1};
   bool has_deadline{false};
@@ -235,6 +260,12 @@ struct SearchLimits {
   int style_verification_reserve_ms{-1};
   bool profile_style_metadata{false};
   EvalMode eval_mode{EvalMode::HCE};
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  // Diagnostic target only; production always follows the established NMP
+  // path and does not compile this switch.
+  DiagnosticNullMovePolicy null_move_diagnostic_policy{
+      DiagnosticNullMovePolicy::Production};
+#endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   // Test-binary-only QTT controls.  They are intentionally unavailable from
   // UCI and absent from every production compilation unit.
@@ -272,6 +303,33 @@ std::vector<Move> extract_principal_variation(const Board& board,
                                               int max_plies = 6);
 void clear_transposition_table() noexcept;
 void clear_search_heuristics() noexcept;
+
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+// Diagnostic-target-only Null Move cutoff audit. The callback is never
+// compiled into an engine target and its oracle re-search never mutates TT.
+struct NullMoveTrace {
+  std::string fen{};
+  Move root_move{};
+  bool has_root_move{false};
+  int ply{0};
+  int depth{0};
+  int alpha{0};
+  int beta{0};
+  int reduction{0};
+  int null_score{0};
+  bool cutoff{false};
+  Color side_to_move{Color::White};
+  std::string material{};
+  std::optional<int> oracle_score{};
+  bool oracle_reaches_beta{false};
+  bool false_cutoff{false};
+};
+
+using NullMoveTraceCallback = std::function<void(const NullMoveTrace&)>;
+void set_null_move_trace_callback_for_diagnostic(NullMoveTraceCallback callback);
+SearchResult search_forced_root_move_for_null_diagnostic(
+    const Board& board, const Move& forced_root_move, const SearchLimits& limits);
+#endif
 
 #if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
 // Test-only harness for exercising the main negamax TT probe/store path with
