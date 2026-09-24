@@ -534,6 +534,33 @@ void test_pvs_and_aspiration_equivalence() {
   }
 }
 
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+void test_tt_tightened_window_store_bounds() {
+  // Kings only is intentionally quiet at this depth.
+  // The preloaded entries model an already-probed TT bound that narrows the
+  // caller's [-100, 100] window.  The synthetic bound is deliberately stronger
+  // than the fresh search result so this test isolates store classification:
+  // a result inside the caller window can still fail the effective one.
+  const Board board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").value();
+
+  const TtWindowStoreTestResult lower = search_with_preloaded_tt_bound_for_test(
+      board, 1, -100, 100, 50, TTBound::Lower);
+  require(lower.tt_hits == 1, "lower TT entry must be probed before search");
+  require(lower.score > -100 && lower.score < 100 && lower.score <= 50,
+          "fresh result must be inside caller window but fail the tightened alpha");
+  require(lower.stored.bound == TTBound::Upper,
+          "fail-low against TT-tightened alpha must store Upper, never Exact");
+
+  const TtWindowStoreTestResult upper = search_with_preloaded_tt_bound_for_test(
+      board, 1, -100, 100, -50, TTBound::Upper);
+  require(upper.tt_hits == 1, "upper TT entry must be probed before search");
+  require(upper.score > -100 && upper.score < 100 && upper.score >= -50,
+          "fresh result must be inside caller window but fail the tightened beta");
+  require(upper.stored.bound == TTBound::Lower,
+          "fail-high against TT-tightened beta must store Lower, never Exact");
+}
+#endif
+
 void test_qe5_hanging_queen_regression() {
   Board board = Board::initial();
   for (const char* move : {"e2e4", "b8c6", "d2d4", "g8h6", "e4e5", "d7d6",
@@ -653,6 +680,9 @@ int main() {
   test_quiescence_and_special_tactics();
   test_pruning_flags_and_tactics();
   test_pvs_and_aspiration_equivalence();
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+  test_tt_tightened_window_store_bounds();
+#endif
   test_qe5_hanging_queen_regression();
   test_game1_bxa6_replay_and_v32_reserve();
 }

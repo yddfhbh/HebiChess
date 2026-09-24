@@ -191,6 +191,7 @@ add_executable(HebiChessSearchTest
   ${CHESS_SOURCES}
 )
 target_include_directories(HebiChessSearchTest PRIVATE src)
+target_compile_definitions(HebiChessSearchTest PRIVATE HEBICHESS_SEARCH_TT_WINDOW_TEST=1)
 
 add_executable(HebiChessUciTest
   tests/uci_test.cpp

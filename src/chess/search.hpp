@@ -273,6 +273,20 @@ std::vector<Move> extract_principal_variation(const Board& board,
 void clear_transposition_table() noexcept;
 void clear_search_heuristics() noexcept;
 
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+// Test-only harness for exercising the main negamax TT probe/store path with
+// a deliberately preloaded bound.  It is not compiled into engine targets.
+struct TtWindowStoreTestResult {
+  int score{0};
+  TTEntry stored{};
+  std::uint64_t tt_hits{0};
+};
+
+TtWindowStoreTestResult search_with_preloaded_tt_bound_for_test(
+    Board board, int depth, int alpha, int beta, int injected_score,
+    TTBound injected_bound);
+#endif
+
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
 // QTT diagnostics are compiled only into the profile/diagnostic binaries.
 // They deliberately have no production switch or state.

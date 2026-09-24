@@ -1442,8 +1442,6 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
                  bool was_null_move = false) {
   if (context.should_stop()) return 0;
   if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context, accumulator);
-  const int original_alpha = alpha;
-  const int original_beta = beta;
   std::optional<Move> tt_move;
   if (context.tt != nullptr && context.result != nullptr) {
     ++context.result->tt_probes;
@@ -1468,6 +1466,12 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       }
     }
   }
+  // A bound from a sufficiently deep TT entry can narrow this node's search
+  // window.  Newly searched results must be classified against that effective
+  // window: a fresh fail-low/high is not made Exact by the caller's wider
+  // window merely because the existing TT bound was consulted first.
+  const int effective_alpha = alpha;
+  const int effective_beta = beta;
   ++context.nodes;
   const Square king = board.find_king(board.side_to_move());
   const bool in_check = king.is_valid() &&
@@ -1585,8 +1589,8 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     }
   }
   if (context.tt != nullptr && context.result != nullptr) {
-    const TTBound bound = best <= original_alpha ? TTBound::Upper
-                         : best >= original_beta ? TTBound::Lower : TTBound::Exact;
+    const TTBound bound = best <= effective_alpha ? TTBound::Upper
+                         : best >= effective_beta ? TTBound::Lower : TTBound::Exact;
     const TTStoreResult stored = context.tt->store(board.zobrist_key(), depth,
                                                     score_to_tt(best, ply), bound,
                                                     best_move);
@@ -1609,6 +1613,33 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
   SearchContext context{nodes, qnodes};
   return negamax_impl(board, depth, alpha, beta, ply, context);
 }
+
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+TtWindowStoreTestResult search_with_preloaded_tt_bound_for_test(
+    Board board, int depth, int alpha, int beta, int injected_score,
+    TTBound injected_bound) {
+  clear_transposition_table();
+  TranspositionTable& tt = transposition_table();
+  const ZobristKey key = board.zobrist_key();
+  tt.store(key, depth, injected_score, injected_bound, std::nullopt);
+
+  std::uint64_t nodes = 0;
+  std::uint64_t qnodes = 0;
+  SearchResult result;
+  SearchContext context{nodes, qnodes};
+  context.tt = &tt;
+  context.result = &result;
+  context.use_see_pruning = false;
+  context.heuristics = nullptr;
+  context.use_null_move = false;
+  context.use_lmr = false;
+  context.use_pvs = false;
+  context.eval_mode = EvalMode::HCE;
+  const int score = negamax_impl(board, depth, alpha, beta, 0, context);
+  const TTEntry* stored = tt.probe(key);
+  return {score, stored == nullptr ? TTEntry{} : *stored, result.tt_hits};
+}
+#endif
 
 int quiescence(Board& board, int alpha, int beta, int ply) {
 #if HEBICHESS_QSEARCH_TT_VARIANT != 0
