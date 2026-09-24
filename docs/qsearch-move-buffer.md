@@ -87,3 +87,23 @@ For checked-evasion first build with
 then add `--only checked-evasion --verbose-progress` to the runner. For profile-only breakdowns,
 use a separate build with `-DHEBICHESS_BUILD_WASM_MOVE_BUFFER_AB_PROFILE=ON`; never use its NPS
 as promotion evidence.
+
+## Final Windows decision — REJECT
+
+Candidate: `9f8c11a52a7e8a0720382c506bed7215800afcae`
+
+Windows native fixed-depth correctness had exact parity.  Whole-search performance, however,
+showed no stable improvement.
+
+Windows WASM had zero fixed-depth mismatches.  `q_max_ply` was 20 in fixed-depth runs and 29 in
+fixed-time runs.  Aggregate candidate deltas were approximately:
+
+| suite | aggregate candidate delta |
+| --- | --- |
+| fixed-depth | -5.25%, +0.51%, -0.92%, -5.32% |
+| fixed-time | -0.74%, +0.25%, -0.06%, -0.24% |
+
+Removing allocations succeeded, but it did not improve actual native or WASM search throughput.
+This experiment is therefore **REJECTED**: do not promote to production, merge to `main`, or
+deploy it.  Keep the rejected fused-check path and fixed move-buffer path disabled.  No further
+benchmarking is required for this experiment.
