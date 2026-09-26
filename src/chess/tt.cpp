@@ -1,4 +1,5 @@
 #include "chess/tt.hpp"
+#include "chess/search_profile.hpp"
 
 #include <algorithm>
 
@@ -25,6 +26,9 @@ void TranspositionTable::clear() noexcept {
 }
 
 const TTEntry* TranspositionTable::probe(ZobristKey key) const noexcept {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::TranspositionTable, 512);
+#endif
   const TTEntry& entry = entries_[key & (entries_.size() - 1)];
   return entry.occupied && entry.key == key ? &entry : nullptr;
 }
@@ -32,6 +36,9 @@ const TTEntry* TranspositionTable::probe(ZobristKey key) const noexcept {
 TTStoreResult TranspositionTable::store(ZobristKey key, int depth, int score,
                                         TTBound bound,
                                         std::optional<Move> best_move) noexcept {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::TranspositionTable, 512);
+#endif
   TTEntry& entry = entries_[key & (entries_.size() - 1)];
   if (entry.occupied && entry.key != key && entry.depth > depth) return {};
   const bool replaced_different_key = entry.occupied && entry.key != key;

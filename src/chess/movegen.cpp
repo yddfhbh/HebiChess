@@ -1,4 +1,5 @@
 #include "chess/movegen.hpp"
+#include "chess/search_profile.hpp"
 
 #include <array>
 
@@ -121,6 +122,9 @@ void add_castling(const Board& board, Square from, Color color,
 }  // namespace
 
 std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::MoveGeneration, 128);
+#endif
   std::vector<Move> moves;
   const Color color = board.side_to_move();
   constexpr std::array<std::pair<int, int>, 8> knight_steps = {
@@ -167,6 +171,9 @@ std::vector<Move> generate_pseudo_legal_moves(const Board& board) {
 }
 
 std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::MoveGeneration, 128);
+#endif
   std::vector<Move> moves;
   const Color color = board.side_to_move();
   constexpr std::array<std::pair<int, int>, 8> knight_steps = {
@@ -242,6 +249,7 @@ std::vector<Move> generate_pseudo_legal_tactical_moves(const Board& board) {
 std::vector<Move> generate_legal_moves(Board& board) {
   std::vector<Move> legal_moves;
   const Color moving_color = board.side_to_move();
+  SampledProfileTimer filtering_timer(ProfileMetric::LegalFiltering, 128);
   for (const Move& move : generate_pseudo_legal_moves(board)) {
     const UndoState undo = board.make_move(move);
     const Square king = board.find_king(moving_color);
@@ -256,6 +264,7 @@ std::vector<Move> generate_legal_moves(Board& board) {
 std::vector<Move> generate_legal_tactical_moves(Board& board) {
   std::vector<Move> legal_moves;
   const Color moving_color = board.side_to_move();
+  SampledProfileTimer filtering_timer(ProfileMetric::LegalFiltering, 128);
   for (const Move& move : generate_pseudo_legal_tactical_moves(board)) {
     const UndoState undo = board.make_move(move);
     const Square king = board.find_king(moving_color);

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 
 #include "chess/nnue.hpp"
@@ -20,6 +21,10 @@ namespace {
 #define HEBICHESS_QSEARCH_TT_VARIANT 0
 #endif
 
+#ifndef HEBICHESS_NMP_CANDIDATE_G
+#define HEBICHESS_NMP_CANDIDATE_G 0
+#endif
+
 #ifndef HEBICHESS_QSEARCH_TT_PROFILE
 #define HEBICHESS_QSEARCH_TT_PROFILE 0
 #endif
@@ -30,6 +35,10 @@ namespace {
 
 #ifndef HEBICHESS_QSEARCH_LAZY_CHECKS
 #define HEBICHESS_QSEARCH_LAZY_CHECKS 0
+#endif
+
+#if HEBICHESS_NMP_CANDIDATE_G
+bool nmp_candidate_g_eligible(const Board& board, int depth) noexcept;
 #endif
 
 #ifndef HEBICHESS_QSEARCH_TT_CUTOFF_MASK
@@ -77,8 +86,31 @@ constexpr int QTT_EXACT_CUTOFF = 1;
 constexpr int QTT_LOWER_CUTOFF = 2;
 constexpr int QTT_UPPER_CUTOFF = 4;
 
+#if HEBICHESS_NMP_CANDIDATE_G
+bool nmp_candidate_g_eligible(const Board& board, int depth) noexcept {
+  if (depth > 6) return false;
+  int queens = 0;
+  int rooks = 0;
+  int minors = 0;
+  for (const Piece& piece : board.squares()) {
+    if (piece.type == PieceType::Queen) ++queens;
+    else if (piece.type == PieceType::Rook) ++rooks;
+    else if (piece.type == PieceType::Bishop || piece.type == PieceType::Knight)
+      ++minors;
+  }
+  return queens == 0 && rooks == 0 && minors <= 2;
+}
+#endif
+
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
 thread_local NullMoveTraceCallback null_move_trace_callback;
+thread_local NullMoveVerificationTraceCallback null_move_verification_trace_callback;
+thread_local bool null_shadow_propagation_active = false;
+thread_local std::vector<std::uint64_t> null_shadow_call_stack;
+thread_local std::vector<std::pair<int, int>> null_shadow_effective_windows;
+thread_local std::vector<std::uint64_t> null_shadow_target_call_stack;
+thread_local std::uint64_t null_shadow_next_call_id = 1;
+thread_local std::unordered_map<std::string, std::uint64_t> null_shadow_event_occurrences;
 
 std::string null_move_material_summary(const Board& board) {
   std::array<std::array<int, 6>, 2> counts{};
@@ -93,6 +125,35 @@ std::string null_move_material_summary(const Board& board) {
            " N" + std::to_string(c[1]) + " P" + std::to_string(c[0]);
   };
   return "W:" + side(Color::White) + " B:" + side(Color::Black);
+}
+
+std::string null_move_event_identity(const Board& board, int ply, int depth,
+                                    int alpha, int beta, int reduction) {
+  const std::string key = board.to_fen() + "|" + std::to_string(ply) + "|" +
+      std::to_string(depth) + "|" + std::to_string(alpha) + "|" +
+      std::to_string(beta) + "|" + std::to_string(reduction);
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (const unsigned char ch : key) {
+    hash ^= ch;
+    hash *= 1099511628211ULL;
+  }
+  constexpr char digits[] = "0123456789abcdef";
+  std::string id(16, '0');
+  for (int index = 15; index >= 0; --index) {
+    id[static_cast<std::size_t>(index)] = digits[hash & 0x0f];
+    hash >>= 4;
+  }
+  return id;
+}
+
+std::string fen_position_fields(std::string_view fen) {
+  std::size_t end = 0;
+  for (int field = 0; field < 4; ++field) {
+    end = fen.find(' ', end);
+    if (end == std::string_view::npos) return std::string(fen);
+    ++end;
+  }
+  return std::string(fen.substr(0, end - 1));
 }
 
 struct DiagnosticNullMoveMaterial {
@@ -268,6 +329,23 @@ struct SearchContext {
   std::optional<Move> diagnostic_root_move{};
   DiagnosticNullMovePolicy null_move_diagnostic_policy{
       DiagnosticNullMovePolicy::Production};
+  std::vector<std::string> null_shadow_event_ids{};
+  std::vector<std::string> null_shadow_position_fens{};
+  DiagnosticNullMatchLevel null_shadow_match_level{DiagnosticNullMatchLevel::Exact};
+  int null_shadow_position_depth{-1};
+  int null_shadow_position_reduction{-1};
+  DiagnosticOracleTtMode diagnostic_oracle_tt_mode{DiagnosticOracleTtMode::Seeded};
+  std::vector<std::string> null_oracle_filter_event_ids{};
+  int diagnostic_vclean_depth{3};
+  bool tt_probe_enabled{true};
+  bool tt_bound_probe_enabled{true};
+  bool tt_move_hints_enabled{true};
+  bool tt_store_enabled{true};
+#endif
+#if HEBICHESS_NMP_CANDIDATE_G
+  // Candidate-G verification must not publish main-TT, heuristic, or QTT
+  // state into the surrounding production search.
+  bool nmp_g_verification{false};
 #endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   QsearchTtDiagnosticState* qtt_diagnostic{nullptr};
@@ -298,6 +376,9 @@ struct SearchContext {
 int evaluate_search_position(const Board& board, SearchContext& context,
                              const NnueAccumulator* accumulator,
                              bool qsearch) {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::Evaluation, 64);
+#endif
   if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
       nnue_network_available()) {
     ++context.result->q_nnue_evals;
@@ -935,6 +1016,11 @@ void set_qsearch_tt_cutoff_trace_callback_for_test(
 void set_null_move_trace_callback_for_diagnostic(NullMoveTraceCallback callback) {
   null_move_trace_callback = std::move(callback);
 }
+
+void set_null_move_verification_trace_callback_for_diagnostic(
+    NullMoveVerificationTraceCallback callback) {
+  null_move_verification_trace_callback = std::move(callback);
+}
 #endif
 
 int evaluate_move_style_from_analysis(const Board& before, const Move& move,
@@ -1037,6 +1123,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
                     SearchContext& context,
                     const NnueAccumulator* accumulator = nullptr) {
   if (context.should_stop()) return 0;
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::QSearch, 128);
+#endif
   auto& nodes = context.nodes;
   auto& qnodes = context.qnodes;
   ++nodes;
@@ -1232,7 +1321,11 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     }
   }
   const auto store_qtt = [&](int score) {
-    if (qtt == nullptr) return;
+    if (qtt == nullptr
+#if HEBICHESS_NMP_CANDIDATE_G
+        || context.nmp_g_verification
+#endif
+        ) return;
     const TTBound bound = score <= original_alpha ? TTBound::Upper
                         : score >= original_beta ? TTBound::Lower : TTBound::Exact;
     const TTStoreResult stored = qtt->store(qtt_key, 0, score_to_tt(score, ply), bound,
@@ -1367,7 +1460,16 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     ++context.result->q_tactical_movegen_calls;
     context.result->q_tactical_generated += tactical_moves.size();
   }
+#if HEBICHESS_SEARCH_PROFILE
+  bool stalemate = false;
+  if (tactical_moves.empty()) {
+    SampledProfileTimer profile_timer(ProfileMetric::StalemateLegality, 1);
+    stalemate = generate_legal_moves(board).empty();
+  }
+  if (stalemate) {
+#else
   if (tactical_moves.empty() && generate_legal_moves(board).empty()) {
+#endif
     if (context.result != nullptr) {
       ++context.result->q_stalemate_full_movegen_calls;
       ++context.result->q_full_legal_movegen_calls;
@@ -1492,33 +1594,95 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   return alpha;
 }
 
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
+                 SearchContext& context, const NnueAccumulator* accumulator = nullptr,
+                 bool was_null_move = false);
+int negamax_impl_body(Board& board, int depth, int alpha, int beta, int ply,
+                      SearchContext& context, const NnueAccumulator* accumulator,
+                      bool was_null_move) {
+#else
 int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
                  SearchContext& context, const NnueAccumulator* accumulator = nullptr,
                  bool was_null_move = false) {
+#endif
   if (context.should_stop()) return 0;
   if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context, accumulator);
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::MainSearch, 128);
+#endif
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  const int caller_alpha = alpha;
+  const int caller_beta = beta;
+  bool diagnostic_tt_hit = false;
+  int diagnostic_tt_depth = -1;
+  std::string diagnostic_tt_bound = "none";
+  std::optional<int> diagnostic_tt_score;
+  bool diagnostic_tt_raised_alpha = false;
+  bool diagnostic_tt_lowered_beta = false;
+  bool diagnostic_tt_would_cutoff = false;
+  bool diagnostic_tt_move_present = false;
+  bool diagnostic_tt_move_ordering_only = false;
+#endif
   std::optional<Move> tt_move;
-  if (context.tt != nullptr && context.result != nullptr) {
+  if (context.tt != nullptr && context.result != nullptr
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      && context.tt_probe_enabled
+#endif
+      ) {
     ++context.result->tt_probes;
     const TTEntry* entry = context.tt->probe(board.zobrist_key());
     if (entry != nullptr) {
       ++context.result->tt_hits;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      diagnostic_tt_hit = true;
+      diagnostic_tt_depth = entry->depth;
+      diagnostic_tt_move_present = entry->best_move.has_value();
+      diagnostic_tt_bound = entry->bound == TTBound::Exact ? "exact" :
+          entry->bound == TTBound::Lower ? "lower" : "upper";
+      diagnostic_tt_score = score_from_tt(entry->score, ply);
+      if (context.tt_move_hints_enabled) tt_move = entry->best_move;
+      if (context.tt_bound_probe_enabled && entry->depth >= depth) {
+#else
       tt_move = entry->best_move;
       if (entry->depth >= depth) {
+#endif
         const int score = score_from_tt(entry->score, ply);
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+        diagnostic_tt_would_cutoff = entry->bound == TTBound::Exact ||
+            (entry->bound == TTBound::Lower && score >= caller_beta) ||
+            (entry->bound == TTBound::Upper && score <= caller_alpha);
+#endif
         if (entry->bound == TTBound::Exact ||
             (entry->bound == TTBound::Lower && score >= beta) ||
             (entry->bound == TTBound::Upper && score <= alpha)) {
           ++context.result->tt_cutoffs;
           return score;
         }
-        if (entry->bound == TTBound::Lower) alpha = std::max(alpha, score);
-        if (entry->bound == TTBound::Upper) beta = std::min(beta, score);
+        if (entry->bound == TTBound::Lower) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+          diagnostic_tt_raised_alpha = score > alpha;
+#endif
+          alpha = std::max(alpha, score);
+        }
+        if (entry->bound == TTBound::Upper) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+          diagnostic_tt_lowered_beta = score < beta;
+#endif
+          beta = std::min(beta, score);
+        }
         if (alpha >= beta) {
           ++context.result->tt_cutoffs;
           return score;
         }
       }
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      diagnostic_tt_move_ordering_only = diagnostic_tt_move_present &&
+          context.tt_move_hints_enabled &&
+          (!context.tt_bound_probe_enabled || entry->depth < depth ||
+           entry->bound == TTBound::Exact ||
+           (!diagnostic_tt_raised_alpha && !diagnostic_tt_lowered_beta));
+#endif
     }
   }
   // A bound from a sufficiently deep TT entry can narrow this node's search
@@ -1527,6 +1691,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   // window merely because the existing TT bound was consulted first.
   const int effective_alpha = alpha;
   const int effective_beta = beta;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  std::optional<int> diagnostic_full_oracle_score;
+  if (!null_shadow_effective_windows.empty())
+    null_shadow_effective_windows.back() = {effective_alpha, effective_beta};
+#endif
   ++context.nodes;
   const Square king = board.find_king(board.side_to_move());
   const bool in_check = king.is_valid() &&
@@ -1538,19 +1707,66 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       diagnostic_material.rooks == 0 && diagnostic_material.minors <= 2;
   const bool no_heavy_side_one_minor = diagnostic_material.queens == 0 &&
       diagnostic_material.rooks == 0 && diagnostic_material.side_minors <= 1;
-  diagnostic_skip_null_move =
+  const bool low_material_depth_six = no_heavy_two_minors && depth <= 6;
+  int diagnostic_static_eval = 0;
+  bool diagnostic_static_eval_ready = false;
+  const auto admission_threshold = [&]() -> std::optional<int> {
+    switch (context.null_move_diagnostic_policy) {
+      case DiagnosticNullMovePolicy::AdmissionStaticEval:
+        return beta;
+      case DiagnosticNullMovePolicy::AdmissionLowMaterialStaticEval:
+        if (low_material_depth_six) return beta;
+        return std::nullopt;
+      case DiagnosticNullMovePolicy::AdmissionLowMaterialStaticEvalMargin16:
+        if (low_material_depth_six) return beta - 16;
+        return std::nullopt;
+      case DiagnosticNullMovePolicy::AdmissionLowMaterialStaticEvalMargin32:
+        if (low_material_depth_six) return beta - 32;
+        return std::nullopt;
+      case DiagnosticNullMovePolicy::AdmissionLowMaterialStaticEvalMargin64:
+        if (low_material_depth_six) return beta - 64;
+        return std::nullopt;
+      default:
+        return std::nullopt;
+    }
+  };
+  if (const auto threshold = admission_threshold(); threshold.has_value() &&
+      context.use_null_move && depth >= 3 && ply > 0 && !was_null_move &&
+      !in_check && has_non_pawn_material(board, board.side_to_move())) {
+    diagnostic_static_eval = evaluate_search_position(board, context, accumulator, false);
+    diagnostic_static_eval_ready = true;
+    if (context.result != nullptr) ++context.result->null_policy_admission_evaluations;
+    if (diagnostic_static_eval < *threshold) {
+      diagnostic_skip_null_move = true;
+      if (context.result != nullptr) ++context.result->null_policy_admission_rejections;
+    }
+  }
+  diagnostic_skip_null_move = diagnostic_skip_null_move ||
       (context.null_move_diagnostic_policy ==
            DiagnosticNullMovePolicy::DisableNoHeavyTwoMinors && no_heavy_two_minors) ||
       (context.null_move_diagnostic_policy ==
            DiagnosticNullMovePolicy::DisableNoHeavySideOneMinor && no_heavy_side_one_minor) ||
       (context.null_move_diagnostic_policy ==
            DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthSix &&
-       no_heavy_two_minors && depth <= 6);
+       no_heavy_two_minors && depth <= 6) ||
+      (context.null_move_diagnostic_policy ==
+           DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthThree &&
+       no_heavy_two_minors && depth == 3) ||
+      (context.null_move_diagnostic_policy ==
+           DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthFour &&
+       no_heavy_two_minors && depth <= 4) ||
+      (context.null_move_diagnostic_policy ==
+           DiagnosticNullMovePolicy::SkipNoHeavyTwoMinorsDepthFive &&
+       no_heavy_two_minors && depth <= 5);
   if (diagnostic_skip_null_move && context.use_null_move && depth >= 3 && ply > 0 &&
       !was_null_move && !in_check && has_non_pawn_material(board, board.side_to_move()) &&
       context.result != nullptr) {
     ++context.result->null_policy_skips;
   }
+#endif
+#if HEBICHESS_NMP_CANDIDATE_G
+  const bool nmp_candidate_g_eligible_here =
+      nmp_candidate_g_eligible(board, depth);
 #endif
   if (context.use_null_move
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
@@ -1559,7 +1775,15 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       && depth >= 3 && ply > 0 && !was_null_move &&
       !in_check && has_non_pawn_material(board, board.side_to_move())) {
     if (context.result != nullptr) ++context.result->null_attempts;
-    const int reduction = depth <= 5 ? 2 : 3;
+    int reduction = depth <= 5 ? 2 : 3;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    if (context.null_move_diagnostic_policy ==
+            DiagnosticNullMovePolicy::ReductionOneLowMaterialDepthSix &&
+        low_material_depth_six) {
+      reduction = 1;
+      if (context.result != nullptr) ++context.result->null_policy_reduction_overrides;
+    }
+#endif
     const NullUndoState undo = board.make_null_move();
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
     if (accumulator != nullptr && context.nnue_counters != nullptr)
@@ -1570,6 +1794,41 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     board.unmake_null_move(undo);
     if (context.stopped) return 0;
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    bool shadow_selected = false;
+    bool position_shadow_candidate = false;
+    const std::string event_id = null_move_event_identity(
+        board, ply, depth, alpha, beta, reduction);
+    const std::uint64_t event_occurrence = ++null_shadow_event_occurrences[event_id];
+    const bool exact_shadow = std::find(context.null_shadow_event_ids.begin(),
+        context.null_shadow_event_ids.end(), event_id) != context.null_shadow_event_ids.end() ||
+        std::find(context.null_shadow_event_ids.begin(), context.null_shadow_event_ids.end(),
+            event_id + "@" + std::to_string(event_occurrence)) !=
+            context.null_shadow_event_ids.end();
+    if (context.null_shadow_match_level != DiagnosticNullMatchLevel::Exact &&
+        !context.null_shadow_position_fens.empty()) {
+      const std::string current_position = fen_position_fields(board.to_fen());
+      const bool position_match = std::any_of(context.null_shadow_position_fens.begin(),
+          context.null_shadow_position_fens.end(), [&](const std::string& fen) {
+            return fen_position_fields(fen) == current_position;
+          });
+      const bool depth_match = context.null_shadow_match_level ==
+              DiagnosticNullMatchLevel::Position ||
+          (context.null_shadow_position_depth == depth &&
+           context.null_shadow_position_reduction == reduction);
+      position_shadow_candidate = position_match && depth_match;
+    }
+    if (exact_shadow || position_shadow_candidate) {
+      if (context.result != nullptr) {
+        ++context.result->null_shadow_matches;
+        auto& matched = context.result->null_shadow_matched_event_ids;
+        if (std::find(matched.begin(), matched.end(), event_id) == matched.end())
+          matched.push_back(event_id);
+      }
+      // Exact signatures were previously observed as genuine false cutoffs.
+      // Tolerant matching is stricter: it is only acted on after its same-node
+      // null-free oracle confirms that the encountered cutoff is false.
+    }
+    bool position_shadow_false = false;
     if (!context.null_move_oracle && null_move_trace_callback) {
       NullMoveTrace trace;
       trace.fen = board.to_fen();
@@ -1582,27 +1841,200 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       trace.reduction = reduction;
       trace.null_score = score;
       trace.cutoff = score >= beta;
+      trace.event_id = null_move_event_identity(
+          board, ply, depth, alpha, beta, reduction);
+      trace.event_occurrence = event_occurrence;
       trace.side_to_move = board.side_to_move();
       trace.material = null_move_material_summary(board);
+      trace.tt_probe_hit = diagnostic_tt_hit;
+      trace.tt_entry_depth = diagnostic_tt_depth;
+      trace.tt_bound = diagnostic_tt_bound;
+      trace.tt_score_cp = diagnostic_tt_score;
+      trace.caller_alpha = caller_alpha;
+      trace.caller_beta = caller_beta;
+      trace.effective_alpha = effective_alpha;
+      trace.effective_beta = effective_beta;
+      trace.tt_raised_alpha = diagnostic_tt_raised_alpha;
+      trace.tt_lowered_beta = diagnostic_tt_lowered_beta;
+      trace.tt_window_changed = effective_alpha != caller_alpha ||
+                                effective_beta != caller_beta;
+      trace.tt_move_present = diagnostic_tt_move_present;
+      trace.tt_move_ordering_only = diagnostic_tt_move_ordering_only;
+      trace.tt_would_cutoff = diagnostic_tt_would_cutoff;
       if (trace.cutoff) {
+        trace.static_eval_cp = diagnostic_static_eval_ready
+            ? diagnostic_static_eval
+            : evaluate_search_position(board, context, accumulator, false);
+      }
+      // Expensive zugzwang/mobility descriptors are deliberately confined to
+      // the diagnostic callback path; production search never computes them.
+      {
+        const auto legal = generate_legal_moves(board);
+        trace.legal_move_count = static_cast<int>(legal.size());
+        for (const Move& move : legal) {
+          const Piece moving = board.piece_at(move.from);
+          const bool capture = move.flag == MoveFlag::Capture ||
+              move.flag == MoveFlag::EnPassant ||
+              move.flag == MoveFlag::PromotionCapture;
+          if (moving.type == PieceType::King) ++trace.legal_king_moves;
+          else if (moving.type == PieceType::Pawn) {
+            ++trace.legal_pawn_moves;
+            if (!capture) {
+              ++trace.pawn_advance_moves;
+              trace.stm_has_pawn_push = true;
+            }
+          } else if (moving.type == PieceType::Knight || moving.type == PieceType::Bishop) {
+            ++trace.legal_minor_moves;
+          } else if (moving.type == PieceType::Rook || moving.type == PieceType::Queen) {
+            ++trace.legal_non_pawn_non_king_moves;
+          }
+          if (capture) {
+            ++trace.legal_captures;
+            trace.stm_has_capture = true;
+          } else {
+            ++trace.legal_quiet_moves;
+          }
+        }
+        const auto is_passed = [&board](Color color, Square pawn_square) {
+          const int direction = color == Color::White ? 1 : -1;
+          for (int file = std::max(0, pawn_square.file() - 1);
+               file <= std::min(7, pawn_square.file() + 1); ++file) {
+            for (int rank = pawn_square.rank() + direction;
+                 rank >= 0 && rank < 8; rank += direction) {
+              const Piece piece = board.piece_at(Square::from_file_rank(file, rank));
+              if (piece.type == PieceType::Pawn && piece.color != color) return false;
+            }
+          }
+          return true;
+        };
+        std::vector<Square> passed_white, passed_black;
+        int white_material = 0, black_material = 0;
+        for (int square_index = 0; square_index < Square::kSquareCount; ++square_index) {
+          const Square square = Square::from_index(static_cast<std::uint8_t>(square_index));
+          const Piece piece = board.piece_at(square);
+          int value = 0;
+          switch (piece.type) {
+            case PieceType::Pawn: value = 100; break;
+            case PieceType::Knight: value = 320; break;
+            case PieceType::Bishop: value = 330; break;
+            case PieceType::Rook: value = 500; break;
+            case PieceType::Queen: value = 900; break;
+            default: break;
+          }
+          if (piece.color == Color::White) white_material += value;
+          else if (piece.color == Color::Black) black_material += value;
+          if (piece.type == PieceType::Pawn && is_passed(piece.color, square))
+            (piece.color == Color::White ? passed_white : passed_black).push_back(square);
+        }
+        const auto connected_count = [](const std::vector<Square>& pawns) {
+          int connected = 0;
+          for (std::size_t i = 0; i < pawns.size(); ++i)
+            for (std::size_t j = i + 1; j < pawns.size(); ++j)
+              if (std::abs(pawns[i].file() - pawns[j].file()) == 1 &&
+                  std::abs(pawns[i].rank() - pawns[j].rank()) <= 1) {
+                ++connected;
+                break;
+              }
+          return connected;
+        };
+        trace.passed_pawns_white = static_cast<int>(passed_white.size());
+        trace.passed_pawns_black = static_cast<int>(passed_black.size());
+        trace.connected_passed_pawns_white = connected_count(passed_white);
+        trace.connected_passed_pawns_black = connected_count(passed_black);
+        trace.material_imbalance_cp = white_material - black_material;
+        trace.stm_non_pawn_material_cp = board.side_to_move() == Color::White
+            ? white_material - 100 * static_cast<int>(std::count_if(
+                  board.squares().begin(), board.squares().end(), [](Piece p) {
+                    return p.type == PieceType::Pawn && p.color == Color::White;
+                  }))
+            : black_material - 100 * static_cast<int>(std::count_if(
+                  board.squares().begin(), board.squares().end(), [](Piece p) {
+                    return p.type == PieceType::Pawn && p.color == Color::Black;
+                  }));
+        trace.stm_in_check = board.is_square_attacked(
+            board.find_king(board.side_to_move()), opposite(board.side_to_move()));
+      }
+      const bool oracle_selected = context.null_oracle_filter_event_ids.empty() ||
+          std::find(context.null_oracle_filter_event_ids.begin(),
+                    context.null_oracle_filter_event_ids.end(), trace.event_id) !=
+              context.null_oracle_filter_event_ids.end();
+      switch (context.diagnostic_oracle_tt_mode) {
+        case DiagnosticOracleTtMode::Seeded: trace.oracle_tt_mode = "seeded"; break;
+        case DiagnosticOracleTtMode::Counterfactual: trace.oracle_tt_mode = "counterfactual"; break;
+        case DiagnosticOracleTtMode::Clean: trace.oracle_tt_mode = "clean"; break;
+        case DiagnosticOracleTtMode::CleanNoTt: trace.oracle_tt_mode = "clean-no-tt"; break;
+        case DiagnosticOracleTtMode::MoveOnly: trace.oracle_tt_mode = "move-only"; break;
+      }
+      if (trace.cutoff && oracle_selected) {
         Board oracle_board = board;
         std::uint64_t oracle_nodes = 0;
         std::uint64_t oracle_qnodes = 0;
         SearchResult oracle_result;
         SearchContext oracle{oracle_nodes, oracle_qnodes};
         oracle.result = &oracle_result;
-        // Probe an isolated snapshot so the oracle sees the live main-TT
-        // state without publishing its own stores into the live search.
+        // Oracle state is private. Seeded mode preserves legacy behavior;
+        // Clean starts with an empty private TT, and CleanNoTt uses none.
         std::optional<TranspositionTable> oracle_tt;
-        if (context.tt != nullptr) {
+        if (context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::Seeded &&
+            context.tt != nullptr) {
+          oracle_tt.emplace(*context.tt);
+          oracle.tt = &*oracle_tt;
+        } else if (context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::Clean) {
+          oracle_tt.emplace();
+          oracle.tt = &*oracle_tt;
+        } else if ((context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::Counterfactual ||
+                    context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::MoveOnly) &&
+                   context.tt != nullptr) {
           oracle_tt.emplace(*context.tt);
           oracle.tt = &*oracle_tt;
         }
         oracle.use_see_pruning = context.use_see_pruning;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+        oracle.tt_probe_enabled = context.tt_probe_enabled;
+        oracle.tt_bound_probe_enabled =
+            context.diagnostic_oracle_tt_mode != DiagnosticOracleTtMode::CleanNoTt &&
+            context.diagnostic_oracle_tt_mode != DiagnosticOracleTtMode::MoveOnly &&
+            context.diagnostic_oracle_tt_mode != DiagnosticOracleTtMode::Counterfactual &&
+            context.tt_bound_probe_enabled;
+        oracle.tt_move_hints_enabled =
+            context.diagnostic_oracle_tt_mode != DiagnosticOracleTtMode::CleanNoTt &&
+            context.tt_move_hints_enabled;
+        oracle.tt_store_enabled = context.tt_store_enabled;
+        if (context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::CleanNoTt) {
+          oracle.tt_probe_enabled = false;
+          oracle.tt_store_enabled = false;
+        }
+        if (context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::MoveOnly ||
+            context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::Counterfactual)
+          oracle.tt_bound_probe_enabled = false;
+#endif
+        if (oracle.tt != nullptr && context.result != nullptr) {
+          ++oracle_result.tt_probes;
+          if (const TTEntry* entry = oracle.tt->probe(oracle_board.zobrist_key())) {
+            ++oracle_result.tt_hits;
+            trace.oracle_initial_tt_hit = true;
+            trace.oracle_initial_tt_entry_depth = entry->depth;
+            trace.oracle_initial_tt_bound = entry->bound == TTBound::Exact ? "exact" :
+                entry->bound == TTBound::Lower ? "lower" : "upper";
+            trace.oracle_initial_tt_score = score_from_tt(entry->score, ply);
+            trace.oracle_initial_tt_caused_cutoff = entry->depth >= depth &&
+                (entry->bound == TTBound::Exact ||
+                 (entry->bound == TTBound::Lower && *trace.oracle_initial_tt_score >= beta) ||
+                 (entry->bound == TTBound::Upper && *trace.oracle_initial_tt_score <= alpha));
+          }
+        }
         // Preserve current ordering state in a private copy so oracle updates
-        // cannot feed back into the live search.
+        // cannot feed back into the live search.  Clean modes instead start
+        // from empty local heuristics so NMP-derived ordering history cannot
+        // influence the independent oracle.
         std::optional<SearchHeuristics> oracle_heuristics;
-        if (context.heuristics != nullptr) {
+        SearchHeuristics clean_oracle_heuristics;
+        const bool clean_oracle =
+            context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::Clean ||
+            context.diagnostic_oracle_tt_mode == DiagnosticOracleTtMode::CleanNoTt;
+        if (clean_oracle) {
+          oracle.heuristics = &clean_oracle_heuristics;
+        } else if (context.heuristics != nullptr) {
           oracle_heuristics.emplace(*context.heuristics);
           oracle.heuristics = &*oracle_heuristics;
         }
@@ -1622,30 +2054,103 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
         trace.oracle_score = negamax_impl(
             oracle_board, depth, alpha, beta, ply, oracle,
             oracle_accumulator ? &*oracle_accumulator : nullptr);
+        trace.oracle_nodes = oracle_nodes;
+        trace.oracle_qnodes = oracle_qnodes;
+        trace.oracle_tt_probes = oracle_result.tt_probes;
+        trace.oracle_tt_hits = oracle_result.tt_hits;
+        trace.oracle_tt_cutoffs = oracle_result.tt_cutoffs;
+        trace.oracle_returned_bound = *trace.oracle_score <= alpha ? "upper" :
+            *trace.oracle_score >= beta ? "lower" : "exact";
+        diagnostic_full_oracle_score = trace.oracle_score;
         trace.oracle_reaches_beta = *trace.oracle_score >= beta;
-        trace.false_cutoff = !trace.oracle_reaches_beta;
+      trace.false_cutoff = !trace.oracle_reaches_beta;
       }
+      position_shadow_false = trace.cutoff && trace.false_cutoff;
       null_move_trace_callback(trace);
     }
+    if (score >= beta &&
+        (exact_shadow || (position_shadow_candidate && position_shadow_false))) {
+      shadow_selected = true;
+      if (context.result != nullptr) {
+        ++context.result->null_shadow_suppressions;
+        if (!null_shadow_propagation_active) {
+          null_shadow_propagation_active = true;
+          null_shadow_target_call_stack = null_shadow_call_stack;
+          context.result->null_shadow_propagation_event_id = event_id;
+          context.result->null_shadow_propagation.clear();
+        }
+      }
+    }
 #endif
-    if (score >= beta) {
+    if (score >= beta
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+        && !shadow_selected
+#endif
+        ) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      bool diagnostic_reduced_verification_rejected = false;
+#endif
+#if HEBICHESS_NMP_CANDIDATE_G
+      bool nmp_candidate_g_rejected = false;
+      if (nmp_candidate_g_eligible_here) {
+        if (context.result != nullptr) {
+          ++context.result->nmp_g_verification_attempts;
+        }
+        const std::uint64_t verification_nodes_before = context.nodes;
+        const std::uint64_t verification_qnodes_before = context.qnodes;
+        const bool use_null_move_before = context.use_null_move;
+        const bool nmp_g_verification_before = context.nmp_g_verification;
+        context.use_null_move = false;
+        context.nmp_g_verification = true;
+        const int verified = negamax_impl(board, depth, alpha, beta, ply,
+                                          context, accumulator, was_null_move);
+        context.use_null_move = use_null_move_before;
+        context.nmp_g_verification = nmp_g_verification_before;
+        if (context.result != nullptr) {
+          context.result->nmp_g_verification_nodes +=
+              context.nodes - verification_nodes_before;
+          context.result->nmp_g_verification_qnodes +=
+              context.qnodes - verification_qnodes_before;
+          if (verified >= beta) {
+            ++context.result->nmp_g_confirmed_verifications;
+            ++context.result->null_cutoffs;
+          } else {
+            ++context.result->nmp_g_rejected_verifications;
+          }
+        }
+        if (context.stopped) return 0;
+        if (verified >= beta) return verified;
+        // A rejected candidate must continue with the ordinary move search
+        // from this original node; the verification was only a proof check.
+        nmp_candidate_g_rejected = true;
+      } else {
+        if (context.result != nullptr) ++context.result->null_cutoffs;
+        return score;
+      }
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       const int null_margin = score - beta;
       const int window_width = beta - alpha;
-      const bool null_free_verification = no_heavy_two_minors &&
+      const bool reduced_verification = no_heavy_two_minors &&
           (context.null_move_diagnostic_policy ==
-               DiagnosticNullMovePolicy::VerifyLowMaterialFailHighNullFree ||
-           (context.null_move_diagnostic_policy ==
-                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixNullFree &&
-            depth <= 6) ||
-           (context.null_move_diagnostic_policy ==
-                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree &&
-            depth <= 6 && null_margin <= 71) ||
-           (context.null_move_diagnostic_policy ==
-                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree &&
-            depth <= 6 && window_width <= 70));
-      if (null_free_verification) {
-        if (context.result != nullptr) ++context.result->null_policy_verification_searches;
+               DiagnosticNullMovePolicy::VerifyReducedLowMaterialDepthMinusReduction ||
+           context.null_move_diagnostic_policy ==
+               DiagnosticNullMovePolicy::VerifyReducedLowMaterialDepthMinusOne ||
+           context.null_move_diagnostic_policy ==
+               DiagnosticNullMovePolicy::VerifyReducedLowMaterialDepthMinusReductionPlusOne);
+      if (reduced_verification) {
+        int verification_depth = 1;
+        if (context.null_move_diagnostic_policy ==
+            DiagnosticNullMovePolicy::VerifyReducedLowMaterialDepthMinusReduction) {
+          verification_depth = std::max(1, depth - reduction);
+        } else if (context.null_move_diagnostic_policy ==
+                   DiagnosticNullMovePolicy::VerifyReducedLowMaterialDepthMinusOne) {
+          verification_depth = std::max(1, depth - 1);
+        } else {
+          verification_depth = std::max(1, depth - reduction + 1);
+        }
+        if (context.result != nullptr)
+          ++context.result->null_policy_verification_searches;
         Board verification_board = board;
         std::uint64_t verification_nodes = 0;
         std::uint64_t verification_qnodes = 0;
@@ -1658,8 +2163,119 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
           verification.tt = &*verification_tt;
         }
         verification.use_see_pruning = context.use_see_pruning;
+        verification.use_null_move = false;
+        verification.use_lmr = context.use_lmr;
+        verification.use_pvs = context.use_pvs;
+        verification.eval_mode = context.eval_mode;
+        verification.deadline_check_interval_nodes = context.deadline_check_interval_nodes;
+        verification.null_move_oracle = true;
+        verification.diagnostic_root_move = context.diagnostic_root_move;
+        verification.null_move_diagnostic_policy =
+            DiagnosticNullMovePolicy::Production;
+        verification.tt_probe_enabled = context.tt_probe_enabled;
+        verification.tt_bound_probe_enabled = context.tt_bound_probe_enabled;
+        verification.tt_move_hints_enabled = context.tt_move_hints_enabled;
+        verification.tt_store_enabled = context.tt_store_enabled;
         std::optional<SearchHeuristics> verification_heuristics;
         if (context.heuristics != nullptr) {
+          verification_heuristics.emplace(*context.heuristics);
+          verification.heuristics = &*verification_heuristics;
+        }
+        std::optional<NnueAccumulator> verification_accumulator;
+        if (context.eval_mode == EvalMode::NNUE && nnue_network_available()) {
+          verification_accumulator.emplace();
+          if (!refresh_nnue_accumulator(verification_board, *verification_accumulator))
+            verification_accumulator.reset();
+        }
+        // A null-window proof of score >= beta only needs [beta - 1, beta].
+        // The verification searches the original node with recursive NMP off;
+        // its TT and ordering updates remain private to this proof.
+        const int verification_alpha = beta - 1;
+        const int verified = negamax_impl(
+            verification_board, verification_depth, verification_alpha, beta, ply,
+            verification, verification_accumulator ? &*verification_accumulator : nullptr);
+        const bool accepted = verified >= beta;
+        if (context.result != nullptr) {
+          context.result->null_policy_verification_nodes += verification_nodes;
+          context.result->null_policy_verification_qnodes += verification_qnodes;
+          if (accepted) {
+            ++context.result->null_policy_verified_cutoffs;
+            ++context.result->null_cutoffs;
+          } else {
+            ++context.result->null_policy_rejected_cutoffs;
+          }
+        }
+        if (null_move_verification_trace_callback) {
+          NullMoveVerificationTrace verification_trace;
+          verification_trace.fen = board.to_fen();
+          verification_trace.root_move = context.diagnostic_root_move.value_or(Move{});
+          verification_trace.has_root_move = context.diagnostic_root_move.has_value();
+          verification_trace.event_id = event_id;
+          verification_trace.ply = ply;
+          verification_trace.depth = depth;
+          verification_trace.alpha = alpha;
+          verification_trace.beta = beta;
+          verification_trace.reduction = reduction;
+          verification_trace.null_score = score;
+          verification_trace.verification_depth = verification_depth;
+          verification_trace.verification_score = verified;
+          verification_trace.accepted = accepted;
+          verification_trace.verification_nodes = verification_nodes;
+          verification_trace.verification_qnodes = verification_qnodes;
+          verification_trace.full_oracle_score = diagnostic_full_oracle_score;
+          null_move_verification_trace_callback(verification_trace);
+        }
+        if (context.stopped) return 0;
+        if (accepted) return verified;
+        diagnostic_reduced_verification_rejected = true;
+      }
+      const bool clean_empty_tt_verification =
+          context.null_move_diagnostic_policy ==
+          DiagnosticNullMovePolicy::VerifyLowMaterialFailHighClean;
+      const bool null_free_verification = no_heavy_two_minors &&
+          (clean_empty_tt_verification ||
+          (context.null_move_diagnostic_policy ==
+               DiagnosticNullMovePolicy::VerifyLowMaterialFailHighNullFree ||
+           (context.null_move_diagnostic_policy ==
+                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixNullFree &&
+            depth <= 6) ||
+           (context.null_move_diagnostic_policy ==
+                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree &&
+            depth <= 6 && null_margin <= 71) ||
+           (context.null_move_diagnostic_policy ==
+                DiagnosticNullMovePolicy::VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree &&
+            depth <= 6 && window_width <= 70)));
+      if (null_free_verification) {
+        if (context.result != nullptr) ++context.result->null_policy_verification_searches;
+        Board verification_board = board;
+        std::uint64_t verification_nodes = 0;
+        std::uint64_t verification_qnodes = 0;
+        SearchResult verification_result;
+        SearchContext verification{verification_nodes, verification_qnodes};
+        verification.result = &verification_result;
+        std::optional<TranspositionTable> verification_tt;
+        if (!clean_empty_tt_verification && context.tt != nullptr) {
+          verification_tt.emplace(*context.tt);
+          verification.tt = &*verification_tt;
+        }
+        verification.use_see_pruning = context.use_see_pruning;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+        verification.tt_probe_enabled = context.tt_probe_enabled;
+        verification.tt_bound_probe_enabled = context.tt_bound_probe_enabled;
+        verification.tt_move_hints_enabled = context.tt_move_hints_enabled;
+        verification.tt_store_enabled = context.tt_store_enabled;
+        if (clean_empty_tt_verification) {
+          verification.tt_probe_enabled = true;
+          verification.tt_bound_probe_enabled = true;
+          verification.tt_move_hints_enabled = true;
+          verification.tt_store_enabled = true;
+        }
+#endif
+        SearchHeuristics clean_verification_heuristics;
+        std::optional<SearchHeuristics> verification_heuristics;
+        if (clean_empty_tt_verification) {
+          verification.heuristics = &clean_verification_heuristics;
+        } else if (context.heuristics != nullptr) {
           verification_heuristics.emplace(*context.heuristics);
           verification.heuristics = &*verification_heuristics;
         }
@@ -1678,20 +2294,58 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
           if (!refresh_nnue_accumulator(verification_board, *verification_accumulator))
             verification_accumulator.reset();
         }
-        const int verified = negamax_impl(
-            verification_board, depth, alpha, beta, ply, verification,
-            verification_accumulator ? &*verification_accumulator : nullptr);
+        const int verification_depth = clean_empty_tt_verification
+            ? std::max(1, context.diagnostic_vclean_depth) : depth;
+        int verified = 0;
+        if (clean_empty_tt_verification) {
+          const DiagnosticOracleRunResult clean_result =
+              run_null_free_oracle_for_diagnostic(
+                  board, verification_depth, alpha, beta, context.eval_mode,
+                  DiagnosticOracleTtMode::Clean, ply);
+          verified = clean_result.score;
+          verification_nodes = clean_result.nodes;
+          verification_qnodes = clean_result.qnodes;
+        } else {
+          verified = negamax_impl(
+              verification_board, verification_depth, alpha, beta, ply, verification,
+              verification_accumulator ? &*verification_accumulator : nullptr);
+        }
+        const bool accepted = verified >= beta;
         if (context.result != nullptr) {
           context.result->null_policy_verification_nodes += verification_nodes;
           context.result->null_policy_verification_qnodes += verification_qnodes;
-          if (verified >= beta) {
+          if (accepted) {
             ++context.result->null_cutoffs;
             ++context.result->null_policy_verified_cutoffs;
           } else {
             ++context.result->null_policy_rejected_cutoffs;
           }
         }
-        return verified;
+        if (null_move_verification_trace_callback && clean_empty_tt_verification) {
+          NullMoveVerificationTrace verification_trace;
+          verification_trace.fen = board.to_fen();
+          verification_trace.root_move = context.diagnostic_root_move.value_or(Move{});
+          verification_trace.has_root_move = context.diagnostic_root_move.has_value();
+          verification_trace.event_id = event_id;
+          verification_trace.ply = ply;
+          verification_trace.depth = depth;
+          verification_trace.alpha = alpha;
+          verification_trace.beta = beta;
+          verification_trace.reduction = reduction;
+          verification_trace.null_score = score;
+          verification_trace.verification_depth = verification_depth;
+          verification_trace.verification_score = verified;
+          verification_trace.accepted = accepted;
+          verification_trace.verification_nodes = verification_nodes;
+          verification_trace.verification_qnodes = verification_qnodes;
+          null_move_verification_trace_callback(verification_trace);
+        }
+        if (context.stopped) return 0;
+        if (accepted) return verified;
+        if (clean_empty_tt_verification)
+          diagnostic_reduced_verification_rejected = true;
+        else
+          return verified;
       }
       if (no_heavy_two_minors && context.null_move_diagnostic_policy ==
           DiagnosticNullMovePolicy::ContinueOnLowMaterialFailHigh) {
@@ -1715,8 +2369,25 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
         return verified;
       } else {
 #endif
+#if HEBICHESS_NMP_CANDIDATE_G
+      if (!nmp_candidate_g_rejected
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+          && !diagnostic_reduced_verification_rejected
+#endif
+          ) {
+        if (context.result != nullptr) ++context.result->null_cutoffs;
+        return score;
+      }
+#else
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      if (!diagnostic_reduced_verification_rejected) {
+#endif
       if (context.result != nullptr) ++context.result->null_cutoffs;
       return score;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      }
+#endif
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       }
 #endif
@@ -1802,7 +2473,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     }
     alpha = std::max(alpha, score);
     if (alpha >= beta) {
-      if (context.heuristics != nullptr && is_quiet_move(move)) {
+      if (context.heuristics != nullptr && is_quiet_move(move)
+#if HEBICHESS_NMP_CANDIDATE_G
+          && !context.nmp_g_verification
+#endif
+          ) {
         const bool was_killer = ply >= 0 && ply < MAX_SEARCH_PLY &&
             (context.heuristics->killers[ply][0] == move ||
              context.heuristics->killers[ply][1] == move);
@@ -1816,13 +2491,20 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       break;
     }
   }
-  if (context.tt != nullptr && context.result != nullptr) {
+  if (context.tt != nullptr && context.result != nullptr
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      && context.tt_store_enabled
+#endif
+#if HEBICHESS_NMP_CANDIDATE_G
+      && !context.nmp_g_verification
+#endif
+      ) {
     const TTBound bound = best <= effective_alpha ? TTBound::Upper
                          : best >= effective_beta ? TTBound::Lower : TTBound::Exact;
     const TTStoreResult stored = context.tt->store(board.zobrist_key(), depth,
                                                     score_to_tt(best, ply), bound,
                                                     best_move);
-    #if HEBICHESS_QSEARCH_TT_PROFILE
+    #if HEBICHESS_QSEARCH_TT_PROFILE || defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
     if (stored.stored) {
       ++context.result->tt_stores;
       if (stored.replaced_different_key) ++context.result->tt_replacements;
@@ -1831,6 +2513,161 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   }
   return best;
 }
+
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
+                 SearchContext& context, const NnueAccumulator* accumulator,
+                 bool was_null_move) {
+  const std::uint64_t call_id = null_shadow_next_call_id++;
+  null_shadow_call_stack.push_back(call_id);
+  null_shadow_effective_windows.push_back({alpha, beta});
+  const int score = negamax_impl_body(board, depth, alpha, beta, ply, context,
+                                      accumulator, was_null_move);
+  if (null_shadow_propagation_active && context.result != nullptr) {
+    const bool on_target_ancestry = std::find(
+        null_shadow_target_call_stack.begin(),
+        null_shadow_target_call_stack.end(), call_id) !=
+        null_shadow_target_call_stack.end();
+    if (on_target_ancestry) {
+      SearchResult::NullShadowPropagationStep step;
+      step.ply = ply;
+      step.depth = depth;
+      step.alpha = null_shadow_effective_windows.back().first;
+      step.beta = null_shadow_effective_windows.back().second;
+      step.returned_score = score;
+      step.bound = score <= step.alpha ? ScoreBound::Upper
+                 : score >= step.beta ? ScoreBound::Lower : ScoreBound::Exact;
+      context.result->null_shadow_propagation.push_back(step);
+    }
+    if (!null_shadow_target_call_stack.empty() &&
+        call_id == null_shadow_target_call_stack.front()) {
+      null_shadow_propagation_active = false;
+      null_shadow_target_call_stack.clear();
+    }
+  }
+  null_shadow_effective_windows.pop_back();
+  null_shadow_call_stack.pop_back();
+  return score;
+}
+#endif
+
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+DiagnosticOracleRunResult run_null_free_oracle_for_diagnostic(
+    const Board& position, int depth, int alpha, int beta, EvalMode eval_mode,
+    DiagnosticOracleTtMode tt_mode, int ply) {
+  DiagnosticOracleRunResult output;
+  SearchResult result;
+  SearchContext context{output.nodes, output.qnodes};
+  context.result = &result;
+  context.use_see_pruning = true;
+  SearchHeuristics fresh_heuristics;
+  std::optional<SearchHeuristics> counterfactual_heuristics;
+  if (tt_mode == DiagnosticOracleTtMode::Counterfactual)
+    counterfactual_heuristics.emplace(search_heuristics());
+  context.heuristics = counterfactual_heuristics.has_value()
+      ? &*counterfactual_heuristics : &fresh_heuristics;
+  context.use_null_move = false;
+  context.use_lmr = true;
+  context.use_pvs = true;
+  context.eval_mode = eval_mode;
+  context.null_move_oracle = true;
+  std::optional<TranspositionTable> private_tt;
+  std::optional<TranspositionTable> counterfactual_tt;
+  if (tt_mode == DiagnosticOracleTtMode::Seeded) {
+    context.tt = &transposition_table();
+  } else if (tt_mode == DiagnosticOracleTtMode::Counterfactual ||
+             tt_mode == DiagnosticOracleTtMode::MoveOnly) {
+    counterfactual_tt.emplace(transposition_table());
+    context.tt = &*counterfactual_tt;
+  } else if (tt_mode == DiagnosticOracleTtMode::Clean) {
+    private_tt.emplace();
+    context.tt = &*private_tt;
+  }
+  context.tt_probe_enabled = tt_mode != DiagnosticOracleTtMode::CleanNoTt;
+  context.tt_bound_probe_enabled = tt_mode != DiagnosticOracleTtMode::MoveOnly &&
+                                   tt_mode != DiagnosticOracleTtMode::Counterfactual &&
+                                   tt_mode != DiagnosticOracleTtMode::CleanNoTt;
+  context.tt_move_hints_enabled = tt_mode != DiagnosticOracleTtMode::CleanNoTt;
+  context.tt_store_enabled = tt_mode != DiagnosticOracleTtMode::CleanNoTt;
+  Board board = position;
+  std::optional<NnueAccumulator> accumulator;
+  if (eval_mode == EvalMode::NNUE && nnue_network_available()) {
+    accumulator.emplace();
+    if (!refresh_nnue_accumulator(board, *accumulator)) accumulator.reset();
+  }
+  output.score = negamax_impl(board, depth, alpha, beta, ply, context,
+                              accumulator ? &*accumulator : nullptr);
+  output.bound = output.score <= alpha ? ScoreBound::Upper :
+                 output.score >= beta ? ScoreBound::Lower : ScoreBound::Exact;
+  output.reaches_beta = output.score >= beta;
+  output.tt_probes = result.tt_probes;
+  output.tt_hits = result.tt_hits;
+  output.tt_cutoffs = result.tt_cutoffs;
+  return output;
+}
+
+RootCandidateVerificationResult verify_root_candidate_null_free_for_diagnostic(
+    const Board& position, const Move& root_move, int root_depth, EvalMode eval_mode) {
+  RootCandidateVerificationResult output;
+  const auto started = std::chrono::steady_clock::now();
+  if (root_depth <= 0) return output;
+
+  Board child = position;
+  const std::vector<Move> legal = generate_legal_moves(child);
+  if (std::find(legal.begin(), legal.end(), root_move) == legal.end()) return output;
+  child.make_move(root_move);
+
+  SearchResult private_result;
+  SearchHeuristics copied_heuristics = search_heuristics();
+  TranspositionTable private_tt(8);
+  SearchContext context{output.nodes, output.qnodes};
+  context.result = &private_result;
+  context.tt = &private_tt;
+  context.heuristics = &copied_heuristics;
+  context.use_null_move = false;
+  context.use_lmr = true;
+  context.use_pvs = true;
+  context.use_see_pruning = true;
+  context.eval_mode = eval_mode;
+  context.null_move_oracle = true;  // Also bypasses global QSearch TT probes/stores.
+  context.tt_probe_enabled = true;
+  context.tt_bound_probe_enabled = true;
+  context.tt_move_hints_enabled = true;
+  context.tt_store_enabled = true;
+
+  std::optional<NnueAccumulator> accumulator;
+  if (eval_mode == EvalMode::NNUE && nnue_network_available()) {
+    accumulator.emplace();
+    if (!refresh_nnue_accumulator(child, *accumulator)) accumulator.reset();
+  }
+  const int child_score = negamax_impl(child, root_depth - 1, -MATE_SCORE,
+                                       MATE_SCORE, 1, context,
+                                       accumulator ? &*accumulator : nullptr);
+  output.score = -child_score;
+  output.bound = ScoreBound::Exact;
+  output.pv.push_back(root_move);
+
+  std::vector<ZobristKey> seen{position.zobrist_key()};
+  Board pv_board = position;
+  pv_board.make_move(root_move);
+  seen.push_back(pv_board.zobrist_key());
+  for (int ply = 1; ply < MAX_SEARCH_PLY; ++ply) {
+    const TTEntry* entry = private_tt.probe(pv_board.zobrist_key());
+    if (entry == nullptr || !entry->best_move) break;
+    const Move move = *entry->best_move;
+    const std::vector<Move> pv_legal = generate_legal_moves(pv_board);
+    if (std::find(pv_legal.begin(), pv_legal.end(), move) == pv_legal.end()) break;
+    pv_board.make_move(move);
+    if (std::find(seen.begin(), seen.end(), pv_board.zobrist_key()) != seen.end()) break;
+    seen.push_back(pv_board.zobrist_key());
+    output.pv.push_back(move);
+  }
+  output.elapsed_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started).count());
+  return output;
+}
+#endif
 
 int negamax(Board& board, int depth, int alpha, int beta, int ply,
             std::uint64_t& nodes) {
@@ -1841,6 +2678,38 @@ int negamax(Board& board, int depth, int alpha, int beta, int ply,
   SearchContext context{nodes, qnodes};
   return negamax_impl(board, depth, alpha, beta, ply, context);
 }
+
+#if HEBICHESS_NMP_CANDIDATE_G
+NmpCandidateGWindowResult search_nmp_candidate_g_window_for_test(
+    const Board& position, int depth, int alpha, int beta, int ply,
+    EvalMode eval_mode) {
+  clear_transposition_table();
+  clear_search_heuristics();
+  NmpCandidateGWindowResult result;
+  SearchResult search_result;
+  SearchContext context{result.nodes, result.qnodes};
+  context.tt = &transposition_table();
+  context.result = &search_result;
+  context.use_see_pruning = true;
+  context.heuristics = &search_heuristics();
+  context.use_null_move = true;
+  context.use_lmr = true;
+  context.use_pvs = true;
+  context.eval_mode = eval_mode;
+  Board board = position;
+  std::optional<NnueAccumulator> accumulator;
+  if (eval_mode == EvalMode::NNUE && nnue_network_available()) {
+    accumulator.emplace();
+    if (!refresh_nnue_accumulator(board, *accumulator)) accumulator.reset();
+  }
+  result.score = negamax_impl(board, depth, alpha, beta, ply, context,
+                              accumulator ? &*accumulator : nullptr);
+  result.verification_attempts = search_result.nmp_g_verification_attempts;
+  result.confirmed_verifications = search_result.nmp_g_confirmed_verifications;
+  result.rejected_verifications = search_result.nmp_g_rejected_verifications;
+  return result;
+}
+#endif
 
 #if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
 TtWindowStoreTestResult search_with_preloaded_tt_bound_for_test(
@@ -1917,6 +2786,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
 #endif
                          ) {
   SearchResult result;
+#if HEBICHESS_SEARCH_PROFILE
+  SearchProfileBinding profile_binding(result.profile);
+#endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   QsearchTtDiagnosticState qtt_diagnostic;
   qtt_diagnostic.override_bounds = limits.qtt_diagnostic_override_bounds;
@@ -1958,17 +2830,39 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
 #endif
   }
   TranspositionTable& tt = transposition_table();
+  bool diagnostic_tt_active = limits.use_tt;
+  bool diagnostic_tt_probe_enabled = true;
+  bool diagnostic_tt_move_hints_enabled = true;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  diagnostic_tt_active = diagnostic_tt_active &&
+      limits.diagnostic_tt_mode != DiagnosticTtMode::Disabled;
+  diagnostic_tt_probe_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::WriteOnly;
+  diagnostic_tt_move_hints_enabled =
+      limits.diagnostic_tt_mode != DiagnosticTtMode::BoundsOnly;
+#endif
   std::vector<Move> legal = generate_legal_moves(root);
   if (legal.empty()) {
     SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                           limits.deadline, false,
-                          limits.use_tt ? &tt : nullptr, &result,
+                          diagnostic_tt_active ? &tt : nullptr, &result,
                           limits.use_see_pruning,
                           limits.use_killer_history ? &search_heuristics() : nullptr,
                           limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                           limits.deadline_check_interval_nodes};
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
     context.null_move_diagnostic_policy = limits.null_move_diagnostic_policy;
+    context.diagnostic_oracle_tt_mode = limits.diagnostic_oracle_tt_mode;
+    context.null_oracle_filter_event_ids = limits.null_oracle_filter_event_ids;
+    context.diagnostic_vclean_depth = limits.diagnostic_vclean_depth;
+    context.null_shadow_event_ids = limits.null_shadow_event_ids;
+    context.null_shadow_position_fens = limits.null_shadow_position_fens;
+    context.null_shadow_match_level = limits.null_shadow_match_level;
+    context.null_shadow_position_depth = limits.null_shadow_position_depth;
+    context.null_shadow_position_reduction = limits.null_shadow_position_reduction;
+    context.tt_probe_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::WriteOnly;
+    context.tt_bound_probe_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::MoveHintsOnly;
+    context.tt_move_hints_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::BoundsOnly;
+    context.tt_store_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::ReadOnly;
 #endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
     context.qtt_diagnostic = &qtt_diagnostic;
@@ -2018,9 +2912,22 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     return "low";
   };
   for (int depth = 1; depth <= limits.max_depth; ++depth) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    if (limits.diagnostic_tt_mode == DiagnosticTtMode::ClearBetweenDepths && depth > 1)
+      tt.clear();
+#endif
     result.attempted_depth = depth;
     const auto iteration_started = std::chrono::steady_clock::now();
     const std::uint64_t aspiration_retries_before = result.aspiration_retries;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    const std::uint64_t iteration_nodes_before = result.nodes;
+    const std::uint64_t iteration_qnodes_before = result.qnodes;
+    const std::uint64_t iteration_tt_hits_before = result.tt_hits;
+    const std::uint64_t iteration_tt_cutoffs_before = result.tt_cutoffs;
+    const std::uint64_t iteration_tt_stores_before = result.tt_stores;
+    DiagnosticIterationSummary diagnostic_iteration;
+    diagnostic_iteration.depth = depth;
+#endif
     const int previous_score = result.score;
     const bool mate_score = previous_score > MATE_SCORE - 1000 ||
                             previous_score < -MATE_SCORE + 1000;
@@ -2035,15 +2942,30 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     bool completed = false;
     bool stopped_iteration = false;
     while (!completed) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      diagnostic_iteration.aspiration_windows.emplace_back(alpha, beta);
+#endif
       SearchContext context{result.nodes, result.qnodes, limits.has_deadline,
                             objective_deadline, false,
-                            limits.use_tt ? &tt : nullptr, &result,
+                            diagnostic_tt_active ? &tt : nullptr, &result,
                             limits.use_see_pruning,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
                             limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                             limits.deadline_check_interval_nodes};
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       context.null_move_diagnostic_policy = limits.null_move_diagnostic_policy;
+      context.diagnostic_oracle_tt_mode = limits.diagnostic_oracle_tt_mode;
+      context.null_oracle_filter_event_ids = limits.null_oracle_filter_event_ids;
+      context.diagnostic_vclean_depth = limits.diagnostic_vclean_depth;
+      context.null_shadow_event_ids = limits.null_shadow_event_ids;
+      context.null_shadow_position_fens = limits.null_shadow_position_fens;
+      context.null_shadow_match_level = limits.null_shadow_match_level;
+      context.null_shadow_position_depth = limits.null_shadow_position_depth;
+      context.null_shadow_position_reduction = limits.null_shadow_position_reduction;
+      context.tt_probe_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::WriteOnly;
+      context.tt_bound_probe_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::MoveHintsOnly;
+      context.tt_move_hints_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::BoundsOnly;
+      context.tt_store_enabled = limits.diagnostic_tt_mode != DiagnosticTtMode::ReadOnly;
 #endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
       context.qtt_diagnostic = &qtt_diagnostic;
@@ -2055,9 +2977,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       current.clear();
       best_score = -MATE_SCORE;
       std::optional<Move> root_tt_move;
-      if (limits.use_tt) {
-        if (const TTEntry* entry = tt.probe(root.zobrist_key()); entry != nullptr)
-          root_tt_move = entry->best_move;
+      if (diagnostic_tt_active && diagnostic_tt_probe_enabled) {
+        ++result.tt_probes;
+        if (const TTEntry* entry = tt.probe(root.zobrist_key()); entry != nullptr) {
+          ++result.tt_hits;
+          if (diagnostic_tt_move_hints_enabled)
+            root_tt_move = entry->best_move;
+        }
       }
       auto root_order = order_moves(root, legal, &result,
                                     limits.use_killer_history ? &search_heuristics() : nullptr,
@@ -2071,6 +2997,12 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       std::sort(root_order.begin(), root_order.end(), [](const OrderedMove& a, const OrderedMove& b) {
         return a.score != b.score ? a.score > b.score : move_order_less(a.move, b.move);
       });
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+      diagnostic_iteration.root_order.clear();
+      for (const OrderedMove& item : root_order)
+        diagnostic_iteration.root_order.push_back(item.move);
+      diagnostic_iteration.alpha_after_each_root_move.clear();
+#endif
       if (limits.reuse_hit && limits.has_prepared_root_move) {
         for (OrderedMove& item : root_order)
           if (item.move == limits.prepared_root_move) item.score += 20000000;
@@ -2133,6 +3065,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         root_info.pvs_full_research = pvs_full_research;
         best_score = std::max(best_score, score);
         alpha = std::max(alpha, score);
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+        diagnostic_iteration.alpha_after_each_root_move.push_back(alpha);
+#endif
       }
       if (context.stopped || current.size() != legal.size()) {
         stopped_iteration = true;
@@ -2152,6 +3087,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           beta = MATE_SCORE;
           completed = true;
         } else {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+          if (limits.diagnostic_tt_mode == DiagnosticTtMode::ClearBetweenRetries)
+            tt.clear();
+#endif
           window = std::min(MATE_SCORE, window * 2);
           alpha = std::max(-MATE_SCORE, previous_score - window);
           beta = std::min(MATE_SCORE, previous_score + window);
@@ -2167,6 +3106,15 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         result.time_stop_reason = "hard";
       break;
     }
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    diagnostic_iteration.score = result.score;
+    diagnostic_iteration.nodes = result.nodes - iteration_nodes_before;
+    diagnostic_iteration.qnodes = result.qnodes - iteration_qnodes_before;
+    diagnostic_iteration.tt_hits = result.tt_hits - iteration_tt_hits_before;
+    diagnostic_iteration.tt_cutoffs = result.tt_cutoffs - iteration_tt_cutoffs_before;
+    diagnostic_iteration.tt_stores = result.tt_stores - iteration_tt_stores_before;
+    diagnostic_iteration.root_candidates = current;
+#endif
     int objective_best = -MATE_SCORE;
     auto objective_move = current.end();
     for (auto it = current.begin(); it != current.end(); ++it) {
@@ -2184,6 +3132,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     result.score = objective_best;
     result.completed_depth = depth;
     result.root_moves = last_completed;
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+    diagnostic_iteration.score = objective_best;
+    result.diagnostic_iterations.push_back(std::move(diagnostic_iteration));
+#endif
     if (on_iteration) on_iteration(depth, result.score, result.nodes, result.qnodes);
     previous_root = last_completed;
     legal = generate_legal_moves(root);
@@ -2581,6 +3533,9 @@ std::vector<Move> extract_principal_variation(const Board& board,
 
 SearchResult search(const Board& position, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration) {
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  null_shadow_event_occurrences.clear();
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
   SearchResult result = search_impl(position, limits, on_iteration, true, nullptr);
 #else
@@ -2599,6 +3554,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
 SearchResult search_forced_root_move_for_null_diagnostic(
     const Board& board, const Move& forced_root_move, const SearchLimits& limits) {
+  null_shadow_event_occurrences.clear();
   SearchResult result;
   if (limits.max_depth < 1) return result;
   const std::vector<Move> legal = generate_legal_moves(board);
@@ -2615,6 +3571,10 @@ SearchResult search_forced_root_move_for_null_diagnostic(
   context.eval_mode = limits.eval_mode;
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
   context.null_move_diagnostic_policy = limits.null_move_diagnostic_policy;
+  context.null_shadow_event_ids = limits.null_shadow_event_ids;
+  context.diagnostic_oracle_tt_mode = limits.diagnostic_oracle_tt_mode;
+  context.null_oracle_filter_event_ids = limits.null_oracle_filter_event_ids;
+  context.diagnostic_vclean_depth = limits.diagnostic_vclean_depth;
 #endif
   context.deadline_check_interval_nodes = limits.deadline_check_interval_nodes;
   context.diagnostic_root_move = forced_root_move;

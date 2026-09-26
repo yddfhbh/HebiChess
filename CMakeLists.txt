@@ -24,6 +24,7 @@ set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
 set(HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_LAZY_CHECKS=0
   HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+  HEBICHESS_NMP_CANDIDATE_G=0
 )
 function(apply_hebichess_production_qsearch target)
   target_compile_definitions(${target} PRIVATE
@@ -34,6 +35,18 @@ function(apply_hebichess_production_nnue_search target)
   apply_hebichess_production_qsearch(${target})
   target_compile_definitions(${target} PRIVATE
     ${HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS}
+  )
+endfunction()
+
+# Production-candidate A/B target.  It shares every accepted production
+# configuration value with the default engine and differs only in the
+# compile-time Null Move safeguard under investigation.
+function(apply_hebichess_production_nnue_search_candidate_g target)
+  apply_hebichess_production_qsearch(${target})
+  target_compile_definitions(${target} PRIVATE
+    HEBICHESS_QSEARCH_LAZY_CHECKS=0
+    HEBICHESS_NNUE_HIDDEN1_VARIANT=8
+    HEBICHESS_NMP_CANDIDATE_G=1
   )
 endfunction()
 
@@ -62,6 +75,24 @@ add_executable(HebiChess
 
 target_include_directories(HebiChess PRIVATE src)
 apply_hebichess_production_nnue_search(HebiChess)
+
+# Profiling-only native engine. Sampling timers and per-component clocks are
+# compiled out of production/WASM targets; this target keeps the exact
+# production search configuration while exposing sampled subsystem timing.
+add_executable(HebiChessProfile
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessProfile PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessProfile)
+target_compile_definitions(HebiChessProfile PRIVATE HEBICHESS_SEARCH_PROFILE=1)
+
+add_executable(HebiChessNmpCandidateG
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNmpCandidateG PRIVATE src)
+apply_hebichess_production_nnue_search_candidate_g(HebiChessNmpCandidateG)
 
 option(HEBICHESS_BUILD_WASM "Build the browser WebAssembly engine" OFF)
 set(HEBICHESS_WASM_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/web/public/engine" CACHE PATH "Output directory for the browser WebAssembly engine")
@@ -293,6 +324,37 @@ target_compile_definitions(HebiChessProductionNnueSearchConfigTest PRIVATE
   HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=8
 )
 
+add_executable(HebiChessNmpCandidateGTest
+  tests/nmp_candidate_g_test.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNmpCandidateGTest PRIVATE src)
+apply_hebichess_production_nnue_search_candidate_g(HebiChessNmpCandidateGTest)
+
+add_executable(HebiChessNmpProductionBenchmark
+  tests/nmp_candidate_g_benchmark.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNmpProductionBenchmark PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessNmpProductionBenchmark)
+
+add_executable(HebiChessNmpCandidateGBenchmark
+  tests/nmp_candidate_g_benchmark.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNmpCandidateGBenchmark PRIVATE src)
+apply_hebichess_production_nnue_search_candidate_g(HebiChessNmpCandidateGBenchmark)
+
+add_executable(HebiChessNmpCandidateGDiagnostic
+  tests/blunder_diagnostic.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessNmpCandidateGDiagnostic PRIVATE src)
+apply_hebichess_production_nnue_search_candidate_g(HebiChessNmpCandidateGDiagnostic)
+target_compile_definitions(HebiChessNmpCandidateGDiagnostic PRIVATE
+  HEBICHESS_BLUNDER_DIAGNOSTIC=1
+)
+
 add_executable(HebiChessSearchBaselineLegacy
   tests/search_baseline.cpp
   ${CHESS_SOURCES}
@@ -472,6 +534,11 @@ if(EXISTS "${HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK}")
   add_test(NAME chess_blunder_diagnostic_reuse_regression
     COMMAND HebiChessBlunderDiagnosticRegression
       --network "${HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK}")
+  add_test(NAME chess_nmp_candidate_g_regression
+    COMMAND HebiChessNmpCandidateGTest
+      --network "${HEBICHESS_BLUNDER_DIAGNOSTIC_NETWORK}")
+  set_tests_properties(chess_nmp_candidate_g_regression PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 add_test(
   NAME smoke

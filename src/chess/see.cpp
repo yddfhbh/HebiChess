@@ -1,4 +1,5 @@
 #include "chess/see.hpp"
+#include "chess/search_profile.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -94,6 +95,9 @@ int reply_exchange(Board& board, Square target) noexcept {
 }  // namespace
 
 int static_exchange_eval(const Board& board, const Move& move) noexcept {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::See, 256);
+#endif
   const Piece moving = board.piece_at(move.from);
   if (moving.is_empty()) return 0;
 

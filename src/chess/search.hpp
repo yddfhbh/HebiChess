@@ -5,11 +5,17 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "chess/eval.hpp"
 #include "chess/movegen.hpp"
+#include "chess/search_profile.hpp"
 #include "chess/tt.hpp"
+
+#ifndef HEBICHESS_NMP_CANDIDATE_G
+#define HEBICHESS_NMP_CANDIDATE_G 0
+#endif
 
 namespace hebichess {
 
@@ -70,7 +76,26 @@ struct RootMoveInfo {
   int see_score{0};
 };
 
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+struct DiagnosticIterationSummary {
+  int depth{0};
+  int score{0};
+  std::uint64_t nodes{0};
+  std::uint64_t qnodes{0};
+  std::uint64_t tt_hits{0};
+  std::uint64_t tt_cutoffs{0};
+  std::uint64_t tt_stores{0};
+  std::vector<std::pair<int, int>> aspiration_windows{};
+  std::vector<Move> root_order{};
+  std::vector<RootMoveInfo> root_candidates{};
+  std::vector<int> alpha_after_each_root_move{};
+};
+#endif
+
 struct SearchResult {
+#if HEBICHESS_SEARCH_PROFILE
+  SearchProfileStats profile{};
+#endif
   Move best_move{};
   int score{0};
   // Updated only after all root moves (and any aspiration retry) finish.
@@ -142,6 +167,14 @@ struct SearchResult {
   std::uint64_t history_cutoffs{0};
   std::uint64_t null_attempts{0};
   std::uint64_t null_cutoffs{0};
+#if HEBICHESS_NMP_CANDIDATE_G
+  // Production-candidate G telemetry.
+  std::uint64_t nmp_g_verification_attempts{0};
+  std::uint64_t nmp_g_confirmed_verifications{0};
+  std::uint64_t nmp_g_rejected_verifications{0};
+  std::uint64_t nmp_g_verification_nodes{0};
+  std::uint64_t nmp_g_verification_qnodes{0};
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
   // Never present in production builds. These distinguish a diagnostic
   // policy's skipped/rejected proof from an ordinary NMP cutoff.
@@ -151,6 +184,22 @@ struct SearchResult {
   std::uint64_t null_policy_verified_cutoffs{0};
   std::uint64_t null_policy_verification_nodes{0};
   std::uint64_t null_policy_verification_qnodes{0};
+  std::uint64_t null_policy_admission_evaluations{0};
+  std::uint64_t null_policy_admission_rejections{0};
+  std::uint64_t null_policy_reduction_overrides{0};
+  std::uint64_t null_shadow_matches{0};
+  std::uint64_t null_shadow_suppressions{0};
+  std::vector<std::string> null_shadow_matched_event_ids{};
+  struct NullShadowPropagationStep {
+    int ply{0};
+    int depth{0};
+    int alpha{0};
+    int beta{0};
+    int returned_score{0};
+    ScoreBound bound{ScoreBound::Exact};
+  };
+  std::string null_shadow_propagation_event_id{};
+  std::vector<NullShadowPropagationStep> null_shadow_propagation{};
 #endif
   std::uint64_t lmr_attempts{0};
   std::uint64_t lmr_researches{0};
@@ -215,6 +264,9 @@ struct SearchResult {
   std::string reuse_prepared{};
   int reuse_prepared_depth{0};
   std::vector<RootMoveInfo> root_moves{};
+#if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
+  std::vector<DiagnosticIterationSummary> diagnostic_iterations{};
+#endif
 };
 
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
@@ -226,9 +278,66 @@ enum class DiagnosticNullMovePolicy : std::uint8_t {
   VerifyLowMaterialFailHigh,
   VerifyLowMaterialFailHighNullFree,
   SkipNoHeavyTwoMinorsDepthSix,
+  SkipNoHeavyTwoMinorsDepthThree,
+  SkipNoHeavyTwoMinorsDepthFour,
+  SkipNoHeavyTwoMinorsDepthFive,
+  VerifyReducedLowMaterialDepthMinusReduction,
+  VerifyReducedLowMaterialDepthMinusOne,
+  VerifyReducedLowMaterialDepthMinusReductionPlusOne,
   VerifyNoHeavyTwoMinorsDepthSixNullFree,
   VerifyNoHeavyTwoMinorsDepthSixMargin71NullFree,
   VerifyNoHeavyTwoMinorsDepthSixWidth70NullFree,
+  AdmissionStaticEval,
+  AdmissionLowMaterialStaticEval,
+  AdmissionLowMaterialStaticEvalMargin16,
+  AdmissionLowMaterialStaticEvalMargin32,
+  AdmissionLowMaterialStaticEvalMargin64,
+  ReductionOneLowMaterialDepthSix,
+  VerifyLowMaterialFailHighClean,
+};
+
+enum class DiagnosticTtMode : std::uint8_t {
+  Normal,
+  Disabled,
+  ReadOnly,
+  WriteOnly,
+  MoveHintsOnly,
+  BoundsOnly,
+  ClearBetweenDepths,
+  ClearBetweenRetries,
+};
+enum class DiagnosticNullMatchLevel : std::uint8_t {
+  Exact,
+  PositionDepth,
+  Position,
+};
+enum class DiagnosticOracleTtMode : std::uint8_t {
+  Seeded,
+  // Same live TT/history snapshot, but TT bounds are ordering-only: the
+  // counterfactual asks what this node returns without any NMP-derived TT
+  // score deciding the window or cutoff.
+  Counterfactual,
+  Clean,
+  CleanNoTt,
+  MoveOnly,
+};
+struct DiagnosticOracleRunResult {
+  int score{0};
+  ScoreBound bound{ScoreBound::Exact};
+  bool reaches_beta{false};
+  std::uint64_t nodes{0};
+  std::uint64_t qnodes{0};
+  std::uint64_t tt_probes{0};
+  std::uint64_t tt_hits{0};
+  std::uint64_t tt_cutoffs{0};
+};
+struct RootCandidateVerificationResult {
+  int score{0};
+  ScoreBound bound{ScoreBound::Exact};
+  std::uint64_t nodes{0};
+  std::uint64_t qnodes{0};
+  std::uint64_t elapsed_ms{0};
+  std::vector<Move> pv{};
 };
 #endif
 
@@ -265,6 +374,15 @@ struct SearchLimits {
   // path and does not compile this switch.
   DiagnosticNullMovePolicy null_move_diagnostic_policy{
       DiagnosticNullMovePolicy::Production};
+  std::vector<std::string> null_shadow_event_ids{};
+  std::vector<std::string> null_shadow_position_fens{};
+  DiagnosticNullMatchLevel null_shadow_match_level{DiagnosticNullMatchLevel::Exact};
+  int null_shadow_position_depth{-1};
+  int null_shadow_position_reduction{-1};
+  DiagnosticTtMode diagnostic_tt_mode{DiagnosticTtMode::Normal};
+  DiagnosticOracleTtMode diagnostic_oracle_tt_mode{DiagnosticOracleTtMode::Seeded};
+  std::vector<std::string> null_oracle_filter_event_ids{};
+  int diagnostic_vclean_depth{3};
 #endif
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   // Test-binary-only QTT controls.  They are intentionally unavailable from
@@ -304,6 +422,21 @@ std::vector<Move> extract_principal_variation(const Board& board,
 void clear_transposition_table() noexcept;
 void clear_search_heuristics() noexcept;
 
+#if HEBICHESS_NMP_CANDIDATE_G
+struct NmpCandidateGWindowResult {
+  int score{0};
+  std::uint64_t nodes{0};
+  std::uint64_t qnodes{0};
+  std::uint64_t verification_attempts{0};
+  std::uint64_t confirmed_verifications{0};
+  std::uint64_t rejected_verifications{0};
+};
+
+NmpCandidateGWindowResult search_nmp_candidate_g_window_for_test(
+    const Board& board, int depth, int alpha, int beta, int ply,
+    EvalMode eval_mode = EvalMode::HCE);
+#endif
+
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
 // Diagnostic-target-only Null Move cutoff audit. The callback is never
 // compiled into an engine target and its oracle re-search never mutates TT.
@@ -323,10 +456,84 @@ struct NullMoveTrace {
   std::optional<int> oracle_score{};
   bool oracle_reaches_beta{false};
   bool false_cutoff{false};
+  std::uint64_t event_occurrence{0};
+  std::optional<int> static_eval_cp{};
+  int legal_move_count{0};
+  int legal_king_moves{0};
+  int legal_pawn_moves{0};
+  int legal_minor_moves{0};
+  int legal_non_pawn_non_king_moves{0};
+  int legal_captures{0};
+  int legal_quiet_moves{0};
+  int pawn_advance_moves{0};
+  int passed_pawns_white{0};
+  int passed_pawns_black{0};
+  int connected_passed_pawns_white{0};
+  int connected_passed_pawns_black{0};
+  int material_imbalance_cp{0};
+  int stm_non_pawn_material_cp{0};
+  bool stm_in_check{false};
+  bool stm_has_pawn_push{false};
+  bool stm_has_capture{false};
+  bool tt_probe_hit{false};
+  int tt_entry_depth{-1};
+  std::string tt_bound{"none"};
+  std::optional<int> tt_score_cp{};
+  int caller_alpha{0};
+  int caller_beta{0};
+  int effective_alpha{0};
+  int effective_beta{0};
+  bool tt_raised_alpha{false};
+  bool tt_lowered_beta{false};
+  bool tt_window_changed{false};
+  bool tt_move_present{false};
+  bool tt_move_ordering_only{false};
+  bool tt_would_cutoff{false};
+  std::string oracle_tt_mode{"seeded"};
+  bool oracle_initial_tt_hit{false};
+  int oracle_initial_tt_entry_depth{-1};
+  std::string oracle_initial_tt_bound{"none"};
+  std::optional<int> oracle_initial_tt_score{};
+  bool oracle_initial_tt_caused_cutoff{false};
+  std::uint64_t oracle_tt_probes{0};
+  std::uint64_t oracle_tt_hits{0};
+  std::uint64_t oracle_tt_cutoffs{0};
+  std::uint64_t oracle_nodes{0};
+  std::uint64_t oracle_qnodes{0};
+  std::string oracle_returned_bound{"unknown"};
+  std::string event_id{};
+};
+
+struct NullMoveVerificationTrace {
+  std::string fen{};
+  Move root_move{};
+  bool has_root_move{false};
+  std::string event_id{};
+  int ply{0};
+  int depth{0};
+  int alpha{0};
+  int beta{0};
+  int reduction{0};
+  int null_score{0};
+  int verification_depth{0};
+  int verification_score{0};
+  bool accepted{false};
+  std::uint64_t verification_nodes{0};
+  std::uint64_t verification_qnodes{0};
+  std::optional<int> full_oracle_score{};
 };
 
 using NullMoveTraceCallback = std::function<void(const NullMoveTrace&)>;
 void set_null_move_trace_callback_for_diagnostic(NullMoveTraceCallback callback);
+using NullMoveVerificationTraceCallback =
+    std::function<void(const NullMoveVerificationTrace&)>;
+void set_null_move_verification_trace_callback_for_diagnostic(
+    NullMoveVerificationTraceCallback callback);
+DiagnosticOracleRunResult run_null_free_oracle_for_diagnostic(
+    const Board& board, int depth, int alpha, int beta, EvalMode eval_mode,
+    DiagnosticOracleTtMode tt_mode, int ply = 0);
+RootCandidateVerificationResult verify_root_candidate_null_free_for_diagnostic(
+    const Board& board, const Move& root_move, int root_depth, EvalMode eval_mode);
 SearchResult search_forced_root_move_for_null_diagnostic(
     const Board& board, const Move& forced_root_move, const SearchLimits& limits);
 #endif

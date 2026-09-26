@@ -457,6 +457,21 @@ void UciEngine::send_command(const std::string& line) {
              << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
              << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
     emit(qprofile.str());
+#if HEBICHESS_SEARCH_PROFILE
+    constexpr const char* profile_names[] = {
+        "main_search", "qsearch", "evaluation", "move_generation",
+        "legal_filtering", "board_make", "board_unmake", "tt", "see",
+        "stalemate_legality"};
+    for (std::size_t index = 0; index < std::size(profile_names); ++index) {
+      std::ostringstream profile_line;
+      profile_line << "info string profile " << profile_names[index]
+                   << " calls " << result.profile.calls[index]
+                   << " samples " << result.profile.samples[index]
+                   << " inclusive_estimated_ms " << std::fixed << std::setprecision(3)
+                   << (static_cast<double>(result.profile.estimated_ns[index]) / 1'000'000.0);
+      emit(profile_line.str());
+    }
+#endif
 #else
     std::ostringstream strength;
     strength << "info string strength_stats"

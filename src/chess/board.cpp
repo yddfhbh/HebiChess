@@ -1,4 +1,5 @@
 #include "chess/board.hpp"
+#include "chess/search_profile.hpp"
 
 #include "chess/zobrist.hpp"
 
@@ -239,6 +240,9 @@ Square Board::find_king(Color color) const noexcept {
 }
 
 UndoState Board::make_move(const Move& move) noexcept {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::BoardMake, 256);
+#endif
   UndoState undo{piece_at(move.to), move.to, castling_rights_,
                   en_passant_target_, halfmove_clock_, fullmove_number_,
                   side_to_move_, zobrist_key_};
@@ -334,6 +338,9 @@ void Board::unmake_null_move(const NullUndoState& undo) noexcept {
 }
 
 void Board::unmake_move(const Move& move, const UndoState& undo) noexcept {
+#if HEBICHESS_SEARCH_PROFILE
+  SampledProfileTimer profile_timer(ProfileMetric::BoardUnmake, 256);
+#endif
   side_to_move_ = undo.side_to_move;
   castling_rights_ = undo.castling_rights;
   en_passant_target_ = undo.en_passant_target;
