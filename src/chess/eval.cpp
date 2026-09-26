@@ -1,4 +1,5 @@
 #include "chess/eval.hpp"
+#include "chess/search_profile.hpp"
 #include "chess/nnue.hpp"
 
 #include <algorithm>
@@ -520,6 +521,7 @@ EvalBreakdown evaluate_breakdown(const Board& board, Color perspective) noexcept
 }
 
 int evaluate_hce(const Board& board) noexcept {
+  profile_add(ProfileCounter::HceEvaluationCalls);
   return evaluate_breakdown(board, board.side_to_move()).total;
 }
 
@@ -532,6 +534,7 @@ std::optional<int> evaluate_nnue(const Board& board) noexcept {
 }
 
 std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {
+  profile_add(ProfileCounter::EvaluateApiCalls);
   if (mode == EvalMode::HCE) return evaluate_hce(board);
   return evaluate_nnue(board);
 }

@@ -1,5 +1,7 @@
 #include "chess/nnue_features.hpp"
 
+#include "chess/search_profile.hpp"
+
 namespace hebichess {
 namespace {
 
@@ -24,6 +26,8 @@ std::uint32_t nnue_feature_index(Square perspective_king, Piece piece,
 }
 
 NnueFeatures extract_nnue_features(const Board& board, Color perspective) noexcept {
+  SampledProfileTimer profile_timer(ProfileMetric::FeatureEnumeration, 64);
+  profile_add(ProfileCounter::FeatureExtractions);
   NnueFeatures result;
   const Square king = board.find_king(perspective);
   if (!king.is_valid()) return result;
@@ -34,6 +38,7 @@ NnueFeatures extract_nnue_features(const Board& board, Color perspective) noexce
     result.indices[result.size++] = nnue_feature_index(king, piece, square,
                                                         perspective);
   }
+  profile_add(ProfileCounter::ActiveFeatures, result.size);
   return result;
 }
 

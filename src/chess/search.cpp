@@ -379,6 +379,15 @@ int evaluate_search_position(const Board& board, SearchContext& context,
 #if HEBICHESS_SEARCH_PROFILE
   SampledProfileTimer profile_timer(ProfileMetric::Evaluation, 64);
 #endif
+  profile_add(ProfileCounter::EvaluationRequests);
+  profile_add(qsearch ? ProfileCounter::QsearchEvaluationRequests
+                      : ProfileCounter::MainEvaluationRequests);
+  const bool nnue_requested = context.eval_mode == EvalMode::NNUE &&
+                              nnue_network_available();
+  if (nnue_requested) {
+    profile_add(qsearch ? ProfileCounter::QsearchNnueEvaluationCalls
+                        : ProfileCounter::MainNnueEvaluationCalls);
+  }
   if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
       nnue_network_available()) {
     ++context.result->q_nnue_evals;
@@ -395,6 +404,7 @@ int evaluate_search_position(const Board& board, SearchContext& context,
         if (qsearch) ++context.nnue_counters->qsearch_eval_from_accumulator_count;
       }
 #endif
+      SampledProfileTimer conversion_timer(ProfileMetric::OutputConversion, 64);
       return static_cast<int>(std::lround(*raw));
     }
   }

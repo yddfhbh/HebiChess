@@ -87,6 +87,44 @@ target_include_directories(HebiChessProfile PRIVATE src)
 apply_hebichess_production_nnue_search(HebiChessProfile)
 target_compile_definitions(HebiChessProfile PRIVATE HEBICHESS_SEARCH_PROFILE=1)
 
+add_executable(HebiChessProfileCounters
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessProfileCounters PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessProfileCounters)
+target_compile_definitions(HebiChessProfileCounters PRIVATE
+  HEBICHESS_SEARCH_PROFILE=1
+  HEBICHESS_SEARCH_PROFILE_TIMING=0
+)
+
+# H1=4 native A/B companions. These are benchmark-only and deliberately match
+# the production search/compiler configuration except for the dense H1 loop.
+add_executable(HebiChessH1Variant4
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessH1Variant4 PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessH1Variant4)
+target_compile_definitions(HebiChessH1Variant4 PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=4
+  HEBICHESS_NMP_CANDIDATE_G=0
+)
+
+add_executable(HebiChessH1Variant4Profile
+  src/main.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessH1Variant4Profile PRIVATE src)
+apply_hebichess_production_qsearch(HebiChessH1Variant4Profile)
+target_compile_definitions(HebiChessH1Variant4Profile PRIVATE
+  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_NNUE_HIDDEN1_VARIANT=4
+  HEBICHESS_NMP_CANDIDATE_G=0
+  HEBICHESS_SEARCH_PROFILE=1
+)
+
 add_executable(HebiChessNmpCandidateG
   src/main.cpp
   ${CHESS_SOURCES}

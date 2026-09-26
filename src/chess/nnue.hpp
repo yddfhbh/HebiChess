@@ -43,6 +43,7 @@ std::optional<float> evaluate_nnue_network_raw_from_accumulator(
 // production evaluator path.
 struct NnueEvaluatorStageProfile {
   double accumulator_rebuild_us;
+  double feature_enumeration_us;
   double clip_precompute_us;
   double hidden1_dense_us;
   double hidden1_activation_us;

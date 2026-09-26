@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "chess/nnue_features.hpp"
+#include "chess/search_profile.hpp"
 
 namespace hebichess {
 namespace {
@@ -338,6 +339,8 @@ void add_features_to_accumulator(const Network& network,
 void refresh_perspective_accumulator(const Network& network, const Board& board,
                                      Color perspective,
                                      AccumulatorArray& accumulator) noexcept {
+  SampledProfileTimer profile_timer(ProfileMetric::PerspectiveRefresh, 32);
+  profile_add(ProfileCounter::PerspectiveAccumulatorRebuilds);
   std::copy_n(network.transform_bias.begin(), kAccumulator, accumulator.begin());
   add_features_to_accumulator(network, extract_nnue_features(board, perspective),
                               accumulator);
@@ -357,29 +360,54 @@ void add_feature_delta(const Network& network, AccumulatorArray& accumulator,
 std::optional<float> evaluate_from_accumulator(const Network& network,
                                                const Board& board,
                                                const NnueAccumulator& accumulator) noexcept {
+  profile_add(ProfileCounter::NnueEvaluationCalls);
+  SampledProfileTimer wrapper_timer(ProfileMetric::NnueWrapper, 32);
   const auto& stm = board.side_to_move() == Color::White ? accumulator.white
                                                           : accumulator.black;
   const auto& opp = board.side_to_move() == Color::White ? accumulator.black
                                                           : accumulator.white;
   float clipped_stm[kAccumulator];
   float clipped_opp[kAccumulator];
-  for (std::size_t i = 0; i < kAccumulator; ++i) {
-    clipped_stm[i] = clipped_relu(stm[i]);
-    clipped_opp[i] = clipped_relu(opp[i]);
+  {
+    SampledProfileTimer input_clip_timer(ProfileMetric::InputClipping, 64);
+    for (std::size_t i = 0; i < kAccumulator; ++i) {
+      clipped_stm[i] = clipped_relu(stm[i]);
+      clipped_opp[i] = clipped_relu(opp[i]);
+    }
   }
+  profile_add(ProfileCounter::Hidden1Invocations);
+  SampledProfileTimer hidden1_allocation_timer(ProfileMetric::ForwardBufferAllocation, 64);
   std::vector<float> h1(network.hidden1_dimensions);
-  hidden1_dense(network, clipped_stm, clipped_opp, h1.data());
-  for (float& value : h1) value = clipped_relu(value);
-  std::vector<float> h2(network.hidden2_dimensions);
-  for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
-    float sum = network.hidden2_bias[o];
-    const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
-    for (std::size_t i = 0; i < network.hidden1_dimensions; ++i) sum += row[i] * h1[i];
-    h2[o] = final_hidden_relu(sum, network.final_hidden_activation);
+  hidden1_allocation_timer.stop();
+  {
+    SampledProfileTimer hidden1_timer(ProfileMetric::Hidden1Dense, 32);
+    hidden1_dense(network, clipped_stm, clipped_opp, h1.data());
   }
+  {
+    SampledProfileTimer hidden1_activation_timer(ProfileMetric::Hidden1Activation, 64);
+    for (float& value : h1) value = clipped_relu(value);
+  }
+  profile_add(ProfileCounter::Hidden2Invocations);
+  SampledProfileTimer hidden2_allocation_timer(ProfileMetric::ForwardBufferAllocation, 64);
+  std::vector<float> h2(network.hidden2_dimensions);
+  hidden2_allocation_timer.stop();
+  {
+    SampledProfileTimer hidden2_timer(ProfileMetric::Hidden2DenseActivation, 32);
+    for (std::size_t o = 0; o < network.hidden2_dimensions; ++o) {
+      float sum = network.hidden2_bias[o];
+      const float* row = network.hidden2.data() + o * network.hidden1_dimensions;
+      for (std::size_t i = 0; i < network.hidden1_dimensions; ++i) sum += row[i] * h1[i];
+      h2[o] = final_hidden_relu(sum, network.final_hidden_activation);
+    }
+  }
+  profile_add(ProfileCounter::OutputLayerInvocations);
   float score = network.output_bias;
-  for (std::size_t i = 0; i < network.hidden2_dimensions; ++i) score += network.output[i] * h2[i];
-  score *= network.output_scale;
+  {
+    SampledProfileTimer output_timer(ProfileMetric::OutputLayer, 64);
+    for (std::size_t i = 0; i < network.hidden2_dimensions; ++i)
+      score += network.output[i] * h2[i];
+    score *= network.output_scale;
+  }
   if (!std::isfinite(score)) return std::nullopt;
   return score;
 }
@@ -410,6 +438,8 @@ bool nnue_network_available() noexcept { return loaded_network().has_value(); }
 void clear_nnue_network() noexcept { loaded_network().reset(); }
 
 bool refresh_nnue_accumulator(const Board& board, NnueAccumulator& accumulator) noexcept {
+  SampledProfileTimer profile_timer(ProfileMetric::AccumulatorRefresh, 32);
+  profile_add(ProfileCounter::FullAccumulatorRebuilds);
   const auto& maybe = loaded_network(); if (!maybe) return false;
   refresh_perspective_accumulator(*maybe, board, Color::White, accumulator.white);
   refresh_perspective_accumulator(*maybe, board, Color::Black, accumulator.black);
@@ -419,6 +449,7 @@ bool refresh_nnue_accumulator(const Board& board, NnueAccumulator& accumulator) 
 bool update_nnue_accumulator(const Board& parent, const Move& move,
                              const NnueAccumulator& parent_accumulator,
                              NnueAccumulator& child_accumulator) noexcept {
+  SampledProfileTimer update_timer(ProfileMetric::AccumulatorUpdate, 64);
   const auto& maybe = loaded_network();
   if (!maybe) return false;
   const Network& network = *maybe;
@@ -434,7 +465,12 @@ bool update_nnue_accumulator(const Board& parent, const Move& move,
   Piece placed = moving;
   if (move.is_promotion()) placed.type = move.promotion;
 
-  child_accumulator = parent_accumulator;
+  profile_add(ProfileCounter::AccumulatorCopies);
+  profile_add(ProfileCounter::AccumulatorCopyBytes, sizeof(NnueAccumulator));
+  {
+    SampledProfileTimer copy_timer(ProfileMetric::AccumulatorCopy, 64);
+    child_accumulator = parent_accumulator;
+  }
   std::optional<Board> child_board;
   const auto refresh_child_perspective = [&](Color perspective,
                                              AccumulatorArray& accumulator) {
@@ -471,8 +507,10 @@ bool update_nnue_accumulator(const Board& parent, const Move& move,
     }
     return true;
   };
-  return update_perspective(Color::White, child_accumulator.white) &&
-         update_perspective(Color::Black, child_accumulator.black);
+  const bool updated = update_perspective(Color::White, child_accumulator.white) &&
+                       update_perspective(Color::Black, child_accumulator.black);
+  if (updated) profile_add(ProfileCounter::AccumulatorIncrementalUpdates);
+  return updated;
 }
 
 std::optional<float> evaluate_nnue_network_raw_from_accumulator(
@@ -528,6 +566,17 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
     }
   }
   const auto rebuild_elapsed = std::chrono::steady_clock::now() - rebuild_started;
+  sink = sink + stage_sum;
+
+  stage_sum = 0.0F;
+  const auto feature_started = std::chrono::steady_clock::now();
+  for (std::size_t repeat = 0; repeat < repeats; ++repeat) {
+    for (const Board& board : boards) {
+      stage_sum += static_cast<float>(extract_nnue_features(board, Color::White).size);
+      stage_sum += static_cast<float>(extract_nnue_features(board, Color::Black).size);
+    }
+  }
+  const auto feature_elapsed = std::chrono::steady_clock::now() - feature_started;
   sink = sink + stage_sum;
 
   stage_sum = 0.0F;
@@ -605,6 +654,7 @@ std::optional<NnueEvaluatorStageProfile> profile_nnue_evaluator_stages(
 
   return NnueEvaluatorStageProfile{
       profile_us_per_evaluation(rebuild_elapsed, boards.size(), repeats),
+      profile_us_per_evaluation(feature_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(clip_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(hidden1_elapsed, boards.size(), repeats),
       profile_us_per_evaluation(hidden1_activation_elapsed, boards.size(), repeats),

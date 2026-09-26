@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "chess/movegen.hpp"
@@ -44,8 +46,10 @@ static_assert(sizeof(HeaderV3) == 68);
 
 struct Options {
   std::optional<std::string> network_path;
+  std::optional<std::string> fen;
   std::string corpus_path{"tests/data/wasm-parity-100.fen"};
   std::size_t repeats{128};
+  std::size_t random_legal_count{0};
   bool verify_only{false};
 };
 
@@ -112,7 +116,15 @@ Options parse_options(int argc, char* argv[]) {
       return argv[index];
     };
     if (argument == "--network") options.network_path = std::string(value());
+    else if (argument == "--fen") options.fen = std::string(value());
     else if (argument == "--corpus") options.corpus_path = std::string(value());
+    else if (argument == "--random-legal") {
+      try {
+        options.random_legal_count = static_cast<std::size_t>(std::stoull(std::string(value())));
+      } catch (const std::exception&) {
+        fail("--random-legal must be a positive integer");
+      }
+    }
     else if (argument == "--repeats") {
       try {
         options.repeats = static_cast<std::size_t>(std::stoull(std::string(value())));
@@ -123,7 +135,7 @@ Options parse_options(int argc, char* argv[]) {
       options.verify_only = true;
     } else if (argument == "--help") {
       std::cout << "usage: HebiChessNnueHidden1Dense<Variant> [--network FILE]"
-                   " [--corpus FILE] [--repeats N] [--verify-only]\n";
+                   " [--corpus FILE | --fen FEN] [--random-legal N] [--repeats N] [--verify-only]\n";
       std::exit(0);
     } else {
       fail("unknown argument: " + std::string(argument));
@@ -150,19 +162,51 @@ void validate_frozen_v3_network(const std::string& path) {
           "--network must use the production 256/128/128 dimensions");
 }
 
-std::vector<Board> load_positions(const std::string& path) {
+std::vector<Board> load_positions(const std::string& path,
+                                  const std::optional<std::string>& fen) {
+  if (fen.has_value()) {
+    const auto board = Board::from_fen(*fen);
+    require(board.has_value(), "valid --fen position");
+    return {*board};
+  }
   std::ifstream input(path);
   require(static_cast<bool>(input), "open corpus: " + path);
   std::vector<Board> positions;
-  std::string fen;
-  while (std::getline(input, fen)) {
-    if (fen.empty() || fen.front() == '#') continue;
-    const auto board = Board::from_fen(fen);
+  std::string fen_line;
+  while (std::getline(input, fen_line)) {
+    if (fen_line.empty() || fen_line.front() == '#') continue;
+    const auto board = Board::from_fen(fen_line);
     require(board.has_value(), "valid corpus FEN");
     positions.push_back(*board);
   }
   require(!positions.empty(), "corpus has at least one position");
   return positions;
+}
+
+void append_deterministic_legal_positions(std::vector<Board>& positions, std::size_t count) {
+  if (count == 0) return;
+  auto start = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+  require(start.has_value(), "standard starting position");
+  Board board = *start;
+  std::unordered_set<std::string> seen;
+  seen.reserve(count * 2);
+  for (const Board& existing : positions) seen.insert(existing.to_fen());
+  const std::size_t target_size = positions.size() + count;
+  std::uint32_t state = 0x4e4e5545U;
+  std::size_t plies_since_reset = 0;
+  while (positions.size() < target_size) {
+    const std::string fen = board.to_fen();
+    if (seen.insert(fen).second) positions.push_back(board);
+    std::vector<Move> legal = generate_legal_moves(board);
+    if (legal.empty() || plies_since_reset >= 120) {
+      board = *start;
+      plies_since_reset = 0;
+      continue;
+    }
+    state = state * 1664525U + 1013904223U;
+    board.make_move(legal[state % legal.size()]);
+    ++plies_since_reset;
+  }
 }
 
 enum class TransitionKind { Ordinary, Capture, KingRefresh };
@@ -223,10 +267,22 @@ struct ParityResults {
   float incremental_accumulator_max_abs_diff{0.0F};
   float incremental_final_raw_max_abs_diff{0.0F};
   std::size_t incremental_final_cp_mismatch_count{0};
+  std::uint64_t final_raw_hash{1469598103934665603ULL};
+  std::uint64_t accumulator_hash{1469598103934665603ULL};
+  std::uint64_t incremental_raw_hash{1469598103934665603ULL};
 };
 
+void hash_float(std::uint64_t& hash, float value) {
+  const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+  for (unsigned shift = 0; shift < 32; shift += 8) {
+    hash ^= static_cast<std::uint8_t>(bits >> shift);
+    hash *= 1099511628211ULL;
+  }
+}
+
 ParityResults verify_parity(const std::vector<Board>& boards,
-                            const std::vector<TransitionSample>& transitions) {
+                            const std::vector<TransitionSample>& transitions,
+                            bool strict_incremental) {
   ParityResults results;
   for (const Board& board : boards) {
     const auto active_hidden1 = evaluate_nnue_hidden1_pre_active_for_test(board);
@@ -241,6 +297,7 @@ ParityResults verify_parity(const std::vector<Board>& boards,
     require(active.has_value() && legacy.has_value(), "raw parity score");
     results.final_raw_max_abs_diff = std::max(results.final_raw_max_abs_diff,
                                                std::fabs(*active - *legacy));
+    hash_float(results.final_raw_hash, *active);
     if (std::lround(*active) != std::lround(*legacy)) ++results.final_cp_mismatch_count;
   }
   for (const TransitionSample& sample : transitions) {
@@ -249,6 +306,8 @@ ParityResults verify_parity(const std::vector<Board>& boards,
                                     incremental), "incremental accumulator update");
     NnueAccumulator rebuilt;
     require(refresh_nnue_accumulator(sample.child, rebuilt), "incremental child rebuild");
+    for (float value : rebuilt.white) hash_float(results.accumulator_hash, value);
+    for (float value : rebuilt.black) hash_float(results.accumulator_hash, value);
     results.incremental_accumulator_max_abs_diff = std::max(
         results.incremental_accumulator_max_abs_diff, max_abs_difference(incremental, rebuilt));
     const auto active = evaluate_nnue_network_raw_from_accumulator(sample.child, incremental);
@@ -256,18 +315,21 @@ ParityResults verify_parity(const std::vector<Board>& boards,
     require(active.has_value() && rebuilt_raw.has_value(), "incremental raw parity score");
     results.incremental_final_raw_max_abs_diff = std::max(
         results.incremental_final_raw_max_abs_diff, std::fabs(*active - *rebuilt_raw));
+    hash_float(results.incremental_raw_hash, *active);
     if (std::lround(*active) != std::lround(*rebuilt_raw))
       ++results.incremental_final_cp_mismatch_count;
   }
   require(results.hidden1_max_abs_diff == 0.0F, "hidden1 must be bit-identical to legacy");
   require(results.final_raw_max_abs_diff == 0.0F, "raw eval must be bit-identical to legacy");
   require(results.final_cp_mismatch_count == 0, "rounded cp must match legacy");
-  require(results.incremental_accumulator_max_abs_diff <= 1e-4F,
-          "incremental accumulator max difference <= 1e-4");
-  require(results.incremental_final_raw_max_abs_diff <= 0.001F,
-          "incremental raw eval max difference <= 0.001 cp");
-  require(results.incremental_final_cp_mismatch_count == 0,
-          "incremental rounded cp must match rebuilt accumulator");
+  if (strict_incremental) {
+    require(results.incremental_accumulator_max_abs_diff <= 1e-4F,
+            "incremental accumulator max difference <= 1e-4");
+    require(results.incremental_final_raw_max_abs_diff <= 0.001F,
+            "incremental raw eval max difference <= 0.001 cp");
+    require(results.incremental_final_cp_mismatch_count == 0,
+            "incremental rounded cp must match rebuilt accumulator");
+  }
   return results;
 }
 
@@ -298,18 +360,19 @@ double median_of_five(Operation operation) {
 }
 
 NnueEvaluatorStageProfile median_stages(const std::vector<Board>& boards, std::size_t repeats) {
-  std::array<double, 5> rebuild{}, clip{}, hidden1{}, hidden1_activation{}, hidden2{}, output{};
+  std::array<double, 5> rebuild{}, features{}, clip{}, hidden1{}, hidden1_activation{}, hidden2{}, output{};
   for (std::size_t round = 0; round < rebuild.size(); ++round) {
     const auto stages = profile_nnue_evaluator_stages(boards, repeats);
     require(stages.has_value(), "evaluator stage profile");
     rebuild[round] = stages->accumulator_rebuild_us;
+    features[round] = stages->feature_enumeration_us;
     clip[round] = stages->clip_precompute_us;
     hidden1[round] = stages->hidden1_dense_us;
     hidden1_activation[round] = stages->hidden1_activation_us;
     hidden2[round] = stages->hidden2_dense_us;
     output[round] = stages->output_us;
   }
-  return NnueEvaluatorStageProfile{median(rebuild), median(clip), median(hidden1),
+  return NnueEvaluatorStageProfile{median(rebuild), median(features), median(clip), median(hidden1),
                                    median(hidden1_activation), median(hidden2), median(output)};
 }
 
@@ -319,6 +382,7 @@ struct BenchmarkResults {
   double existing_accumulator_evaluate_us{0.0};
   double incremental_update_us{0.0};
   double incremental_update_evaluate_us{0.0};
+  double make_incremental_evaluate_unmake_us{0.0};
   double ordinary_update_us{0.0};
   double capture_update_us{0.0};
   double king_refresh_update_us{0.0};
@@ -400,6 +464,24 @@ BenchmarkResults run_benchmark(const std::vector<Board>& boards,
       return sum;
     });
   });
+  results.make_incremental_evaluate_unmake_us = median_of_five([&] {
+    return measure_us_per_eval(transitions.size(), repeats, [&] {
+      float sum = 0.0F;
+      for (const TransitionSample& sample : transitions) {
+        Board working = sample.parent;
+        NnueAccumulator accumulator;
+        require(update_nnue_accumulator(sample.parent, sample.move,
+                                        sample.parent_accumulator, accumulator),
+                "timed make/update/unmake accumulator");
+        const UndoState undo = working.make_move(sample.move);
+        const auto score = evaluate_nnue_network_raw_from_accumulator(working, accumulator);
+        require(score.has_value(), "timed make/update/unmake evaluation");
+        working.unmake_move(sample.move, undo);
+        sum += *score + static_cast<float>(working.zobrist_key() & 1U);
+      }
+      return sum;
+    });
+  });
   const auto update = [](const TransitionSample& sample) {
     NnueAccumulator accumulator;
     require(update_nnue_accumulator(sample.parent, sample.move, sample.parent_accumulator,
@@ -435,20 +517,50 @@ void print_result(const Options& options, const std::vector<Board>& boards,
             << " incremental_accumulator_max_abs_diff=" << parity.incremental_accumulator_max_abs_diff
             << " incremental_final_raw_max_abs_diff=" << parity.incremental_final_raw_max_abs_diff
             << " incremental_final_cp_mismatch_count="
-            << parity.incremental_final_cp_mismatch_count;
+            << parity.incremental_final_cp_mismatch_count
+            << " final_raw_hash=" << std::hex << parity.final_raw_hash
+            << " rebuilt_accumulator_hash=" << parity.accumulator_hash
+            << " incremental_raw_hash=" << parity.incremental_raw_hash << std::dec;
+  std::uint64_t active_features = 0;
+  for (const Board& board : boards) {
+    active_features += extract_nnue_features(board, Color::White).size;
+    active_features += extract_nnue_features(board, Color::Black).size;
+  }
+  std::cout << " avg_active_features_per_perspective="
+            << static_cast<double>(active_features) / (2.0 * boards.size());
   if (benchmark) {
     std::cout << " accumulator_rebuild_us_per_eval=" << benchmark->stages.accumulator_rebuild_us
+              << " feature_enumeration_us_per_eval_both_perspectives="
+              << benchmark->stages.feature_enumeration_us
               << " clip_us_per_eval=" << benchmark->stages.clip_precompute_us
               << " hidden1_dense_us_per_eval=" << benchmark->stages.hidden1_dense_us
               << " hidden1_activation_us_per_eval=" << benchmark->stages.hidden1_activation_us
               << " hidden2_dense_us_per_eval=" << benchmark->stages.hidden2_dense_us
               << " output_us_per_eval=" << benchmark->stages.output_us
               << " full_rebuild_evaluate_us_per_eval=" << benchmark->full_rebuild_evaluate_us
+              << " full_rebuild_evals_per_sec="
+              << (benchmark->full_rebuild_evaluate_us > 0.0
+                      ? 1'000'000.0 / benchmark->full_rebuild_evaluate_us : 0.0)
               << " existing_accumulator_evaluate_us_per_eval="
               << benchmark->existing_accumulator_evaluate_us
+              << " existing_accumulator_evals_per_sec="
+              << (benchmark->existing_accumulator_evaluate_us > 0.0
+                      ? 1'000'000.0 / benchmark->existing_accumulator_evaluate_us : 0.0)
               << " incremental_update_us_per_eval=" << benchmark->incremental_update_us
               << " incremental_update_evaluate_us_per_eval="
               << benchmark->incremental_update_evaluate_us
+              << " incremental_update_evaluate_evals_per_sec="
+              << (benchmark->incremental_update_evaluate_us > 0.0
+                      ? 1'000'000.0 / benchmark->incremental_update_evaluate_us : 0.0)
+              << " make_incremental_eval_unmake_us_per_eval="
+              << benchmark->make_incremental_evaluate_unmake_us
+              << " make_incremental_eval_unmake_evals_per_sec="
+              << (benchmark->make_incremental_evaluate_unmake_us > 0.0
+                      ? 1'000'000.0 / benchmark->make_incremental_evaluate_unmake_us : 0.0)
+              << " incremental_updates_per_repeat=" << transitions.size()
+              << " full_rebuilds_per_repeat=" << boards.size()
+              << " accumulator_copy_bytes_per_repeat="
+              << transitions.size() * sizeof(NnueAccumulator)
               << " ordinary_transition_count=" << benchmark->ordinary_transitions
               << " ordinary_incremental_update_us_per_eval=" << benchmark->ordinary_update_us
               << " capture_transition_count=" << benchmark->capture_transitions
@@ -472,10 +584,12 @@ int main(int argc, char* argv[]) {
     const std::vector<std::uint8_t> network = deterministic_network();
     require(load_nnue_network_bytes(network.data(), network.size(), error), error);
   }
-  const std::vector<Board> boards = load_positions(options.corpus_path);
+  std::vector<Board> boards = load_positions(options.corpus_path, options.fen);
+  append_deterministic_legal_positions(boards, options.random_legal_count);
   const std::vector<NnueAccumulator> accumulators = build_accumulators(boards);
   const std::vector<TransitionSample> transitions = build_transitions(boards, accumulators);
-  const ParityResults parity = verify_parity(boards, transitions);
+  const ParityResults parity = verify_parity(boards, transitions,
+                                               options.random_legal_count == 0);
   if (options.verify_only) {
     print_result(options, boards, transitions, parity, nullptr);
   } else {

@@ -461,7 +461,11 @@ void UciEngine::send_command(const std::string& line) {
     constexpr const char* profile_names[] = {
         "main_search", "qsearch", "evaluation", "move_generation",
         "legal_filtering", "board_make", "board_unmake", "tt", "see",
-        "stalemate_legality"};
+        "stalemate_legality", "nnue_wrapper", "accumulator_update",
+        "accumulator_refresh", "perspective_refresh", "feature_enumeration",
+        "accumulator_copy", "input_clipping", "hidden1_dense",
+        "hidden1_activation", "hidden2_dense_activation", "output_layer",
+        "output_conversion", "forward_buffer_allocation"};
     for (std::size_t index = 0; index < std::size(profile_names); ++index) {
       std::ostringstream profile_line;
       profile_line << "info string profile " << profile_names[index]
@@ -471,6 +475,20 @@ void UciEngine::send_command(const std::string& line) {
                    << (static_cast<double>(result.profile.estimated_ns[index]) / 1'000'000.0);
       emit(profile_line.str());
     }
+    constexpr const char* counter_names[] = {
+        "evaluate_api_calls", "search_eval_requests", "main_eval_requests",
+        "qsearch_eval_requests", "nnue_evaluations", "main_nnue_eval_requests",
+        "qsearch_nnue_eval_requests", "hce_evaluations", "incremental_updates",
+        "full_accumulator_rebuilds", "perspective_rebuilds", "accumulator_copies",
+        "accumulator_copy_bytes", "feature_extractions", "active_features",
+        "hidden1_invocations", "hidden2_invocations", "output_layer_invocations"};
+    std::ostringstream nnue_profile;
+    nnue_profile << "info string nnue_profile";
+    for (std::size_t index = 0; index < std::size(counter_names); ++index) {
+      nnue_profile << ' ' << counter_names[index] << ' '
+                   << result.profile.counters[index];
+    }
+    emit(nnue_profile.str());
 #endif
 #else
     std::ostringstream strength;
