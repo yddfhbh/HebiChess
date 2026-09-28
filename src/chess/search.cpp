@@ -6,6 +6,7 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -16,6 +17,76 @@
 
 namespace hebichess {
 namespace {
+
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+#ifndef HEBICHESS_EVALCACHE_EXACT_WAYS
+#define HEBICHESS_EVALCACHE_EXACT_WAYS 1
+#endif
+#ifndef HEBICHESS_EVALCACHE_EXACT_ENTRIES
+#define HEBICHESS_EVALCACHE_EXACT_ENTRIES 4096
+#endif
+#if HEBICHESS_EVALCACHE_EXACT_WAYS != 1 && HEBICHESS_EVALCACHE_EXACT_WAYS != 2 && \
+    HEBICHESS_EVALCACHE_EXACT_WAYS != 4
+#error "HEBICHESS_EVALCACHE_EXACT_WAYS must be 1, 2, or 4"
+#endif
+// Diagnostic-only exact cache. A board-key match is only candidate metadata;
+// full accumulator bytes are always compared before a cached output is reused.
+std::uint64_t exact_eval_cache_last_clear_ns{0};
+struct ExactEvalCacheEntry {
+  ZobristKey key{0};
+  Color side_to_move{Color::White};
+  NnueAccumulator accumulator{};
+  float raw_score{0.0F};
+  bool occupied{false};
+};
+struct ExactEvalCache {
+  static constexpr std::size_t kCapacity = HEBICHESS_EVALCACHE_EXACT_ENTRIES;
+  static constexpr std::size_t kWays = HEBICHESS_EVALCACHE_EXACT_WAYS;
+  static constexpr std::size_t kSetCount = kCapacity / kWays;
+  static_assert(kCapacity >= kWays && (kCapacity & (kCapacity - 1)) == 0 &&
+                kCapacity % kWays == 0,
+                "exact-cache entries must be a power of two divisible by ways");
+  std::array<ExactEvalCacheEntry, kCapacity> entries{};
+  std::array<std::uint8_t, kSetCount> next_victim{};
+  std::uint64_t lookups{0};
+  std::uint64_t hits{0};
+  std::uint64_t misses{0};
+  std::uint64_t key_collisions{0};
+  std::uint64_t accumulator_mismatches{0};
+  std::uint64_t inserts{0};
+  std::uint64_t replacements{0};
+  std::uint64_t board_key_comparisons{0};
+  std::uint64_t board_key_matches{0};
+  std::uint64_t memcmp_calls{0};
+  std::uint64_t memcmp_bytes{0};
+  std::uint64_t ways_examined{0};
+  std::uint64_t hit_lookup_ns{0};
+  std::uint64_t miss_lookup_ns{0};
+  std::uint64_t insert_ns{0};
+  std::uint64_t replacement_ns{0};
+  std::uint64_t timing_samples_hits{0};
+  std::uint64_t timing_samples_misses{0};
+  std::uint64_t timing_samples_inserts{0};
+  std::uint64_t timing_samples_replacements{0};
+  void clear() noexcept {
+    const auto clear_begin = std::chrono::steady_clock::now();
+    for (auto& entry : entries) entry.occupied = false;
+    next_victim.fill(0);
+    lookups = hits = misses = key_collisions = accumulator_mismatches = 0;
+    inserts = replacements = board_key_comparisons = board_key_matches = 0;
+    memcmp_calls = memcmp_bytes = ways_examined = 0;
+    hit_lookup_ns = miss_lookup_ns = insert_ns = replacement_ns = 0;
+    timing_samples_hits = timing_samples_misses = 0;
+    timing_samples_inserts = timing_samples_replacements = 0;
+    exact_eval_cache_last_clear_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<
+        std::chrono::nanoseconds>(std::chrono::steady_clock::now() - clear_begin).count());
+  }
+};
+ExactEvalCache& exact_eval_cache() {
+  static ExactEvalCache cache;
+  return cache;
+}
+#endif
 
 #ifndef HEBICHESS_QSEARCH_TT_VARIANT
 #define HEBICHESS_QSEARCH_TT_VARIANT 0
@@ -35,6 +106,10 @@ namespace {
 
 #ifndef HEBICHESS_QSEARCH_LAZY_CHECKS
 #define HEBICHESS_QSEARCH_LAZY_CHECKS 0
+#endif
+
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+thread_local std::unordered_map<ZobristKey, std::pair<int, int>> eval_reuse_qtt_store_epoch;
 #endif
 
 #if HEBICHESS_NMP_CANDIDATE_G
@@ -74,6 +149,9 @@ TranspositionTable& qsearch_transposition_table() {
 
 void clear_qsearch_transposition_table() noexcept {
   qsearch_transposition_table().clear();
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  eval_reuse_qtt_store_epoch.clear();
+#endif
 }
 #endif
 
@@ -294,6 +372,28 @@ SearchHeuristics& search_heuristics() {
   return heuristics;
 }
 
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+std::pair<std::uint64_t, std::uint64_t> eval_reuse_accumulator_hash(
+    const NnueAccumulator* accumulator) noexcept {
+  if (accumulator == nullptr) return {0, 0};
+  std::uint64_t first = 1469598103934665603ULL;
+  std::uint64_t second = 0x9e3779b97f4a7c15ULL;
+  const auto mix = [&](float value) {
+    const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+      const std::uint8_t byte = static_cast<std::uint8_t>(bits >> shift);
+      first = (first ^ byte) * 1099511628211ULL;
+      second ^= static_cast<std::uint64_t>(byte) + 0x9e3779b97f4a7c15ULL +
+          (second << 6) + (second >> 2);
+      second = std::rotl(second, 17) * 0x94d049bb133111ebULL;
+    }
+  };
+  for (float value : accumulator->white) mix(value);
+  for (float value : accumulator->black) mix(value);
+  return {first, second};
+}
+#endif
+
 int score_to_tt(int score, int ply) noexcept {
   if (score > MATE_SCORE - 1000) return score + ply;
   if (score < -MATE_SCORE + 1000) return score - ply;
@@ -324,6 +424,20 @@ struct SearchContext {
   // Root style proofs use a separate, strict policy below.
   std::uint64_t deadline_check_interval_nodes{1};
   std::uint64_t deadline_check_calls{0};
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  int eval_root_iteration{0};
+  int eval_aspiration_retry{0};
+  int eval_main_tt_depth{-1};
+  int eval_qtt_store_iteration{-1};
+  TTBound eval_main_tt_bound{TTBound::Exact};
+  TTBound eval_qtt_bound{TTBound::Exact};
+  EvalReuseTtState eval_main_tt_state{EvalReuseTtState::NotProbed};
+  EvalReuseTtState eval_qtt_state{EvalReuseTtState::NotProbed};
+  std::uint8_t eval_last_move_flags{0};
+  std::uint64_t eval_path_signature{0x6a09e667f3bcc909ULL};
+  bool eval_pvs_research{false};
+  bool eval_qtt_window_reusable{false};
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
   bool null_move_oracle{false};
   std::optional<Move> diagnostic_root_move{};
@@ -373,9 +487,54 @@ struct SearchContext {
   }
 };
 
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+class EvalMoveTraceScope {
+ public:
+  EvalMoveTraceScope(SearchContext& context, const Move& move, bool capture,
+                     bool gives_check, bool king_move) noexcept
+      : context_(context), previous_(context.eval_last_move_flags),
+        previous_path_(context.eval_path_signature) {
+    context_.eval_last_move_flags = static_cast<std::uint8_t>(
+        (capture ? 1U : 0U) | (move.is_promotion() ? 2U : 0U) |
+        (gives_check ? 4U : 0U) | (king_move ? 8U : 0U) |
+        ((move.flag == MoveFlag::CastleKingSide || move.flag == MoveFlag::CastleQueenSide) ? 16U : 0U));
+    const std::uint64_t code = (static_cast<std::uint64_t>(move.from.index()) << 24) |
+        (static_cast<std::uint64_t>(move.to.index()) << 16) |
+        (static_cast<std::uint64_t>(move.flag) << 8) |
+        static_cast<std::uint64_t>(move.promotion);
+    context_.eval_path_signature = std::rotl(previous_path_ ^ (code * 0x9e3779b97f4a7c15ULL), 13);
+  }
+  ~EvalMoveTraceScope() {
+    context_.eval_last_move_flags = previous_;
+    context_.eval_path_signature = previous_path_;
+  }
+ private:
+  SearchContext& context_;
+  std::uint8_t previous_;
+  std::uint64_t previous_path_;
+};
+class EvalNullMoveTraceScope {
+ public:
+  explicit EvalNullMoveTraceScope(SearchContext& context) noexcept
+      : context_(context), previous_flags_(context.eval_last_move_flags),
+        previous_path_(context.eval_path_signature) {
+    context_.eval_last_move_flags = 32U;
+    context_.eval_path_signature = std::rotl(previous_path_ ^ 0xd1b54a32d192ed03ULL, 11);
+  }
+  ~EvalNullMoveTraceScope() {
+    context_.eval_last_move_flags = previous_flags_;
+    context_.eval_path_signature = previous_path_;
+  }
+ private:
+  SearchContext& context_;
+  std::uint8_t previous_flags_;
+  std::uint64_t previous_path_;
+};
+#endif
+
 int evaluate_search_position(const Board& board, SearchContext& context,
                              const NnueAccumulator* accumulator,
-                             bool qsearch) {
+                             bool qsearch, int ply) {
 #if HEBICHESS_SEARCH_PROFILE
   SampledProfileTimer profile_timer(ProfileMetric::Evaluation, 64);
 #endif
@@ -396,8 +555,119 @@ int evaluate_search_position(const Board& board, SearchContext& context,
   if (context.result != nullptr) ++context.result->eval_calls;
 #endif
   if (accumulator != nullptr) {
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+    ExactEvalCache& cache = exact_eval_cache();
+    ++cache.lookups;
+    if (context.result != nullptr) ++context.result->eval_cache_lookups;
+    const bool sample_lookup = (cache.lookups & 63U) == 1U;
+    const auto lookup_started = sample_lookup ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{};
+    ExactEvalCacheEntry* insert_entry = nullptr;
+    const std::size_t set_index = static_cast<std::size_t>(board.zobrist_key()) &
+                                  (ExactEvalCache::kSetCount - 1);
+    const std::size_t set_begin = set_index * ExactEvalCache::kWays;
+    for (std::size_t way = 0; way < ExactEvalCache::kWays; ++way) {
+      ++cache.ways_examined;
+      ExactEvalCacheEntry& candidate = cache.entries[set_begin + way];
+      if (!candidate.occupied) {
+        if (insert_entry == nullptr) insert_entry = &candidate;
+        continue;
+      }
+      ++cache.board_key_comparisons;
+      if (candidate.key != board.zobrist_key() ||
+          candidate.side_to_move != board.side_to_move()) continue;
+      ++cache.board_key_matches;
+      ++cache.memcmp_calls;
+      cache.memcmp_bytes += sizeof(NnueAccumulator);
+      if (std::memcmp(&candidate.accumulator, accumulator,
+                      sizeof(NnueAccumulator)) == 0) {
+        ++cache.hits;
+        if (sample_lookup) {
+          cache.hit_lookup_ns += static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - lookup_started).count());
+          ++cache.timing_samples_hits;
+        }
+        if (context.result != nullptr) ++context.result->eval_cache_hits;
+        return static_cast<int>(std::lround(candidate.raw_score));
+      }
+      ++cache.accumulator_mismatches;
+    }
+    if (insert_entry == nullptr) {
+      const std::size_t victim_way = cache.next_victim[set_index];
+      insert_entry = &cache.entries[set_begin + victim_way];
+    }
+    if (sample_lookup) {
+      cache.miss_lookup_ns += static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - lookup_started).count());
+      ++cache.timing_samples_misses;
+    }
+    ++cache.misses;
+    if (context.result != nullptr) {
+      ++context.result->eval_cache_misses;
+    }
+#endif
     const auto raw = evaluate_nnue_network_raw_from_accumulator(board, *accumulator);
     if (raw.has_value()) {
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+      const bool replacing = insert_entry->occupied;
+      const auto insertion_started = sample_lookup ? std::chrono::steady_clock::now()
+                                                   : std::chrono::steady_clock::time_point{};
+      *insert_entry = ExactEvalCacheEntry{board.zobrist_key(), board.side_to_move(),
+                                          *accumulator, *raw, true};
+      if (replacing) {
+        ++cache.replacements;
+        ++cache.key_collisions;
+        cache.next_victim[set_index] = static_cast<std::uint8_t>(
+            (cache.next_victim[set_index] + 1) % ExactEvalCache::kWays);
+      } else {
+        ++cache.inserts;
+      }
+      if (sample_lookup) {
+        const std::uint64_t elapsed = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - insertion_started).count());
+        cache.insert_ns += elapsed;
+        ++cache.timing_samples_inserts;
+        if (replacing) {
+          cache.replacement_ns += elapsed;
+          ++cache.timing_samples_replacements;
+        }
+      }
+#endif
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      if (context.result != nullptr && nnue_requested) {
+        EvalReuseRequest request;
+        request.key = board.zobrist_key();
+        const auto fingerprint = eval_reuse_accumulator_hash(accumulator);
+        request.accumulator_hash_a = fingerprint.first;
+        request.accumulator_hash_b = fingerprint.second;
+        request.path_signature = context.eval_path_signature;
+        request.raw_score = *raw;
+        request.rounded_cp = static_cast<int>(std::lround(*raw));
+        request.ply = ply;
+        request.qsearch = qsearch;
+        request.qsearch_ply = qsearch ? ply : -1;
+        request.root_iteration = context.eval_root_iteration;
+        request.aspiration_retry = context.eval_aspiration_retry;
+        request.main_tt_depth = context.eval_main_tt_depth;
+        request.qtt_store_iteration = context.eval_qtt_store_iteration;
+        request.main_tt_bound = context.eval_main_tt_bound;
+        request.qtt_bound = context.eval_qtt_bound;
+        request.main_tt_state = context.eval_main_tt_state;
+        request.qtt_state = context.eval_qtt_state;
+        request.last_move_flags = context.eval_last_move_flags;
+        request.side_to_move = board.side_to_move();
+        request.accumulator_valid = true;
+        request.pvs_research = context.eval_pvs_research;
+        request.qtt_window_reusable = context.eval_qtt_window_reusable;
+        const Square king = board.find_king(board.side_to_move());
+        request.in_check = king.is_valid() &&
+            board.is_square_attacked(king, opposite(board.side_to_move()));
+        context.result->eval_reuse_requests.push_back(request);
+      }
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
       if (context.nnue_counters != nullptr) {
         ++context.nnue_counters->eval_from_accumulator_count;
@@ -408,6 +678,39 @@ int evaluate_search_position(const Board& board, SearchContext& context,
       return static_cast<int>(std::lround(*raw));
     }
   }
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  if (nnue_requested && context.result != nullptr) {
+    const auto raw = evaluate_nnue_network_raw(board);
+    if (raw.has_value()) {
+      EvalReuseRequest request;
+      request.key = board.zobrist_key();
+      request.path_signature = context.eval_path_signature;
+      request.raw_score = *raw;
+      request.rounded_cp = static_cast<int>(std::lround(*raw));
+      request.ply = ply;
+      request.qsearch_ply = qsearch ? ply : -1;
+      request.root_iteration = context.eval_root_iteration;
+      request.aspiration_retry = context.eval_aspiration_retry;
+      request.main_tt_depth = context.eval_main_tt_depth;
+      request.qtt_store_iteration = context.eval_qtt_store_iteration;
+      request.main_tt_bound = context.eval_main_tt_bound;
+      request.qtt_bound = context.eval_qtt_bound;
+      request.main_tt_state = context.eval_main_tt_state;
+      request.qtt_state = context.eval_qtt_state;
+      request.last_move_flags = context.eval_last_move_flags;
+      request.side_to_move = board.side_to_move();
+      request.qsearch = qsearch;
+      const Square king = board.find_king(board.side_to_move());
+      request.in_check = king.is_valid() &&
+          board.is_square_attacked(king, opposite(board.side_to_move()));
+      request.accumulator_valid = false;
+      request.pvs_research = context.eval_pvs_research;
+      request.qtt_window_reusable = context.eval_qtt_window_reusable;
+      context.result->eval_reuse_requests.push_back(request);
+      return static_cast<int>(std::lround(*raw));
+    }
+  }
+#endif
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
   if (context.nnue_counters != nullptr && context.eval_mode == EvalMode::NNUE &&
       nnue_network_available()) {
@@ -1144,6 +1447,12 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
   const Square king = board.find_king(side);
   const bool in_check = king.is_valid() &&
                         board.is_square_attacked(king, opposite(side));
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  context.eval_main_tt_state = EvalReuseTtState::NotProbed;
+  context.eval_qtt_state = EvalReuseTtState::NotProbed;
+  context.eval_qtt_window_reusable = false;
+  context.eval_qtt_store_iteration = -1;
+#endif
   if (context.result != nullptr) {
     if (in_check) ++context.result->q_in_check_nodes;
     else ++context.result->q_non_check_nodes;
@@ -1194,6 +1503,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       ) {
     qtt = &qsearch_transposition_table();
     qtt_key = board.zobrist_key();
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+    context.eval_qtt_state = EvalReuseTtState::Miss;
+#endif
     const TTEntry* qtt_entry = qtt->probe(qtt_key);
     int qtt_score = 0;
     bool qtt_window_reusable = false;
@@ -1208,6 +1520,13 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
 #endif
     }
     if (qtt_entry != nullptr) {
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      context.eval_qtt_state = EvalReuseTtState::HitNoCutoff;
+      context.eval_qtt_bound = qtt_entry->bound;
+      if (const auto previous = eval_reuse_qtt_store_epoch.find(qtt_key);
+          previous != eval_reuse_qtt_store_epoch.end())
+        context.eval_qtt_store_iteration = previous->second.first;
+#endif
       qtt_score = score_from_tt(qtt_entry->score, ply);
       const int cutoff_bit = qtt_entry->bound == TTBound::Exact ? QTT_EXACT_CUTOFF
                            : qtt_entry->bound == TTBound::Lower ? QTT_LOWER_CUTOFF
@@ -1215,6 +1534,9 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       qtt_window_reusable = qtt_entry->bound == TTBound::Exact ||
           (qtt_entry->bound == TTBound::Lower && qtt_score >= beta) ||
           (qtt_entry->bound == TTBound::Upper && qtt_score <= alpha);
+ #if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      context.eval_qtt_window_reusable = qtt_window_reusable;
+ #endif
       qtt_reusable_subtree = qtt_window_reusable &&
           (HEBICHESS_QSEARCH_TT_CUTOFF_MASK & cutoff_bit) != 0;
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
@@ -1340,6 +1662,11 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
                         : score >= original_beta ? TTBound::Lower : TTBound::Exact;
     const TTStoreResult stored = qtt->store(qtt_key, 0, score_to_tt(score, ply), bound,
                                             std::nullopt);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+    if (stored.stored)
+      eval_reuse_qtt_store_epoch[qtt_key] = {context.eval_root_iteration,
+                                             context.eval_aspiration_retry};
+#endif
 #if HEBICHESS_QSEARCH_TT_PROFILE
     if (context.result != nullptr && stored.stored) {
       ++context.result->qtt_stores;
@@ -1413,6 +1740,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
         child = make_child_accumulator(board, item.move, accumulator,
                                        *child_accumulator, context, true);
       }
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      EvalMoveTraceScope eval_move_scope(context, item.move, item.capture,
+          item.gives_check, board.piece_at(item.move.from).type == PieceType::King);
+#endif
       const UndoState undo = board.make_move(item.move);
       const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                          context, child);
@@ -1447,7 +1778,7 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
     return best;
   }
 
-  const int stand_pat = evaluate_search_position(board, context, accumulator, true);
+  const int stand_pat = evaluate_search_position(board, context, accumulator, true, ply);
 #if defined(HEBICHESS_QSEARCH_TT_DIAGNOSTIC) && HEBICHESS_QSEARCH_TT_DIAGNOSTIC
   if (trace_index) context.qsearch_window_trace->at(*trace_index).stand_pat = stand_pat;
 #endif
@@ -1573,6 +1904,10 @@ int quiescence_impl(Board& board, int alpha, int beta, int ply,
       child = make_child_accumulator(board, move, accumulator,
                                      *child_accumulator, context, true);
     }
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+    EvalMoveTraceScope eval_move_scope(context, move, capture, check,
+        board.piece_at(move.from).type == PieceType::King);
+#endif
     const UndoState undo = board.make_move(move);
     const int score = -quiescence_impl(board, -beta, -alpha, ply + 1,
                                        context, child);
@@ -1618,6 +1953,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
 #endif
   if (context.should_stop()) return 0;
   if (depth <= 0) return quiescence_impl(board, alpha, beta, ply, context, accumulator);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  context.eval_main_tt_state = context.tt == nullptr
+      ? EvalReuseTtState::NotProbed : EvalReuseTtState::Miss;
+  context.eval_main_tt_depth = -1;
+#endif
 #if HEBICHESS_SEARCH_PROFILE
   SampledProfileTimer profile_timer(ProfileMetric::MainSearch, 128);
 #endif
@@ -1643,6 +1983,11 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     ++context.result->tt_probes;
     const TTEntry* entry = context.tt->probe(board.zobrist_key());
     if (entry != nullptr) {
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      context.eval_main_tt_state = EvalReuseTtState::HitNoCutoff;
+      context.eval_main_tt_depth = entry->depth;
+      context.eval_main_tt_bound = entry->bound;
+#endif
       ++context.result->tt_hits;
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       diagnostic_tt_hit = true;
@@ -1743,7 +2088,7 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
   if (const auto threshold = admission_threshold(); threshold.has_value() &&
       context.use_null_move && depth >= 3 && ply > 0 && !was_null_move &&
       !in_check && has_non_pawn_material(board, board.side_to_move())) {
-    diagnostic_static_eval = evaluate_search_position(board, context, accumulator, false);
+    diagnostic_static_eval = evaluate_search_position(board, context, accumulator, false, ply);
     diagnostic_static_eval_ready = true;
     if (context.result != nullptr) ++context.result->null_policy_admission_evaluations;
     if (diagnostic_static_eval < *threshold) {
@@ -1799,8 +2144,14 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
     if (accumulator != nullptr && context.nnue_counters != nullptr)
       ++context.nnue_counters->null_move_accumulator_reuse_count;
 #endif
-    const int score = -negamax_impl(board, depth - 1 - reduction,
-                                    -beta, -beta + 1, ply + 1, context, accumulator, true);
+    int score = 0;
+    {
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      EvalNullMoveTraceScope eval_null_scope(context);
+#endif
+      score = -negamax_impl(board, depth - 1 - reduction,
+                            -beta, -beta + 1, ply + 1, context, accumulator, true);
+    }
     board.unmake_null_move(undo);
     if (context.stopped) return 0;
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
@@ -1874,7 +2225,7 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       if (trace.cutoff) {
         trace.static_eval_cp = diagnostic_static_eval_ready
             ? diagnostic_static_eval
-            : evaluate_search_position(board, context, accumulator, false);
+            : evaluate_search_position(board, context, accumulator, false, ply);
       }
       // Expensive zugzwang/mobility descriptors are deliberately confined to
       // the diagnostic callback path; production search never computes them.
@@ -2425,6 +2776,7 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
         !in_check && is_quiet_move(move) && !killer_move && !high_history &&
         !gives_check(board, move);
     const bool pvs_candidate = context.use_pvs && move_index > 0;
+    const bool king_move = board.piece_at(move.from).type == PieceType::King;
     std::optional<NnueAccumulator> child_accumulator;
     const NnueAccumulator* child = nullptr;
     if (accumulator != nullptr) {
@@ -2433,13 +2785,17 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
                                      *child_accumulator, context, false);
     }
     const UndoState undo = board.make_move(move);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+    EvalMoveTraceScope eval_move_scope(context, move, ordered.capture,
+                                        ordered.gives_check, king_move);
+#endif
     int score = 0;
     const auto search_child = [&](int child_depth, bool zero_window) {
       if (zero_window && context.result != nullptr)
         ++context.result->pvs_zero_window_searches;
-      if (zero_window)
-        return -negamax_impl(board, child_depth, -alpha - 1, -alpha,
-                             ply + 1, context, child);
+        if (zero_window)
+          return -negamax_impl(board, child_depth, -alpha - 1, -alpha,
+                              ply + 1, context, child);
       return -negamax_impl(board, child_depth, -beta, -alpha, ply + 1,
                            context, child);
     };
@@ -2470,7 +2826,13 @@ int negamax_impl(Board& board, int depth, int alpha, int beta, int ply,
       if (!context.stopped && pvs_candidate && score > alpha && score < beta) {
         if (context.result != nullptr) ++context.result->pvs_researches;
         const std::uint64_t before_pvs_research = context.nodes;
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+        context.eval_pvs_research = true;
+#endif
         score = search_child(depth - 1, false);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+        context.eval_pvs_research = false;
+#endif
         if (context.result != nullptr)
           context.result->pvs_research_nodes += context.nodes - before_pvs_research;
       }
@@ -2951,6 +3313,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     int best_score = -MATE_SCORE;
     bool completed = false;
     bool stopped_iteration = false;
+    int aspiration_retry_index = 0;
     while (!completed) {
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       diagnostic_iteration.aspiration_windows.emplace_back(alpha, beta);
@@ -2962,6 +3325,10 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
                             limits.use_killer_history ? &search_heuristics() : nullptr,
                             limits.use_null_move, limits.use_lmr, limits.use_pvs, limits.eval_mode,
                             limits.deadline_check_interval_nodes};
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+      context.eval_root_iteration = depth;
+      context.eval_aspiration_retry = aspiration_retry_index;
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
       context.null_move_diagnostic_policy = limits.null_move_diagnostic_policy;
       context.diagnostic_oracle_tt_mode = limits.diagnostic_oracle_tt_mode;
@@ -3021,7 +3388,8 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         });
       }
       for (std::size_t move_index = 0; move_index < root_order.size(); ++move_index) {
-        const Move& move = root_order[move_index].move;
+        const OrderedMove& root_item = root_order[move_index];
+        const Move& move = root_item.move;
         if (context.should_stop()) break;
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
         context.diagnostic_root_move = move;
@@ -3033,7 +3401,12 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           child = make_child_accumulator(root, move, &*root_accumulator,
                                          *child_accumulator, context, false);
         }
+        const bool root_king_move = root.piece_at(move.from).type == PieceType::King;
         const UndoState undo = root.make_move(move);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+        EvalMoveTraceScope eval_move_scope(context, move, root_item.capture,
+            root_item.gives_check, root_king_move);
+#endif
         const int search_alpha = alpha;
         const int search_beta = beta;
         int score = 0;
@@ -3045,7 +3418,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           score = -negamax_impl(root, depth - 1, -alpha - 1, -alpha, 1, context, child);
           if (!context.stopped && score > alpha && score < beta) {
             ++result.pvs_researches;
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+            context.eval_pvs_research = true;
+#endif
             score = -negamax_impl(root, depth - 1, -beta, -alpha, 1, context, child);
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+            context.eval_pvs_research = false;
+#endif
             pvs_full_research = true;
             // A completed full re-search supersedes the zero-window bound.
             // Classify it against the window that was actually searched.
@@ -3092,6 +3471,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         if (outside_low) ++result.aspiration_fail_lows;
         if (outside_high) ++result.aspiration_fail_highs;
         ++result.aspiration_retries;
+        ++aspiration_retry_index;
         if (window >= MATE_SCORE) {
           alpha = -MATE_SCORE;
           beta = MATE_SCORE;
@@ -3543,6 +3923,9 @@ std::vector<Move> extract_principal_variation(const Board& board,
 
 SearchResult search(const Board& position, const SearchLimits& limits,
                     const SearchInfoCallback& on_iteration) {
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+  exact_eval_cache().clear();
+#endif
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
   null_shadow_event_occurrences.clear();
 #endif
@@ -3553,6 +3936,35 @@ SearchResult search(const Board& position, const SearchLimits& limits,
 #endif
   result.principal_variation = extract_principal_variation(position, result.best_move);
   result.reuse_hit = limits.reuse_hit;
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+  const ExactEvalCache& eval_cache = exact_eval_cache();
+  result.eval_cache_lookups = eval_cache.lookups;
+  result.eval_cache_hits = eval_cache.hits;
+  result.eval_cache_misses = eval_cache.misses;
+  result.eval_cache_key_collisions = eval_cache.key_collisions;
+  result.eval_cache_accumulator_mismatches = eval_cache.accumulator_mismatches;
+  result.eval_cache_inserts = eval_cache.inserts;
+  result.eval_cache_replacements = eval_cache.replacements;
+  result.eval_cache_board_key_comparisons = eval_cache.board_key_comparisons;
+  result.eval_cache_board_key_matches = eval_cache.board_key_matches;
+  result.eval_cache_memcmp_calls = eval_cache.memcmp_calls;
+  result.eval_cache_memcmp_bytes = eval_cache.memcmp_bytes;
+  result.eval_cache_ways_examined = eval_cache.ways_examined;
+  result.eval_cache_hit_lookup_ns = eval_cache.hit_lookup_ns;
+  result.eval_cache_miss_lookup_ns = eval_cache.miss_lookup_ns;
+  result.eval_cache_insert_ns = eval_cache.insert_ns;
+  result.eval_cache_replacement_ns = eval_cache.replacement_ns;
+  result.eval_cache_clear_ns = exact_eval_cache_last_clear_ns;
+  result.eval_cache_timed_hit_samples = eval_cache.timing_samples_hits;
+  result.eval_cache_timed_miss_samples = eval_cache.timing_samples_misses;
+  result.eval_cache_timed_insert_samples = eval_cache.timing_samples_inserts;
+  result.eval_cache_timed_replacement_samples = eval_cache.timing_samples_replacements;
+  result.eval_cache_entry_bytes = sizeof(ExactEvalCacheEntry);
+  result.eval_cache_accumulator_bytes = sizeof(NnueAccumulator);
+  result.eval_cache_storage_bytes = sizeof(ExactEvalCache);
+  result.eval_cache_capacity = ExactEvalCache::kCapacity;
+  result.eval_cache_ways = ExactEvalCache::kWays;
+#endif
   result.reuse_prepared_depth = result.completed_depth;
   if (result.principal_variation.size() >= 2)
     result.reuse_expected = move_to_uci(result.principal_variation[1]);

@@ -354,6 +354,39 @@ void UciEngine::send_command(const std::string& line) {
       info << " nodes " << nodes << " qnodes " << qnodes;
       output_(info.str());
     });
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+    {
+      std::ostringstream cache;
+      cache << "info string evalcache_exact lookups " << result.eval_cache_lookups
+            << " hits " << result.eval_cache_hits
+            << " misses " << result.eval_cache_misses
+            << " collisions " << result.eval_cache_key_collisions
+            << " inserts " << result.eval_cache_inserts
+            << " replacements " << result.eval_cache_replacements
+            << " same_key_accumulator_mismatches "
+            << result.eval_cache_accumulator_mismatches
+            << " board_key_comparisons " << result.eval_cache_board_key_comparisons
+            << " board_key_matches " << result.eval_cache_board_key_matches
+            << " memcmp_calls " << result.eval_cache_memcmp_calls
+            << " memcmp_bytes " << result.eval_cache_memcmp_bytes
+            << " ways_examined " << result.eval_cache_ways_examined
+            << " entry_bytes " << result.eval_cache_entry_bytes
+            << " accumulator_bytes " << result.eval_cache_accumulator_bytes
+            << " storage_bytes " << result.eval_cache_storage_bytes
+            << " capacity " << result.eval_cache_capacity
+            << " ways " << result.eval_cache_ways
+            << " hit_lookup_ns " << result.eval_cache_hit_lookup_ns
+            << " miss_lookup_ns " << result.eval_cache_miss_lookup_ns
+            << " insert_ns " << result.eval_cache_insert_ns
+            << " replacement_ns " << result.eval_cache_replacement_ns
+            << " clear_ns " << result.eval_cache_clear_ns
+            << " hit_lookup_samples " << result.eval_cache_timed_hit_samples
+            << " miss_lookup_samples " << result.eval_cache_timed_miss_samples
+            << " insert_samples " << result.eval_cache_timed_insert_samples
+            << " replacement_samples " << result.eval_cache_timed_replacement_samples;
+      emit(cache.str());
+    }
+#endif
     std::ostringstream pv_line;
     pv_line << "info string reuse pv";
     for (const Move& move : result.principal_variation) pv_line << ' ' << move_to_uci(move);

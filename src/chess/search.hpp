@@ -76,6 +76,35 @@ struct RootMoveInfo {
   int see_score{0};
 };
 
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+enum class EvalReuseTtState : std::uint8_t { NotProbed, Miss, HitNoCutoff };
+struct EvalReuseRequest {
+  ZobristKey key{0};
+  std::uint64_t accumulator_hash_a{0};
+  std::uint64_t accumulator_hash_b{0};
+  std::uint64_t path_signature{0};
+  float raw_score{0.0F};
+  int rounded_cp{0};
+  int ply{0};
+  int qsearch_ply{-1};
+  int root_iteration{0};
+  int aspiration_retry{0};
+  int main_tt_depth{-1};
+  int qtt_store_iteration{-1};
+  TTBound main_tt_bound{TTBound::Exact};
+  TTBound qtt_bound{TTBound::Exact};
+  EvalReuseTtState main_tt_state{EvalReuseTtState::NotProbed};
+  EvalReuseTtState qtt_state{EvalReuseTtState::NotProbed};
+  std::uint8_t last_move_flags{0};
+  Color side_to_move{Color::White};
+  bool qsearch{false};
+  bool in_check{false};
+  bool accumulator_valid{false};
+  bool pvs_research{false};
+  bool qtt_window_reusable{false};
+};
+#endif
+
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
 struct DiagnosticIterationSummary {
   int depth{0};
@@ -93,6 +122,37 @@ struct DiagnosticIterationSummary {
 #endif
 
 struct SearchResult {
+#if defined(HEBICHESS_EVALCACHE_EXACT)
+  std::uint64_t eval_cache_inserts{0};
+  std::uint64_t eval_cache_replacements{0};
+  std::uint64_t eval_cache_lookups{0};
+  std::uint64_t eval_cache_hits{0};
+  std::uint64_t eval_cache_misses{0};
+  std::uint64_t eval_cache_key_collisions{0};
+  std::uint64_t eval_cache_accumulator_mismatches{0};
+  std::uint64_t eval_cache_board_key_comparisons{0};
+  std::uint64_t eval_cache_board_key_matches{0};
+  std::uint64_t eval_cache_memcmp_calls{0};
+  std::uint64_t eval_cache_memcmp_bytes{0};
+  std::uint64_t eval_cache_ways_examined{0};
+  std::uint64_t eval_cache_hit_lookup_ns{0};
+  std::uint64_t eval_cache_miss_lookup_ns{0};
+  std::uint64_t eval_cache_insert_ns{0};
+  std::uint64_t eval_cache_replacement_ns{0};
+  std::uint64_t eval_cache_clear_ns{0};
+  std::uint64_t eval_cache_timed_hit_samples{0};
+  std::uint64_t eval_cache_timed_miss_samples{0};
+  std::uint64_t eval_cache_timed_insert_samples{0};
+  std::uint64_t eval_cache_timed_replacement_samples{0};
+  std::uint64_t eval_cache_entry_bytes{0};
+  std::uint64_t eval_cache_accumulator_bytes{0};
+  std::uint64_t eval_cache_storage_bytes{0};
+  std::uint64_t eval_cache_capacity{0};
+  std::uint64_t eval_cache_ways{0};
+#endif
+#if defined(HEBICHESS_EVAL_REUSE_PROFILE)
+  std::vector<EvalReuseRequest> eval_reuse_requests{};
+#endif
 #if HEBICHESS_SEARCH_PROFILE
   SearchProfileStats profile{};
 #endif

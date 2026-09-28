@@ -416,6 +416,92 @@ target_include_directories(HebiChessNnueIncrementalAccumulatorTest PRIVATE src)
 target_compile_definitions(HebiChessNnueIncrementalAccumulatorTest
   PRIVATE HEBICHESS_NNUE_TEST_PROFILE=1)
 
+# Trace-only evaluator reuse diagnostics. This target records search events
+# and accumulator fingerprints; normal engine targets do not define the macro.
+add_executable(HebiChessEvalReuseProfile
+  tests/eval_reuse_profile.cpp
+  ${CHESS_SOURCES}
+)
+target_include_directories(HebiChessEvalReuseProfile PRIVATE src)
+apply_hebichess_production_nnue_search(HebiChessEvalReuseProfile)
+target_compile_definitions(HebiChessEvalReuseProfile PRIVATE
+  HEBICHESS_EVAL_REUSE_PROFILE=1
+  HEBICHESS_QSEARCH_TT_PROFILE=1
+)
+
+# Diagnostic-only exact static NNUE evaluation cache A/B. The production
+# engine targets above and below do not define HEBICHESS_EVALCACHE_EXACT.
+foreach(_eval_cache_variant IN ITEMS Baseline Exact1 Exact2 Exact4)
+  add_executable(HebiChessEvalCache${_eval_cache_variant}
+    tests/eval_cache_ab_benchmark.cpp
+    ${CHESS_SOURCES}
+  )
+  target_include_directories(HebiChessEvalCache${_eval_cache_variant} PRIVATE src)
+  apply_hebichess_production_nnue_search(HebiChessEvalCache${_eval_cache_variant})
+endforeach()
+foreach(_eval_cache_ways IN ITEMS 1 2 4)
+  target_compile_definitions(HebiChessEvalCacheExact${_eval_cache_ways} PRIVATE
+    HEBICHESS_EVALCACHE_EXACT=1
+    HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways})
+endforeach()
+foreach(_eval_cache_entries IN ITEMS 1024 2048 8192)
+  set(_eval_cache_target HebiChessEvalCacheExact2Way${_eval_cache_entries})
+  add_executable(${_eval_cache_target} tests/eval_cache_ab_benchmark.cpp ${CHESS_SOURCES})
+  target_include_directories(${_eval_cache_target} PRIVATE src)
+  apply_hebichess_production_nnue_search(${_eval_cache_target})
+  target_compile_definitions(${_eval_cache_target} PRIVATE
+    HEBICHESS_EVALCACHE_EXACT=1
+    HEBICHESS_EVALCACHE_EXACT_WAYS=2
+    HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries})
+endforeach()
+
+option(HEBICHESS_BUILD_WASM_EVALCACHE_AB
+  "Build diagnostic-only Node WASM baseline and exact-eval-cache A/B engines" OFF)
+if(HEBICHESS_BUILD_WASM_EVALCACHE_AB)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "HEBICHESS_BUILD_WASM_EVALCACHE_AB requires Emscripten")
+  endif()
+  foreach(_eval_cache_variant IN ITEMS Baseline Exact1 Exact2 Exact4)
+    string(TOLOWER "${_eval_cache_variant}" _eval_cache_dir)
+    add_executable(HebiChessWasmEvalCache${_eval_cache_variant}
+      src/wasm_bridge.cpp ${CHESS_SOURCES})
+    target_include_directories(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE src)
+    target_compile_definitions(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE HEBICHESS_WASM=1)
+    apply_hebichess_production_nnue_search(HebiChessWasmEvalCache${_eval_cache_variant})
+    if(_eval_cache_variant MATCHES "^Exact([124])$")
+      set(_eval_cache_ways "${CMAKE_MATCH_1}")
+      target_compile_definitions(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE
+        HEBICHESS_EVALCACHE_EXACT=1
+        HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways})
+    endif()
+    set_target_properties(HebiChessWasmEvalCache${_eval_cache_variant} PROPERTIES
+      OUTPUT_NAME hebichess-eval-cache
+      RUNTIME_OUTPUT_DIRECTORY
+        "${CMAKE_BINARY_DIR}/artifacts/eval-cache/${_eval_cache_dir}"
+      SUFFIX ".js")
+    set_target_properties(HebiChessWasmEvalCache${_eval_cache_variant} PROPERTIES
+      LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessEvalCacheModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  endforeach()
+  foreach(_eval_cache_entries IN ITEMS 1024 2048 8192)
+    set(_eval_cache_variant Exact2Way${_eval_cache_entries})
+    set(_eval_cache_dir exact2way-${_eval_cache_entries})
+    add_executable(HebiChessWasmEvalCache${_eval_cache_variant}
+      src/wasm_bridge.cpp ${CHESS_SOURCES})
+    target_include_directories(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE src)
+    target_compile_definitions(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE
+      HEBICHESS_WASM=1
+      HEBICHESS_EVALCACHE_EXACT=1
+      HEBICHESS_EVALCACHE_EXACT_WAYS=2
+      HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries})
+    apply_hebichess_production_nnue_search(HebiChessWasmEvalCache${_eval_cache_variant})
+    set_target_properties(HebiChessWasmEvalCache${_eval_cache_variant} PROPERTIES
+      OUTPUT_NAME hebichess-eval-cache
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/artifacts/eval-cache/${_eval_cache_dir}"
+      SUFFIX ".js"
+      LINK_FLAGS "--no-entry -O3 ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessEvalCacheModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_nnue_clear','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']")
+  endforeach()
+endif()
+
 # Architecture-neutral NNUE evaluator A/B harness. Each executable is
 # independently compiled, so the selected dense loop is a compile-time choice
 # only; the production engine has no setting or diagnostic toggle. By default
