@@ -122,7 +122,7 @@ struct DiagnosticIterationSummary {
 #endif
 
 struct SearchResult {
-#if defined(HEBICHESS_EVALCACHE_EXACT)
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
   std::uint64_t eval_cache_inserts{0};
   std::uint64_t eval_cache_replacements{0};
   std::uint64_t eval_cache_lookups{0};

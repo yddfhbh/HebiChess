@@ -13,7 +13,7 @@ set(CHESS_SOURCES
 )
 
 # Phase 6-4B final production configuration.  Keep the accepted NNUE/search
-# definitions shared by every production engine target so they cannot drift.
+# definitions shared by production engine targets so they cannot drift.
 set(HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
   HEBICHESS_QSEARCH_DELTA_PRUNING=1
   HEBICHESS_QSEARCH_TT_VARIANT=2
@@ -26,6 +26,11 @@ set(HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS
   HEBICHESS_NNUE_HIDDEN1_VARIANT=8
   HEBICHESS_NMP_CANDIDATE_G=0
 )
+set(HEBICHESS_PRODUCTION_EVALCACHE_DEFINITIONS
+  HEBICHESS_EVALCACHE_EXACT=1
+  HEBICHESS_EVALCACHE_EXACT_WAYS=2
+  HEBICHESS_EVALCACHE_EXACT_ENTRIES=8192
+)
 function(apply_hebichess_production_qsearch target)
   target_compile_definitions(${target} PRIVATE
     ${HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS}
@@ -35,6 +40,11 @@ function(apply_hebichess_production_nnue_search target)
   apply_hebichess_production_qsearch(${target})
   target_compile_definitions(${target} PRIVATE
     ${HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS}
+  )
+endfunction()
+function(apply_hebichess_production_evalcache target)
+  target_compile_definitions(${target} PRIVATE
+    ${HEBICHESS_PRODUCTION_EVALCACHE_DEFINITIONS}
   )
 endfunction()
 
@@ -58,12 +68,13 @@ function(assert_hebichess_nnue_search_config_matches reference candidate)
   get_target_property(_reference_definitions ${reference} COMPILE_DEFINITIONS)
   get_target_property(_candidate_definitions ${candidate} COMPILE_DEFINITIONS)
   foreach(_required IN LISTS HEBICHESS_PRODUCTION_QSEARCH_DEFINITIONS
-                             HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS)
+                             HEBICHESS_PRODUCTION_NNUE_SEARCH_DEFINITIONS
+                             HEBICHESS_PRODUCTION_EVALCACHE_DEFINITIONS)
     list(FIND _reference_definitions "${_required}" _reference_index)
     list(FIND _candidate_definitions "${_required}" _candidate_index)
     if(_reference_index EQUAL -1 OR _candidate_index EQUAL -1)
       message(FATAL_ERROR
-        "${reference} and ${candidate} must share ${_required} in their production NNUE/search configuration")
+        "${reference} and ${candidate} must share ${_required} in their production NNUE/search/cache configuration")
     endif()
   endforeach()
 endfunction()
@@ -75,6 +86,7 @@ add_executable(HebiChess
 
 target_include_directories(HebiChess PRIVATE src)
 apply_hebichess_production_nnue_search(HebiChess)
+apply_hebichess_production_evalcache(HebiChess)
 
 # Profiling-only native engine. Sampling timers and per-component clocks are
 # compiled out of production/WASM targets; this target keeps the exact
@@ -151,6 +163,7 @@ if(HEBICHESS_BUILD_WASM)
   target_include_directories(HebiChessWasm PRIVATE src)
   target_compile_definitions(HebiChessWasm PRIVATE HEBICHESS_WASM=1 HEBICHESS_BROWSER_WASM=1)
   apply_hebichess_production_nnue_search(HebiChessWasm)
+  apply_hebichess_production_evalcache(HebiChessWasm)
   set_target_properties(HebiChessWasm PROPERTIES
     OUTPUT_NAME hebichess
     RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_OUTPUT_DIR}"
@@ -170,6 +183,7 @@ if(HEBICHESS_BUILD_WASM_NODE_TEST)
   target_include_directories(HebiChessWasmNodeTest PRIVATE src)
   target_compile_definitions(HebiChessWasmNodeTest PRIVATE HEBICHESS_WASM=1)
   apply_hebichess_production_nnue_search(HebiChessWasmNodeTest)
+  apply_hebichess_production_evalcache(HebiChessWasmNodeTest)
   set_target_properties(HebiChessWasmNodeTest PROPERTIES
     OUTPUT_NAME hebichess-node
     RUNTIME_OUTPUT_DIRECTORY "${HEBICHESS_WASM_NODE_TEST_OUTPUT_DIR}"
@@ -211,6 +225,7 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
     )
     if(variant EQUAL 8)
       apply_hebichess_production_nnue_search(${target})
+      apply_hebichess_production_evalcache(${target})
     else()
       # Retain the H1=4 reference artifact as an explicit baseline.  It must
       # not inherit the production H1=8 default.
@@ -234,6 +249,10 @@ if(HEBICHESS_BUILD_WASM_H1_AB)
   if(HEBICHESS_BUILD_WASM)
     assert_hebichess_nnue_search_config_matches(
       HebiChessWasm HebiChessWasmH1Interleaved8)
+    if(HEBICHESS_BUILD_WASM_NODE_TEST)
+      assert_hebichess_nnue_search_config_matches(
+        HebiChessWasm HebiChessWasmNodeTest)
+    endif()
   endif()
 endif()
 
@@ -358,8 +377,13 @@ add_executable(HebiChessProductionNnueSearchConfigTest
 )
 target_include_directories(HebiChessProductionNnueSearchConfigTest PRIVATE src)
 apply_hebichess_production_nnue_search(HebiChessProductionNnueSearchConfigTest)
+apply_hebichess_production_evalcache(HebiChessProductionNnueSearchConfigTest)
 target_compile_definitions(HebiChessProductionNnueSearchConfigTest PRIVATE
   HEBICHESS_EXPECTED_NNUE_HIDDEN1_VARIANT=8
+  HEBICHESS_EXPECTED_NMP_CANDIDATE_G=0
+  HEBICHESS_EXPECTED_EVALCACHE_EXACT=1
+  HEBICHESS_EXPECTED_EVALCACHE_EXACT_WAYS=2
+  HEBICHESS_EXPECTED_EVALCACHE_EXACT_ENTRIES=8192
 )
 
 add_executable(HebiChessNmpCandidateGTest
@@ -442,7 +466,8 @@ endforeach()
 foreach(_eval_cache_ways IN ITEMS 1 2 4)
   target_compile_definitions(HebiChessEvalCacheExact${_eval_cache_ways} PRIVATE
     HEBICHESS_EVALCACHE_EXACT=1
-    HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways})
+    HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways}
+    HEBICHESS_EVALCACHE_EXACT_TELEMETRY=1)
 endforeach()
 foreach(_eval_cache_entries IN ITEMS 1024 2048 8192)
   set(_eval_cache_target HebiChessEvalCacheExact2Way${_eval_cache_entries})
@@ -452,7 +477,8 @@ foreach(_eval_cache_entries IN ITEMS 1024 2048 8192)
   target_compile_definitions(${_eval_cache_target} PRIVATE
     HEBICHESS_EVALCACHE_EXACT=1
     HEBICHESS_EVALCACHE_EXACT_WAYS=2
-    HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries})
+    HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries}
+    HEBICHESS_EVALCACHE_EXACT_TELEMETRY=1)
 endforeach()
 
 option(HEBICHESS_BUILD_WASM_EVALCACHE_AB
@@ -472,7 +498,8 @@ if(HEBICHESS_BUILD_WASM_EVALCACHE_AB)
       set(_eval_cache_ways "${CMAKE_MATCH_1}")
       target_compile_definitions(HebiChessWasmEvalCache${_eval_cache_variant} PRIVATE
         HEBICHESS_EVALCACHE_EXACT=1
-        HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways})
+        HEBICHESS_EVALCACHE_EXACT_WAYS=${_eval_cache_ways}
+        HEBICHESS_EVALCACHE_EXACT_TELEMETRY=1)
     endif()
     set_target_properties(HebiChessWasmEvalCache${_eval_cache_variant} PROPERTIES
       OUTPUT_NAME hebichess-eval-cache
@@ -492,7 +519,8 @@ if(HEBICHESS_BUILD_WASM_EVALCACHE_AB)
       HEBICHESS_WASM=1
       HEBICHESS_EVALCACHE_EXACT=1
       HEBICHESS_EVALCACHE_EXACT_WAYS=2
-      HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries})
+      HEBICHESS_EVALCACHE_EXACT_ENTRIES=${_eval_cache_entries}
+      HEBICHESS_EVALCACHE_EXACT_TELEMETRY=1)
     apply_hebichess_production_nnue_search(HebiChessWasmEvalCache${_eval_cache_variant})
     set_target_properties(HebiChessWasmEvalCache${_eval_cache_variant} PROPERTIES
       OUTPUT_NAME hebichess-eval-cache

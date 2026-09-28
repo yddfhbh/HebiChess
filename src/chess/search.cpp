@@ -29,9 +29,11 @@ namespace {
     HEBICHESS_EVALCACHE_EXACT_WAYS != 4
 #error "HEBICHESS_EVALCACHE_EXACT_WAYS must be 1, 2, or 4"
 #endif
-// Diagnostic-only exact cache. A board-key match is only candidate metadata;
-// full accumulator bytes are always compared before a cached output is reused.
+// Exact raw-NNUE cache. A board-key match is only candidate metadata; full
+// accumulator bytes are always compared before a cached output is reused.
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
 std::uint64_t exact_eval_cache_last_clear_ns{0};
+#endif
 struct ExactEvalCacheEntry {
   ZobristKey key{0};
   Color side_to_move{Color::White};
@@ -48,6 +50,7 @@ struct ExactEvalCache {
                 "exact-cache entries must be a power of two divisible by ways");
   std::array<ExactEvalCacheEntry, kCapacity> entries{};
   std::array<std::uint8_t, kSetCount> next_victim{};
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
   std::uint64_t lookups{0};
   std::uint64_t hits{0};
   std::uint64_t misses{0};
@@ -68,10 +71,14 @@ struct ExactEvalCache {
   std::uint64_t timing_samples_misses{0};
   std::uint64_t timing_samples_inserts{0};
   std::uint64_t timing_samples_replacements{0};
+#endif
   void clear() noexcept {
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     const auto clear_begin = std::chrono::steady_clock::now();
+#endif
     for (auto& entry : entries) entry.occupied = false;
     next_victim.fill(0);
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     lookups = hits = misses = key_collisions = accumulator_mismatches = 0;
     inserts = replacements = board_key_comparisons = board_key_matches = 0;
     memcmp_calls = memcmp_bytes = ways_examined = 0;
@@ -80,6 +87,7 @@ struct ExactEvalCache {
     timing_samples_inserts = timing_samples_replacements = 0;
     exact_eval_cache_last_clear_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<
         std::chrono::nanoseconds>(std::chrono::steady_clock::now() - clear_begin).count());
+#endif
   }
 };
 ExactEvalCache& exact_eval_cache() {
@@ -557,30 +565,39 @@ int evaluate_search_position(const Board& board, SearchContext& context,
   if (accumulator != nullptr) {
 #if defined(HEBICHESS_EVALCACHE_EXACT)
     ExactEvalCache& cache = exact_eval_cache();
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     ++cache.lookups;
     if (context.result != nullptr) ++context.result->eval_cache_lookups;
     const bool sample_lookup = (cache.lookups & 63U) == 1U;
     const auto lookup_started = sample_lookup ? std::chrono::steady_clock::now()
                                                : std::chrono::steady_clock::time_point{};
+#endif
     ExactEvalCacheEntry* insert_entry = nullptr;
     const std::size_t set_index = static_cast<std::size_t>(board.zobrist_key()) &
                                   (ExactEvalCache::kSetCount - 1);
     const std::size_t set_begin = set_index * ExactEvalCache::kWays;
     for (std::size_t way = 0; way < ExactEvalCache::kWays; ++way) {
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       ++cache.ways_examined;
+#endif
       ExactEvalCacheEntry& candidate = cache.entries[set_begin + way];
       if (!candidate.occupied) {
         if (insert_entry == nullptr) insert_entry = &candidate;
         continue;
       }
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       ++cache.board_key_comparisons;
+#endif
       if (candidate.key != board.zobrist_key() ||
           candidate.side_to_move != board.side_to_move()) continue;
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       ++cache.board_key_matches;
       ++cache.memcmp_calls;
       cache.memcmp_bytes += sizeof(NnueAccumulator);
+#endif
       if (std::memcmp(&candidate.accumulator, accumulator,
                       sizeof(NnueAccumulator)) == 0) {
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
         ++cache.hits;
         if (sample_lookup) {
           cache.hit_lookup_ns += static_cast<std::uint64_t>(
@@ -589,14 +606,18 @@ int evaluate_search_position(const Board& board, SearchContext& context,
           ++cache.timing_samples_hits;
         }
         if (context.result != nullptr) ++context.result->eval_cache_hits;
+#endif
         return static_cast<int>(std::lround(candidate.raw_score));
       }
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       ++cache.accumulator_mismatches;
+#endif
     }
     if (insert_entry == nullptr) {
       const std::size_t victim_way = cache.next_victim[set_index];
       insert_entry = &cache.entries[set_begin + victim_way];
     }
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     if (sample_lookup) {
       cache.miss_lookup_ns += static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -608,14 +629,18 @@ int evaluate_search_position(const Board& board, SearchContext& context,
       ++context.result->eval_cache_misses;
     }
 #endif
+#endif
     const auto raw = evaluate_nnue_network_raw_from_accumulator(board, *accumulator);
     if (raw.has_value()) {
 #if defined(HEBICHESS_EVALCACHE_EXACT)
       const bool replacing = insert_entry->occupied;
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       const auto insertion_started = sample_lookup ? std::chrono::steady_clock::now()
                                                    : std::chrono::steady_clock::time_point{};
+#endif
       *insert_entry = ExactEvalCacheEntry{board.zobrist_key(), board.side_to_move(),
                                           *accumulator, *raw, true};
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
       if (replacing) {
         ++cache.replacements;
         ++cache.key_collisions;
@@ -635,6 +660,12 @@ int evaluate_search_position(const Board& board, SearchContext& context,
           ++cache.timing_samples_replacements;
         }
       }
+#else
+      if (replacing) {
+        cache.next_victim[set_index] = static_cast<std::uint8_t>(
+            (cache.next_victim[set_index] + 1) % ExactEvalCache::kWays);
+      }
+#endif
 #endif
 #if defined(HEBICHESS_EVAL_REUSE_PROFILE)
       if (context.result != nullptr && nnue_requested) {
@@ -3936,7 +3967,7 @@ SearchResult search(const Board& position, const SearchLimits& limits,
 #endif
   result.principal_variation = extract_principal_variation(position, result.best_move);
   result.reuse_hit = limits.reuse_hit;
-#if defined(HEBICHESS_EVALCACHE_EXACT)
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
   const ExactEvalCache& eval_cache = exact_eval_cache();
   result.eval_cache_lookups = eval_cache.lookups;
   result.eval_cache_hits = eval_cache.hits;

@@ -354,7 +354,7 @@ void UciEngine::send_command(const std::string& line) {
       info << " nodes " << nodes << " qnodes " << qnodes;
       output_(info.str());
     });
-#if defined(HEBICHESS_EVALCACHE_EXACT)
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     {
       std::ostringstream cache;
       cache << "info string evalcache_exact lookups " << result.eval_cache_lookups
