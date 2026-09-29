@@ -2,20 +2,24 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>JJUGLE</title><link rel="stylesheet" href="/public/style.css?v=20260909f"><link rel="stylesheet" href="/public/coordinates.css?v=20260909f"><link rel="stylesheet" href="/public/interaction-fixes.css?v=20260909f"><link rel="stylesheet" href="/public/drop-latency.css?v=20260909f">
+  <title>JJUGLE</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3Ctext y='.9em' font-size='90'%3E%E2%99%9F%3C/text%3E%3C/svg%3E"><link rel="stylesheet" href="/public/styles.css"><link rel="stylesheet" href="/public/style.css?v=20260909f"><link rel="stylesheet" href="/public/coordinates.css?v=20260909f"><link rel="stylesheet" href="/public/interaction-fixes.css?v=20260909f"><link rel="stylesheet" href="/public/drop-latency.css?v=20260909f"><link rel="stylesheet" href="/public/ui-restoration.css?v=hce-ui1"><link rel="stylesheet" href="/public/ui-restoration-tweaks.css?v=hce-ui1">
 </head>
 <body>
-<main>
+<main class="app-shell">
+  <section id="welcome" class="intro-shell" aria-labelledby="welcome-title">
+    <div class="intro-copy-panel"><span class="intro-badge">JJUGLE · FREE CHESS</span><h1 id="welcome-title">A clearer game starts here.</h1><p class="intro-copy">Play a focused game of chess against JJUGLE. Choose your side, make your moves on the board, and follow the engine's reply and game history in real time.</p><div class="intro-feature-list"><div class="intro-feature">Responsive chessboard</div><div class="intro-feature">Live game state</div><div class="intro-feature">Instant engine reply</div></div><button type="button" class="modal-btn primary intro-start-btn" id="welcome-start">Start a game</button></div>
+    <div class="intro-visual-panel" aria-hidden="true"><div class="intro-board-preview"><span class="intro-piece light">♜</span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece dark">♟</span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece light">♞</span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece dark">♛</span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece light">♔</span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece dark">♟</span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span class="intro-piece light">♙</span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+  </section>
   <header><div><h1>JJUGLE</h1><p>쮸글 · 공격적인 플레이를 선호하는 자체 제작 체스 엔진</p></div><span id="mode" class="badge"></span></header>
   <section id="lobby" class="lobby"><button data-color="white">백으로 시작</button><button data-color="black">흑으로 시작</button><button data-color="random">랜덤</button></section>
   <section id="game" hidden>
-    <div class="game-grid">
-      <div class="board-column">
+    <div class="game-grid game-container">
+      <div class="board-column board-surface">
         <div id="top-card" class="player-card opponent"></div>
         <div class="board-wrap"><div id="eval-bar" aria-hidden="true"><span></span></div><div class="board-area"><div id="ranks" class="edge-coordinates ranks"></div><div id="board" aria-label="chess board"></div><div id="files" class="edge-coordinates files"></div></div></div>
         <div id="bottom-card" class="player-card user"></div>
       </div>
-      <aside class="panel">
+      <aside class="panel side-panel">
         <div class="status"><span id="status">대국 준비 중</span><span id="metrics"></span></div>
         <div class="engine-info"><span class="thinking-dot"></span><span id="engine-state">Ready</span><span id="nodes"></span></div>
         <div class="history-head"><h2>Moves</h2><span id="history-state"></span></div>
@@ -39,4 +43,5 @@
 <script src="/public/app.js?v=20260922perf1"></script>
 <script src="/public/interaction-fixes.js?v=20260915a"></script>
 <script src="/public/drop-latency.js?v=20260915a"></script>
+<script src="/public/ui-restoration.js?v=hce-ui1"></script>
 </body></html>

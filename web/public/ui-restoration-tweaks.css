@@ -1,0 +1,3 @@
+body.ui-welcome #welcome{flex-direction:row}
+#welcome .intro-visual-panel{display:block}
+@media(max-width:760px){body.ui-welcome #welcome{flex-direction:column-reverse}}
