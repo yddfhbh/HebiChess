@@ -14,6 +14,7 @@ enum class EvalMode {
   HCE,
   NNUE,
   StockfishNNUE,
+  Stockfish14NNUE,
 };
 
 struct EvalBreakdown {

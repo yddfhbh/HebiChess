@@ -4,6 +4,9 @@
 #if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
 #include "chess/stockfish_nnue.hpp"
 #endif
+#if defined(HEBICHESS_STOCKFISH14_NNUE_EXPERIMENTAL)
+#include "chess/stockfish14_nnue.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -534,6 +537,9 @@ bool eval_mode_available(EvalMode mode) noexcept {
 #if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
   if (mode == EvalMode::StockfishNNUE) return stockfish_nnue_network_available();
 #endif
+#if defined(HEBICHESS_STOCKFISH14_NNUE_EXPERIMENTAL)
+  if (mode == EvalMode::Stockfish14NNUE) return stockfish14_nnue_network_available();
+#endif
   return false;
 }
 
@@ -547,6 +553,9 @@ std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {
   if (mode == EvalMode::NNUE) return evaluate_nnue(board);
 #if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
   if (mode == EvalMode::StockfishNNUE) return evaluate_stockfish_nnue(board);
+#endif
+#if defined(HEBICHESS_STOCKFISH14_NNUE_EXPERIMENTAL)
+  if (mode == EvalMode::Stockfish14NNUE) return evaluate_stockfish14_nnue(board);
 #endif
   return std::nullopt;
 }

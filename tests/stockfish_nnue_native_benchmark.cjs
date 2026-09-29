@@ -2,21 +2,26 @@ const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
-const [engine, stockfishNet, hebiNet] = process.argv.slice(2);
-if (!engine || !stockfishNet || !hebiNet) {
-  throw new Error('usage: node stockfish_nnue_native_benchmark.cjs <engine.exe> <stockfish.nnue> <hebinnue>');
+const [engine, stockfishNet, stockfish14Net, hebiNet] = process.argv.slice(2);
+if (!engine || !stockfishNet || !stockfish14Net) {
+  throw new Error('usage: node stockfish_nnue_native_benchmark.cjs <engine.exe> <sf19.nnue> <sf14.nnue> [hebinnue]');
 }
 
 const fen = 'r1bqkb1r/1p3ppp/p2ppn2/2n5/2BNP2P/2N1BQ2/PPP2PP1/R3K2R b KQkq - 2 9';
+const limits = ['depth 5', 'depth 6'];
 const commands = [
   'uci',
   `setoption name StockfishEvalFile value ${path.resolve(stockfishNet)}`,
-  `setoption name EvalFile value ${path.resolve(hebiNet)}`,
+  `setoption name Stockfish14EvalFile value ${path.resolve(stockfish14Net)}`,
   'isready',
 ];
-for (const mode of ['HCE', 'NNUE', 'StockfishNNUE']) {
+if (hebiNet && hebiNet !== '-') commands.splice(3, 0, `setoption name EvalFile value ${path.resolve(hebiNet)}`);
+const modes = hebiNet && hebiNet !== '-'
+  ? ['HCE', 'NNUE', 'StockfishNNUE', 'Stockfish14NNUE']
+  : ['HCE', 'StockfishNNUE', 'Stockfish14NNUE'];
+for (const mode of modes) {
   commands.push(`setoption name EvalMode value ${mode}`);
-  for (const limit of ['depth 5', 'depth 6', 'movetime 1000', 'movetime 3000', 'movetime 5000']) {
+  for (const limit of limits) {
     commands.push('ucinewgame', `position fen ${fen}`, `go ${limit}`);
   }
 }
@@ -38,7 +43,7 @@ for (const line of lines) {
     pending = [];
   }
 }
-if (chunks.length !== 15) throw new Error(`expected 15 completed searches, found ${chunks.length}\n${run.stdout}`);
+if (chunks.length !== modes.length * limits.length) throw new Error(`expected ${modes.length * limits.length} completed searches, found ${chunks.length}\n${run.stdout}`);
 
 function field(lines, sourcePrefix, name) {
   const line = lines.find(value => value.startsWith(sourcePrefix)) || '';
@@ -54,7 +59,7 @@ const rows = chunks.map((block, index) => {
   const mode = block.find(line => line.startsWith('info string eval_profile mode '))?.match(/mode (\w+)/)?.[1] || '';
   const modeRun = [...chunks.slice(0, index + 1)].filter(chunk =>
     chunk.some(line => line.startsWith(`info string eval_profile mode ${mode} `))).length - 1;
-  const label = ['depth 5', 'depth 6', 'movetime 1000', 'movetime 3000', 'movetime 5000'][modeRun];
+  const label = limits[modeRun];
   const time = block.find(line => line.startsWith('info string tm ')) || '';
   return {
     mode,
@@ -64,6 +69,11 @@ const rows = chunks.map((block, index) => {
     reached_depth: depth ? Number(depth[1]) : 0,
     nodes: field(block, 'info string nodes ', 'nodes') ?? (finalInfo.match(/\bnodes (\d+)/)?.[1] ?? null),
     qnodes: field(block, 'info string nodes ', 'qnodes') ?? (finalInfo.match(/\bqnodes (\d+)/)?.[1] ?? null),
+    qnode_percent: (() => {
+      const nodes = field(block, 'info string nodes ', 'nodes') ?? Number(finalInfo.match(/\bnodes (\d+)/)?.[1] ?? 0);
+      const qnodes = field(block, 'info string nodes ', 'qnodes') ?? Number(finalInfo.match(/\bqnodes (\d+)/)?.[1] ?? 0);
+      return nodes ? Number((100 * qnodes / nodes).toFixed(2)) : null;
+    })(),
     nps: field(block, 'info string tm ', 'nps'),
     elapsed_ms: field(block, 'info string tm ', 'elapsed'),
     evaluator_calls: field(block, 'info string eval_profile ', 'evaluator_calls'),

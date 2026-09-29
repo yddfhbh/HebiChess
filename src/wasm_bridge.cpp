@@ -17,6 +17,9 @@
 #if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
 #include "chess/stockfish_nnue.hpp"
 #endif
+#if defined(HEBICHESS_STOCKFISH14_NNUE_EXPERIMENTAL)
+#include "chess/stockfish14_nnue.hpp"
+#endif
 
 #ifdef HEBICHESS_BROWSER_WASM
 #include <emscripten.h>
@@ -111,6 +114,39 @@ int hebichess_stockfish_nnue_evaluate_fen(const char* fen) {
   if (!board) return 0;
   const auto score = hebichess::evaluate(*board, hebichess::EvalMode::StockfishNNUE);
   return score.value_or(0);
+}
+#endif
+
+#if defined(HEBICHESS_STOCKFISH14_NNUE_EXPERIMENTAL)
+int hebichess_stockfish14_nnue_load_bytes(const std::uint8_t* bytes, std::size_t size) {
+  std::string error;
+  if (!hebichess::load_stockfish14_nnue_network_bytes(bytes, size, error)) {
+    output = "info string error " + error + "\n";
+    return 0;
+  }
+  output = "info string Stockfish 14 NNUE network loaded from bytes\n";
+  return 1;
+}
+
+int hebichess_stockfish14_nnue_evaluate_fen(const char* fen) {
+  if (!fen) return 0;
+  const auto board = hebichess::Board::from_fen(fen);
+  if (!board) return 0;
+  return hebichess::evaluate(*board, hebichess::EvalMode::Stockfish14NNUE).value_or(0);
+}
+
+const char* hebichess_stockfish14_nnue_stats_json() {
+  const auto stats = hebichess::stockfish14_nnue_stats();
+  output = "{\"eval_calls\":" + std::to_string(stats.evaluation_calls) +
+           ",\"accumulator_updates\":" + std::to_string(stats.accumulator_updates) +
+           ",\"failures\":" + std::to_string(stats.failures) +
+           ",\"network_bytes\":" +
+           std::to_string(hebichess::stockfish14_nnue_network_storage_bytes()) + "}";
+  return output.c_str();
+}
+
+void hebichess_stockfish14_nnue_reset_stats() {
+  hebichess::reset_stockfish14_nnue_stats();
 }
 #endif
 

@@ -756,6 +756,9 @@ int evaluate_search_position(const Board& board, SearchContext& context,
     // adapter for each request in this reference integration.
     ++context.result->accumulator_updates;
   }
+  if (context.eval_mode == EvalMode::Stockfish14NNUE && score.has_value() &&
+      context.result != nullptr)
+    ++context.result->accumulator_updates;
   return score.value_or(evaluate_hce(board));
 }
 
