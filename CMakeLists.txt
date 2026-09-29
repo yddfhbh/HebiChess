@@ -752,3 +752,101 @@ add_test(NAME chess_qsearch_lazy_ab
     -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data/phase6-search-baseline.fen
     -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/qsearch_lazy_ab.cmake
 )
+
+# Isolated experimental Stockfish NNUE reference backend.  It is not linked
+# into the production engine or production WASM target.
+option(HEBICHESS_BUILD_STOCKFISH_NNUE_EXPERIMENTAL
+  "Build isolated Stockfish 19 NNUE reference evaluator targets" OFF)
+option(HEBICHESS_STOCKFISH_NNUE_NATIVE_AVX2
+  "Use Stockfish AVX2 kernels in experimental native targets" OFF)
+set(HEBICHESS_STOCKFISH_NNUE_TEST_NETWORK "" CACHE FILEPATH
+  "Optional local Stockfish network used by the evaluator parity test")
+set(HEBICHESS_STOCKFISH_NNUE_UPSTREAM_SOURCES
+  third_party/stockfish/src/attacks.cpp
+  third_party/stockfish/src/bitboard.cpp
+  third_party/stockfish/src/misc.cpp
+  third_party/stockfish/src/movegen.cpp
+  third_party/stockfish/src/position.cpp
+  third_party/stockfish/src/nnue/nnue_accumulator.cpp
+  third_party/stockfish/src/nnue/network.cpp
+  third_party/stockfish/src/nnue/features/half_ka_v2_hm.cpp
+  third_party/stockfish/src/nnue/features/full_threats.cpp
+  third_party/stockfish/src/nnue/features/pp_3wide.cpp
+)
+
+if(HEBICHESS_BUILD_STOCKFISH_NNUE_EXPERIMENTAL)
+  set(_stockfish_nnue_sources
+    ${HEBICHESS_STOCKFISH_NNUE_UPSTREAM_SOURCES}
+    src/chess/stockfish_nnue.cpp
+  )
+  add_executable(HebiChessStockfishNNUE
+    src/main.cpp ${CHESS_SOURCES} ${_stockfish_nnue_sources}
+  )
+  target_include_directories(HebiChessStockfishNNUE PRIVATE src third_party)
+  target_compile_definitions(HebiChessStockfishNNUE PRIVATE
+    HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL=1
+    HEBICHESS_STOCKFISH_NNUE_ONLY=1
+    NNUE_EMBEDDING_OFF=1
+  )
+  apply_hebichess_production_nnue_search(HebiChessStockfishNNUE)
+  apply_hebichess_production_evalcache(HebiChessStockfishNNUE)
+  if(HEBICHESS_STOCKFISH_NNUE_NATIVE_AVX2 AND MSVC AND CMAKE_GENERATOR_PLATFORM MATCHES "x64")
+    target_compile_options(HebiChessStockfishNNUE PRIVATE /arch:AVX2)
+    target_compile_definitions(HebiChessStockfishNNUE PRIVATE USE_AVX2=1)
+  endif()
+
+  add_executable(HebiChessStockfishNnueTest
+    tests/stockfish_nnue_reference_test.cpp ${CHESS_SOURCES} ${_stockfish_nnue_sources}
+  )
+  target_include_directories(HebiChessStockfishNnueTest PRIVATE src third_party)
+  target_compile_definitions(HebiChessStockfishNnueTest PRIVATE
+    HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL=1
+    HEBICHESS_STOCKFISH_NNUE_ONLY=1
+    HEBICHESS_STOCKFISH_NNUE_TESTS=1
+    NNUE_EMBEDDING_OFF=1
+  )
+  apply_hebichess_production_nnue_search(HebiChessStockfishNnueTest)
+  apply_hebichess_production_evalcache(HebiChessStockfishNnueTest)
+  if(HEBICHESS_STOCKFISH_NNUE_NATIVE_AVX2 AND MSVC AND CMAKE_GENERATOR_PLATFORM MATCHES "x64")
+    target_compile_options(HebiChessStockfishNnueTest PRIVATE /arch:AVX2)
+    target_compile_definitions(HebiChessStockfishNnueTest PRIVATE USE_AVX2=1)
+  endif()
+
+  if(HEBICHESS_STOCKFISH_NNUE_TEST_NETWORK AND
+     EXISTS "${HEBICHESS_STOCKFISH_NNUE_TEST_NETWORK}")
+    add_test(NAME stockfish_nnue_reference
+      COMMAND HebiChessStockfishNnueTest "${HEBICHESS_STOCKFISH_NNUE_TEST_NETWORK}")
+  endif()
+endif()
+
+option(HEBICHESS_BUILD_STOCKFISH_NNUE_WASM_NODE
+  "Build isolated scalar and WASM SIMD128 Stockfish NNUE Node candidates" OFF)
+if(HEBICHESS_BUILD_STOCKFISH_NNUE_WASM_NODE)
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "HEBICHESS_BUILD_STOCKFISH_NNUE_WASM_NODE requires Emscripten")
+  endif()
+  foreach(_variant IN ITEMS scalar simd128)
+    set(_target HebiChessStockfishNNUEWasm${_variant})
+    set(_out_dir "${CMAKE_BINARY_DIR}/stockfish-nnue-wasm-${_variant}")
+    add_executable(${_target} src/wasm_bridge.cpp ${CHESS_SOURCES}
+      ${HEBICHESS_STOCKFISH_NNUE_UPSTREAM_SOURCES} src/chess/stockfish_nnue.cpp)
+    target_include_directories(${_target} PRIVATE src third_party)
+    target_compile_definitions(${_target} PRIVATE HEBICHESS_WASM=1
+      HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL=1
+      HEBICHESS_STOCKFISH_NNUE_ONLY=1 NNUE_EMBEDDING_OFF=1)
+    apply_hebichess_production_nnue_search(${_target})
+    apply_hebichess_production_evalcache(${_target})
+    set(_simd_compile_flags "")
+    if(_variant STREQUAL "simd128")
+      target_compile_options(${_target} PRIVATE -msimd128 -msse4.1)
+      target_compile_definitions(${_target} PRIVATE USE_SSE2=1 USE_SSSE3=1 USE_SSE41=1)
+      set(_simd_compile_flags "-msimd128 -msse4.1")
+    endif()
+    set_target_properties(${_target} PROPERTIES
+      OUTPUT_NAME "hebichess-stockfish-${_variant}"
+      RUNTIME_OUTPUT_DIRECTORY "${_out_dir}"
+      SUFFIX ".js"
+      LINK_FLAGS "--no-entry -O3 ${_simd_compile_flags} ${HEBICHESS_WASM_COMMON_LINK_FLAGS} -sMODULARIZE=1 -sEXPORT_NAME=createHebiChessStockfishModule -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=['_malloc','_free','_hebichess_initialize','_hebichess_send_command','_hebichess_take_output','_hebichess_nnue_load_bytes','_hebichess_stockfish_nnue_load_bytes','_hebichess_stockfish_nnue_evaluate_fen','_hebichess_book_load_bytes','_hebichess_book_clear','_hebichess_nnue_clear','_hebichess_nnue_evaluate_fen_raw','_hebichess_game_reset','_hebichess_game_load_fen','_hebichess_game_legal_moves','_hebichess_game_apply','_hebichess_game_status'] -sEXPORTED_RUNTIME_METHODS=['ccall','HEAPU8']"
+    )
+  endforeach()
+endif()

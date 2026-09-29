@@ -12,6 +12,9 @@
 
 #include "chess/nnue.hpp"
 #include "chess/nnue_features.hpp"
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+#include "chess/stockfish_nnue.hpp"
+#endif
 #include "chess/search.hpp"
 #include "chess/time_management.hpp"
 #include "chess/uci.hpp"
@@ -87,7 +90,12 @@ void UciEngine::send_command(const std::string& line) {
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
     emit("option name BookSeed type string default 0");
-    emit("option name EvalMode type combo default HCE var HCE var NNUE");
+    std::string eval_mode_option = "option name EvalMode type combo default HCE var HCE var NNUE";
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+    eval_mode_option += " var StockfishNNUE";
+    emit("option name StockfishEvalFile type string default ");
+#endif
+    emit(eval_mode_option);
     emit("option name MaxMoveTime type spin default 0 min 0 max 600000");
 #ifndef HEBICHESS_WASM
     emit("option name EvalFile type string default ");
@@ -181,6 +189,29 @@ void UciEngine::send_command(const std::string& line) {
         emit("info string error " + error);
       }
 #endif
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+    } else if (name == "StockfishEvalFile") {
+#ifdef HEBICHESS_WASM
+      emit("info string error StockfishEvalFile filesystem paths are unavailable in WASM; use hebichess_stockfish_nnue_load_bytes");
+#else
+      std::string error;
+      if (value.empty()) {
+        clear_stockfish_nnue_network();
+        clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        if (eval_mode_ == EvalMode::StockfishNNUE) eval_mode_ = EvalMode::HCE;
+        emit("info string Stockfish NNUE network cleared");
+      } else if (load_stockfish_nnue_network(value, error)) {
+        clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        emit("info string Stockfish NNUE network loaded " + value);
+      } else {
+        emit("info string error " + error);
+      }
+#endif
+#endif
     } else if (name == "EvalMode" && value == "HCE") {
       if (eval_mode_ != EvalMode::HCE) clear_transposition_table();
       eval_mode_ = EvalMode::HCE;
@@ -198,6 +229,18 @@ void UciEngine::send_command(const std::string& line) {
         emit("info string error EvalMode NNUE unavailable: no network loaded; retaining " +
              std::string(eval_mode_ == EvalMode::HCE ? "HCE" : "NNUE"));
       }
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+    } else if (name == "EvalMode" && value == "StockfishNNUE") {
+      if (eval_mode_available(EvalMode::StockfishNNUE)) {
+        if (eval_mode_ != EvalMode::StockfishNNUE) clear_transposition_table();
+        eval_mode_ = EvalMode::StockfishNNUE;
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        emit("info string EvalMode StockfishNNUE");
+      } else {
+        emit("info string error EvalMode StockfishNNUE unavailable: load a compatible network first");
+      }
+#endif
     } else if (name == "MaxMoveTime") {
       int value_ms = 0;
       std::istringstream value_input(value);
@@ -345,6 +388,9 @@ void UciEngine::send_command(const std::string& line) {
         return;
       }
     }
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+    if (eval_mode_ == EvalMode::StockfishNNUE) reset_stockfish_nnue_stats();
+#endif
     const SearchResult result = search(board_, limits, [this](int depth, int score, std::uint64_t nodes, std::uint64_t qnodes) {
       std::ostringstream info;
       if (score > MATE_SCORE - 1000 || score < -MATE_SCORE + 1000) {
@@ -354,6 +400,23 @@ void UciEngine::send_command(const std::string& line) {
       info << " nodes " << nodes << " qnodes " << qnodes;
       output_(info.str());
     });
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+    {
+      std::ostringstream eval_profile;
+      eval_profile << "info string eval_profile mode "
+                   << (eval_mode_ == EvalMode::HCE ? "HCE" :
+                       eval_mode_ == EvalMode::NNUE ? "NNUE" : "StockfishNNUE")
+                   << " evaluator_calls " << result.evaluator_calls
+                   << " accumulator_updates " << result.accumulator_updates;
+      if (eval_mode_ == EvalMode::StockfishNNUE) {
+        const auto stats = stockfish_nnue_stats();
+        eval_profile << " sf_accumulator_transform_requests "
+                     << stats.accumulator_transform_requests
+                     << " failures " << stats.failures;
+      }
+      emit(eval_profile.str());
+    }
+#endif
 #if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
     {
       std::ostringstream cache;

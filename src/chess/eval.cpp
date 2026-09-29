@@ -1,6 +1,9 @@
 #include "chess/eval.hpp"
 #include "chess/search_profile.hpp"
 #include "chess/nnue.hpp"
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+#include "chess/stockfish_nnue.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -526,7 +529,12 @@ int evaluate_hce(const Board& board) noexcept {
 }
 
 bool eval_mode_available(EvalMode mode) noexcept {
-  return mode == EvalMode::HCE || nnue_network_available();
+  if (mode == EvalMode::HCE) return true;
+  if (mode == EvalMode::NNUE) return nnue_network_available();
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+  if (mode == EvalMode::StockfishNNUE) return stockfish_nnue_network_available();
+#endif
+  return false;
 }
 
 std::optional<int> evaluate_nnue(const Board& board) noexcept {
@@ -536,7 +544,11 @@ std::optional<int> evaluate_nnue(const Board& board) noexcept {
 std::optional<int> evaluate(const Board& board, EvalMode mode) noexcept {
   profile_add(ProfileCounter::EvaluateApiCalls);
   if (mode == EvalMode::HCE) return evaluate_hce(board);
-  return evaluate_nnue(board);
+  if (mode == EvalMode::NNUE) return evaluate_nnue(board);
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+  if (mode == EvalMode::StockfishNNUE) return evaluate_stockfish_nnue(board);
+#endif
+  return std::nullopt;
 }
 
 int evaluate(const Board& board) noexcept {

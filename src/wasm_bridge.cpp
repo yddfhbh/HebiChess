@@ -14,6 +14,9 @@
 #include "chess/nnue.hpp"
 #include "chess/uci_engine.hpp"
 #include "chess/game_state.hpp"
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+#include "chess/stockfish_nnue.hpp"
+#endif
 
 #ifdef HEBICHESS_BROWSER_WASM
 #include <emscripten.h>
@@ -90,6 +93,26 @@ void hebichess_send_command(const char* command) {
   }
   engine().send_command(command);
 }
+
+#if defined(HEBICHESS_STOCKFISH_NNUE_EXPERIMENTAL)
+int hebichess_stockfish_nnue_load_bytes(const std::uint8_t* bytes, std::size_t size) {
+  std::string error;
+  if (!hebichess::load_stockfish_nnue_network_bytes(bytes, size, error)) {
+    output = "info string error " + error + "\n";
+    return 0;
+  }
+  output = "info string Stockfish NNUE network loaded from bytes\n";
+  return 1;
+}
+
+int hebichess_stockfish_nnue_evaluate_fen(const char* fen) {
+  if (!fen) return 0;
+  const auto board = hebichess::Board::from_fen(fen);
+  if (!board) return 0;
+  const auto score = hebichess::evaluate(*board, hebichess::EvalMode::StockfishNNUE);
+  return score.value_or(0);
+}
+#endif
 
 void hebichess_game_reset() { game_state.reset(); }
 int hebichess_game_load_fen(const char* fen) { return fen && game_state.load_fen(fen) ? 1 : 0; }

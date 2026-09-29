@@ -549,6 +549,7 @@ int evaluate_search_position(const Board& board, SearchContext& context,
   profile_add(ProfileCounter::EvaluationRequests);
   profile_add(qsearch ? ProfileCounter::QsearchEvaluationRequests
                       : ProfileCounter::MainEvaluationRequests);
+  if (context.result != nullptr) ++context.result->evaluator_calls;
   const bool nnue_requested = context.eval_mode == EvalMode::NNUE &&
                               nnue_network_available();
   if (nnue_requested) {
@@ -748,7 +749,14 @@ int evaluate_search_position(const Board& board, SearchContext& context,
     ++context.nnue_counters->legacy_full_eval_count;
   }
 #endif
-  return evaluate(board, context.eval_mode).value_or(evaluate_hce(board));
+  const auto score = evaluate(board, context.eval_mode);
+  if (context.eval_mode == EvalMode::StockfishNNUE && score.has_value() &&
+      context.result != nullptr) {
+    // Stockfish's upstream accumulator stack is evaluated from the Board
+    // adapter for each request in this reference integration.
+    ++context.result->accumulator_updates;
+  }
+  return score.value_or(evaluate_hce(board));
 }
 
 const NnueAccumulator* make_child_accumulator(
@@ -773,6 +781,7 @@ const NnueAccumulator* make_child_accumulator(
       ++context.nnue_counters->en_passant_incremental_update_count;
   }
 #endif
+  if (context.result != nullptr) ++context.result->accumulator_updates;
   if (qsearch && context.result != nullptr && context.eval_mode == EvalMode::NNUE &&
       nnue_network_available()) {
     ++context.result->q_nnue_incremental_updates;
@@ -3227,10 +3236,14 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   std::optional<NnueAccumulator> root_accumulator;
   if (use_nnue_accumulator) {
     root_accumulator.emplace();
-    if (!refresh_nnue_accumulator(root, *root_accumulator)) root_accumulator.reset();
+    if (!refresh_nnue_accumulator(root, *root_accumulator)) {
+      root_accumulator.reset();
+    } else {
+      ++result.accumulator_updates;
 #if defined(HEBICHESS_NNUE_SEARCH_TEST)
-    else if (nnue_counters != nullptr) ++nnue_counters->root_full_refresh_count;
+      if (nnue_counters != nullptr) ++nnue_counters->root_full_refresh_count;
 #endif
+    }
   }
   TranspositionTable& tt = transposition_table();
   bool diagnostic_tt_active = limits.use_tt;

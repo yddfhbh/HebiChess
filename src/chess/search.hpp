@@ -122,6 +122,8 @@ struct DiagnosticIterationSummary {
 #endif
 
 struct SearchResult {
+  std::uint64_t evaluator_calls{0};
+  std::uint64_t accumulator_updates{0};
 #if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
   std::uint64_t eval_cache_inserts{0};
   std::uint64_t eval_cache_replacements{0};

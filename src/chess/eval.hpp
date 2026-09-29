@@ -8,11 +8,12 @@ namespace hebichess {
 
 constexpr int AGGRESSION_TOLERANCE_CP = 35;
 
-// Keep evaluator selection outside the search hot path.  The production
-// evaluator remains HCE until an NNUE network has been loaded.
+// Keep evaluator selection outside the search hot path. Production remains HCE;
+// neural evaluators are selectable only after their own network is loaded.
 enum class EvalMode {
   HCE,
   NNUE,
+  StockfishNNUE,
 };
 
 struct EvalBreakdown {
