@@ -91,6 +91,10 @@ async function initialize() {
   module.ccall('hebichess_initialize', null, [], []);
   diagnostic('worker engine initialized');
   emitOutput();
+  // The C++ runtime mode is independent of the Worker's bookkeeping state.
+  // Pin gameplay to HCE at startup; explicit NNUE users can load the model and
+  // switch modes through the existing Worker API afterward.
+  setEvalMode('HCE');
   publishNnue();
   await loadBook({automatic:true});
 }
