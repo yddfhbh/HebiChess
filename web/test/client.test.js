@@ -67,3 +67,19 @@ test('NNUE selection is explicit and fails closed without changing the HCE defau
   assert.match(app, /await requestedNnueLoad;await client\.setEvalMode\('NNUE'\)/);
   assert.match(app, /NNUE를 사용할 수 없습니다/);
 });
+
+test('time controls are exposed, persisted in the game snapshot, and sent to UCI', () => {
+  assert.match(html, /id="time-preset"/);
+  for (const preset of ['1\\+0', '1\\+1', '2\\+1', '3\\+0', '3\\+2', '5\\+0', '5\\+3', '10\\+0', '10\\+5', '15\\+10', '30\\+0']) assert.match(html, new RegExp(preset));
+  assert.match(html, /value="0\+0">무제한/);
+  assert.match(app, /timeControl:selectedTimeControl\(\)/);
+  assert.match(app, /function engineLimits/);
+  assert.match(app, /wtime/);
+  assert.match(app, /winc/);
+  assert.doesNotMatch(app, /engineClient\.go\(\{movetime:1500\}\)/);
+});
+
+test('spectator wording is restricted to actual spectator sessions', () => {
+  assert.match(app, /isPlayer\(\)\?'JJUGLE 대국':'관전자 모드'/);
+  assert.doesNotMatch(app, /Spectator Mode · 현재 다른 사용자가 대국 중입니다/);
+});

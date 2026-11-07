@@ -1,0 +1,7 @@
+.lobby h2 { color: var(--gold); margin-bottom: 22px; }
+.time-controls { display:flex; justify-content:center; align-items:center; gap:10px; flex-wrap:wrap; margin:0 auto 18px; }
+.time-controls label { color:#cdd4e0; font-weight:700; }
+.time-controls select, .time-controls input { background:var(--panel2); color:#f2f4f8; border:1px solid #4b566a; border-radius:6px; padding:9px; }
+.time-controls input { width:72px; }
+.lobby-actions { display:flex; justify-content:center; flex-wrap:wrap; }
+.clock { margin-left:auto; color:var(--gold); font-variant-numeric:tabular-nums; font-weight:700; min-width:44px; text-align:right; }
