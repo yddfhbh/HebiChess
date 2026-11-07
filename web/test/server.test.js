@@ -46,3 +46,28 @@ test('black-owned game starts on the engine turn without a native process',async
   assert.equal((await call('/api/engine-move',{gameId:started.data.gameId,revision:0,snapshot:{fen:'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1',moves:['e2e4'],san:['e4']}},owner)).status,200);
   const resigned=await call('/api/resign',{gameId:started.data.gameId,revision:1},owner); assert.equal(resigned.status,200); assert.equal(resigned.data.state.revision,2);
 });
+
+test('server clock expires from real elapsed time and rejects a late move',async()=>{
+  const owner=session('clock-expiry-real-time');
+  const started=await call('/api/start',{color:'white',timeControl:{minutes:1,increment:0}},owner);
+  const target=require('../server').getGames().get(started.data.gameId);
+  target.snapshot.whiteTimeMs=25;
+  target.snapshot.clockStartedAt=new Date().toISOString();
+  await new Promise(resolve=>setTimeout(resolve,75));
+  const late=await call('/api/move',{gameId:started.data.gameId,revision:0,snapshot:{fen:'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',moves:['e2e4'],san:['e4'],whiteTimeMs:60000,blackTimeMs:60000}},owner);
+  assert.equal(late.status,409);
+  assert.equal(late.data.state.result,'0-1');
+  assert.equal(late.data.state.termination,'timeout');
+  assert.equal(late.data.state.active,false);
+});
+
+test('server ignores client clocks and applies increment at the accepted move',async()=>{
+  const owner=session('clock-authority-increment');
+  const started=await call('/api/start',{color:'white',timeControl:{minutes:1,increment:1}},owner);
+  const target=require('../server').getGames().get(started.data.gameId);
+  target.snapshot.clockStartedAt=new Date(Date.now()-100).toISOString();
+  const moved=await call('/api/move',{gameId:started.data.gameId,revision:0,snapshot:{fen:'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1',moves:['e2e4'],san:['e4'],whiteTimeMs:1,blackTimeMs:1,clockStartedAt:new Date(0).toISOString()}},owner);
+  assert.equal(moved.status,200);
+  assert.ok(moved.data.whiteTimeMs>=60850 && moved.data.whiteTimeMs<=61000, JSON.stringify(moved.data));
+  assert.equal(moved.data.blackTimeMs,60000);
+});
