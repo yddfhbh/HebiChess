@@ -83,7 +83,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.7 Material Imbalance");
+    emit("id name JJUGLE Chaos v4.9.8 Conversion Lock");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -585,6 +585,13 @@ void UciEngine::send_command(const std::string& line) {
     if (result.v496_fighting_spirit)
       emit("info string v496_fighting_spirit 1 loss_cap_cp " +
            std::to_string(result.v496_loss_cap_cp));
+    if (result.v498_rook_trade_guard)
+      emit("info string v498_conversion_guard rook_trade");
+    if (result.v498_minor_gift_guard)
+      emit("info string v498_conversion_guard minor_gift");
+    if (result.v498_style_loss_cap_cp < 125)
+      emit("info string v498_style_loss_cap_cp " +
+           std::to_string(result.v498_style_loss_cap_cp));
     if (result.v497_desperation_defense)
       emit("info string v497_desperation_defense 1 reason " +
            result.v497_defense_reason + " root_static_cp " +

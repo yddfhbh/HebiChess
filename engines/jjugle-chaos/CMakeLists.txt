@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV497 LANGUAGES CXX)
+project(HebiChessChaosV498 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -85,3 +85,8 @@ add_test(NAME chaos_v496_fighting_spirit COMMAND V496FightingSpiritTest)
 add_executable(V497StrategyTest tests/v497_strategy_test.cpp $<TARGET_OBJECTS:ChessCoreDefault>)
 target_include_directories(V497StrategyTest PRIVATE src)
 add_test(NAME chaos_v497_strategy COMMAND V497StrategyTest)
+
+# V498: real-game conversion FENs plus generic rook-trade and minor-gift guards.
+add_executable(V498ConversionTest tests/v498_conversion_test.cpp $<TARGET_OBJECTS:ChessCoreDefault>)
+target_include_directories(V498ConversionTest PRIVATE src)
+add_test(NAME chaos_v498_conversion_lock COMMAND V498ConversionTest)

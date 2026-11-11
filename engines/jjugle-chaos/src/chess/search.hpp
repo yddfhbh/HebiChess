@@ -326,6 +326,9 @@ struct SearchResult {
   int reuse_prepared_depth{0};
   bool v496_fighting_spirit{false};
   int v496_loss_cap_cp{0};
+  int v498_style_loss_cap_cp{125};
+  bool v498_rook_trade_guard{false};
+  bool v498_minor_gift_guard{false};
   bool v497_desperation_defense{false};
   std::string v497_defense_reason{"none"};
   bool v49_repetition_avoided{false};
@@ -481,6 +484,11 @@ int evaluate_move_style(const Board& before, const Move& move,
                         const Board& after) noexcept;
 bool is_sacrifice_candidate(const Board& before, const Move& move,
                             const Board& after) noexcept;
+// V498 strategy diagnostics and rules (CHAOS-only root policy).
+int chaos_conversion_style_cap_cp(int objective_best) noexcept;
+bool chaos_voluntary_endgame_rook_trade(const Board& before, const Move& move);
+bool chaos_minor_pawn_king_gift(const Board& before, const Move& move);
+
 bool is_style_score_safe(int objective_score, int candidate_score,
                          int tolerance) noexcept;
 int negamax(Board& board, int depth, int alpha, int beta, int ply,

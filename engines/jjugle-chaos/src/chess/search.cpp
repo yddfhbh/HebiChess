@@ -1695,6 +1695,75 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
                             check, escape_delta) != SacrificeKind::None;
 }
 
+// V498: bounded room for style without converting a real advantage into a draw.
+// These are search-score thresholds, not static-evaluation replacements.
+int chaos_conversion_style_cap_cp(int objective_best) noexcept {
+  if (objective_best >= 700) return 0;
+  if (objective_best >= 350) return 5;
+  if (objective_best >= 200) return 8;
+  if (objective_best >= 100) return 12;
+  if (objective_best >= 80) return 20;
+  if (objective_best >= 40) return 40;
+  return 125;
+}
+
+// A voluntary rook-for-rook simplification can turn a mobile winning
+// endgame into a draw.  It is vetoed ONLY when the objective search has
+// already selected a different, objectively superior continuation.
+bool chaos_voluntary_endgame_rook_trade(const Board& before,
+                                       const Move& move) {
+  const Piece moving = before.piece_at(move.from);
+  if (moving.type != PieceType::Rook) return false;
+  for (std::uint8_t i = 0; i < 64; ++i) {
+    if (before.piece_at(Square::from_index(i)).type == PieceType::Queen)
+      return false;  // middlegame trades are evaluated normally
+  }
+  const Color side = before.side_to_move();
+  const Color other = opposite(side);
+  Board after = before;
+  after.make_move(move);
+  const bool direct_trade = before.piece_at(move.to).type == PieceType::Rook &&
+      before.piece_at(move.to).color == other;
+  if (direct_trade) {
+    // Rook captures rook and is itself legally recaptured.
+    for (const Move& reply : generate_legal_moves(after)) {
+      if (is_capture(reply) && reply.to == move.to) return true;
+    }
+    return false;
+  }
+  // A rook is offered on a square attacked by another rook; the opponent
+  // may take, after which our side has a legal recapture (38.Rc4+ ...Rxc4).
+  for (const Move& reply : generate_legal_moves(after)) {
+    if (!is_capture(reply) || reply.to != move.to ||
+        after.piece_at(reply.from).type != PieceType::Rook) continue;
+    Board after_reply = after;
+    after_reply.make_move(reply);
+    for (const Move& recapture : generate_legal_moves(after_reply)) {
+      if (is_capture(recapture) && recapture.to == move.to) return true;
+    }
+  }
+  return false;
+}
+
+// Defend against cosmetic BxP+/NxP+ moves that give away a minor piece to
+// a legal king recapture for only one pawn. Compensated combinations can
+// still be chosen by the objective search, and major-piece-for-multiple-
+// minor imbalances are not affected.
+bool chaos_minor_pawn_king_gift(const Board& before, const Move& move) {
+  const Piece own = before.piece_at(move.from);
+  const Piece victim = before.piece_at(move.to);
+  if (!(own.type == PieceType::Knight || own.type == PieceType::Bishop) ||
+      victim.type != PieceType::Pawn || !is_capture(move) ||
+      static_exchange_eval(before, move) > -150) return false;
+  Board after = before;
+  after.make_move(move);
+  for (const Move& reply : generate_legal_moves(after)) {
+    if (reply.to == move.to && is_capture(reply) &&
+        after.piece_at(reply.from).type == PieceType::King) return true;
+  }
+  return false;
+}
+
 bool is_style_score_safe(int objective_score, int candidate_score,
                          int tolerance) noexcept {
   // The V494 win-conversion guard legitimately uses tolerances below the
@@ -4005,9 +4074,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
   // sacrifice objective advantage for a cosmetic checking motif. Preserve
   // normal CHAOS freedom in approximately equal/losing positions. V497 sets
   // the style loss to zero in a materially lost, draw-seeking context.
+  // V498 CONVERSION LOCK: a positive, completed objective result is not an
+  // invitation to spend an entire pawn on an aesthetic check or rook exchange.
+  // Restrict stylistic losses smoothly as the advantage becomes concrete,
+  // retaining V496 Fighting Spirit at equality and V497 draw defense when lost.
   const int winning_style_cap_cp = limits.eval_mode != EvalMode::CHAOS ? 125 :
-      desperation_context ? 0 :
-      objective_best >= 700 ? 20 : objective_best >= 350 ? 45 : 125;
+      desperation_context ? 0 : chaos_conversion_style_cap_cp(objective_best);
+  result.v498_style_loss_cap_cp = winning_style_cap_cp;
   const auto allowed_style_loss = [winning_style_cap_cp](const RootMoveInfo& info) {
     return std::min(info.style_tolerance, winning_style_cap_cp);
   };
@@ -4370,9 +4443,13 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         return false;
       };
       if (voluntary_queen_exchange(chosen->move)) {
-        // Accept up to a pawn of search disadvantage, but only from an
-        // independently completed exact root score (no speculative bounds).
-        const int kQueenPreserveLossCp = std::min(110, winning_style_cap_cp);
+        // In the opening, allow a modest extra concession to retain queens,
+        // but never override the V498 winning-conversion cap when ahead.
+        const int queen_preservation_budget =
+            position.fullmove_number() <= 14 ? 145 : 110;
+        const int kQueenPreserveLossCp = (objective_best >= 40 || desperation_context)
+            ? std::min(queen_preservation_budget, winning_style_cap_cp)
+            : queen_preservation_budget;
         std::vector<RootMoveInfo*> alternatives;
         for (RootMoveInfo& candidate : current) {
           if (&candidate == chosen ||
@@ -4407,7 +4484,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
         // The normal PVS root search often reports only one Exact move;
         // other candidates have Upper bounds, NOT trustworthy scores.
         // Reverify at most six near-best alternatives with a threshold proof.
-        // A completed proof >= objective_best - 110 is sufficient and safe.
+        // An incomplete upper bound is NEVER treated as a proven alternative.
         if (alternatives.size() > 6) alternatives.resize(6);
         const int threshold = objective_best - kQueenPreserveLossCp;
         for (RootMoveInfo* candidate : alternatives) {
@@ -4508,7 +4585,9 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       for (const Piece& piece : position.squares())
         if (piece.type == PieceType::Queen) ++queen_count;
       // The willingness to take risks decreases as the game simplifies.
-      const int loss_cap = queen_count == 2 ? 210 : queen_count == 1 ? 100 : 40;
+      const int raw_loss_cap = queen_count == 2 ? 210 : queen_count == 1 ? 100 : 40;
+      const int loss_cap = objective_best >= 40
+          ? std::min(raw_loss_cap, winning_style_cap_cp) : raw_loss_cap;
       const int floor = std::max(-220, objective_best - loss_cap);
       RootMoveInfo* alternative = nullptr;
       bool alternative_proven = false;
@@ -4625,6 +4704,23 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       chosen = &*objective_move;
       result.v497_desperation_defense = true;
       result.v497_defense_reason = "best_defense";
+    }
+  }
+
+  // V498 ROOT CONVERSION GUARD: this does not change objective move scores.
+  // If a style-only move simplifies a promising rook endgame by voluntarily
+  // swapping rooks (or gifts a minor for one pawn to the king), defer to the
+  // independently completed objective best. Never suppress a sacrifice that
+  // the objective search itself judged strongest.
+  if (limits.eval_mode == EvalMode::CHAOS && chosen != &*objective_move &&
+      !mate_found && !root_in_check) {
+    if (objective_best >= 100 &&
+        chaos_voluntary_endgame_rook_trade(position, chosen->move)) {
+      chosen = &*objective_move;
+      result.v498_rook_trade_guard = true;
+    } else if (chaos_minor_pawn_king_gift(position, chosen->move)) {
+      chosen = &*objective_move;
+      result.v498_minor_gift_guard = true;
     }
   }
 
