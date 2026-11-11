@@ -1,0 +1,626 @@
+#include "chess/uci_engine.hpp"
+
+#include <algorithm>
+#include <charconv>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <vector>
+
+#include "chess/nnue.hpp"
+#include "chess/nnue_features.hpp"
+#include "chess/search.hpp"
+#include "chess/time_management.hpp"
+#include "chess/uci.hpp"
+
+namespace hebichess {
+namespace {
+
+#ifndef HEBICHESS_QSEARCH_TT_VARIANT
+#define HEBICHESS_QSEARCH_TT_VARIANT 0
+#endif
+
+#ifndef HEBICHESS_QSEARCH_DELTA_PRUNING
+#define HEBICHESS_QSEARCH_DELTA_PRUNING 1
+#endif
+
+#ifndef HEBICHESS_QSEARCH_TT_PROFILE
+#define HEBICHESS_QSEARCH_TT_PROFILE 0
+#endif
+
+int integer_after(std::istringstream& input) {
+  int value = 0;
+  input >> value;
+  return std::max(0, value);
+}
+
+bool parse_uint64(const std::string& text, std::uint64_t& value) {
+  if (text.empty()) return false;
+  const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+  return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+}
+
+std::uint64_t splitmix64(std::uint64_t& state) noexcept {
+  state += 0x9e3779b97f4a7c15ULL;
+  std::uint64_t z = state;
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+}  // namespace
+
+UciEngine::UciEngine(Output output) : output_(std::move(output)) {
+  reset_book_random_state();
+  position_history_keys_.push_back(board_.zobrist_key());
+}
+
+bool UciEngine::load_opening_book_bytes(std::span<const std::uint8_t> bytes) {
+  return opening_book_.load(bytes);
+}
+
+void UciEngine::clear_opening_book() noexcept { opening_book_.clear(); }
+
+bool UciEngine::opening_book_available() const noexcept { return opening_book_.available(); }
+
+void UciEngine::reset_book_random_state() noexcept {
+  // A new game gets a reproducible stream, while the game counter prevents
+  // every ucinewgame from selecting the same opening line.
+  book_random_state_ = book_seed_ +
+      (book_game_counter_ * 0x9e3779b97f4a7c15ULL);
+}
+
+std::uint64_t UciEngine::next_book_random() {
+  return splitmix64(book_random_state_);
+}
+
+void UciEngine::send_command(const std::string& line) {
+  std::istringstream input(line);
+  std::string command;
+  input >> command;
+  const auto emit = [this](const std::string& value) { output_(value); };
+  if (command == "uci") {
+    emit("id name JJUGLE Chaos v4.9.7 Material Imbalance");
+    emit("id author Hebi");
+    emit("option name OwnBook type check default false");
+    emit("option name BookFile type string default ");
+    emit("option name BookSeed type string default 0");
+    emit("option name EvalMode type combo default CHAOS var CHAOS var HCE var NNUE");
+    emit("option name MaxMoveTime type spin default 0 min 0 max 600000");
+#ifndef HEBICHESS_WASM
+    emit("option name EvalFile type string default ");
+#endif
+#ifdef HEBICHESS_STRENGTH_RUNNER
+    emit("info string strength_build qdelta_pruning "
+         + std::string(HEBICHESS_QSEARCH_DELTA_PRUNING ? "true" : "false")
+         + " qtt " + std::string(HEBICHESS_QSEARCH_TT_VARIANT == 2 ? "true" : "false")
+         + " qsearch_tt_profile "
+         + std::string(HEBICHESS_QSEARCH_TT_PROFILE ? "true" : "false"));
+#endif
+    emit("uciok");
+  } else if (command == "isready") {
+    emit("readyok");
+  } else if (command == "ucinewgame") {
+    board_ = Board::initial();
+    position_history_keys_.assign(1, board_.zobrist_key());
+    ++book_game_counter_;
+    reset_book_random_state();
+    clear_transposition_table();
+    clear_search_heuristics();
+    reuse_cache_valid_ = false;
+    reuse_hit_ = false;
+  } else if (command == "setoption") {
+    std::string name_token, name, value_token;
+    input >> name_token >> name >> value_token;
+    std::string value;
+    std::getline(input, value);
+    if (!value.empty() && value.front() == ' ') value.erase(0, 1);
+    if (name_token != "name" || value_token != "value") {
+      emit("info string error unsupported setoption");
+    } else if (name == "OwnBook" && (value == "true" || value == "false")) {
+      own_book_ = value == "true";
+      emit("info string OwnBook " + std::string(own_book_ ? "true" : "false"));
+    } else if (name == "BookSeed") {
+      std::uint64_t seed = 0;
+      if (!parse_uint64(value, seed)) {
+        emit("info string error invalid BookSeed");
+      } else {
+        book_seed_ = seed;
+        reset_book_random_state();
+        emit("info string BookSeed " + std::to_string(book_seed_));
+      }
+    } else if (name == "BookFile") {
+#ifdef HEBICHESS_WASM
+      emit("info string error BookFile filesystem paths are unavailable in WASM");
+#else
+      if (value.empty()) {
+        clear_opening_book();
+        emit("info string opening book cleared");
+      } else {
+        bool loaded = false;
+        try {
+          std::ifstream file(value, std::ios::binary | std::ios::ate);
+          if (file) {
+            const std::streamoff end = file.tellg();
+            if (end >= 0 && static_cast<std::uint64_t>(end) <= std::numeric_limits<std::size_t>::max()) {
+              std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
+              file.seekg(0, std::ios::beg);
+              loaded = static_cast<bool>(file.read(reinterpret_cast<char*>(bytes.data()), end)) &&
+                       load_opening_book_bytes(bytes);
+            }
+          }
+        } catch (const std::bad_alloc&) {
+          loaded = false;
+        }
+        if (loaded) emit("info string opening book loaded " + value);
+        else {
+          clear_opening_book();
+          emit("info string error opening book load failed " + value);
+        }
+      }
+#endif
+    } else if (name == "EvalFile") {
+#ifdef HEBICHESS_WASM
+      emit("info string error EvalFile filesystem paths are unavailable in WASM; use hebichess_nnue_load_bytes");
+#else
+      std::string error;
+      if (value.empty()) {
+        clear_nnue_network();
+        clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        if (eval_mode_ == EvalMode::NNUE) eval_mode_ = EvalMode::HCE;
+        emit("info string NNUE network cleared");
+      } else if (load_nnue_network(value, error)) {
+        clear_transposition_table();
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        emit("info string NNUE network loaded " + value);
+      } else {
+        emit("info string error " + error);
+      }
+#endif
+    } else if (name == "EvalMode" && value == "CHAOS") {
+      if (eval_mode_ != EvalMode::CHAOS) clear_transposition_table();
+      eval_mode_ = EvalMode::CHAOS;
+      reuse_cache_valid_ = false;
+      reuse_hit_ = false;
+      emit("info string EvalMode CHAOS");
+    } else if (name == "EvalMode" && value == "HCE") {
+      if (eval_mode_ != EvalMode::HCE) clear_transposition_table();
+      eval_mode_ = EvalMode::HCE;
+      reuse_cache_valid_ = false;
+      reuse_hit_ = false;
+      emit("info string EvalMode HCE");
+    } else if (name == "EvalMode" && value == "NNUE") {
+      if (nnue_network_available()) {
+        if (eval_mode_ != EvalMode::NNUE) clear_transposition_table();
+        eval_mode_ = EvalMode::NNUE;
+        reuse_cache_valid_ = false;
+        reuse_hit_ = false;
+        emit("info string EvalMode NNUE");
+      } else {
+        emit("info string error EvalMode NNUE unavailable: no network loaded; retaining " +
+             std::string(eval_mode_ == EvalMode::HCE ? "HCE" :
+                         eval_mode_ == EvalMode::CHAOS ? "CHAOS" : "NNUE"));
+      }
+    } else if (name == "MaxMoveTime") {
+      int value_ms = 0;
+      std::istringstream value_input(value);
+      if (!(value_input >> value_ms) || value_ms < 0 || value_ms > 600000) {
+        emit("info string error invalid MaxMoveTime");
+      } else {
+        max_move_time_ms_ = value_ms;
+        emit("info string MaxMoveTime " + std::to_string(max_move_time_ms_));
+      }
+    } else {
+      emit("info string error unsupported setoption");
+    }
+  } else if (command == "position") {
+    std::string kind;
+    input >> kind;
+    Board next;
+    bool valid = false;
+    if (kind == "startpos") {
+      next = Board::initial();
+      valid = true;
+    } else if (kind == "fen") {
+      std::string fen, field;
+      for (int i = 0; i < 6 && input >> field; ++i) {
+        if (!fen.empty()) fen += ' ';
+        fen += field;
+      }
+      const auto parsed = Board::from_fen(fen);
+      if (parsed) { next = *parsed; valid = true; }
+    }
+    // V49: preserve the actual game path, not just the final FEN.
+    std::vector<ZobristKey> next_history;
+    if (valid) next_history.push_back(next.zobrist_key());
+    std::string token;
+    input >> token;
+    if (valid && token == "moves") {
+      while (input >> token) {
+        const auto move = parse_uci_move(next, token);
+        if (!move) { valid = false; break; }
+        next.make_move(*move);
+        next_history.push_back(next.zobrist_key());
+      }
+    }
+    if (valid) {
+      board_ = next;
+      // Only positions since the last irreversible move are needed for
+      // a safe history-dependent root choice, but keeping at most the last
+      // 150 positions also bounds memory during very long UCI games.
+      if (next_history.size() > 150)
+        next_history.erase(next_history.begin(), next_history.end() - 150);
+      position_history_keys_ = std::move(next_history);
+      reuse_hit_ = reuse_cache_valid_ && board_.zobrist_key() == expected_position_key_;
+    }
+    else emit("info string error invalid position");
+  } else if (command == "eval") {
+    const EvalBreakdown e = evaluate_breakdown(board_, board_.side_to_move());
+    emit("material " + std::to_string(e.material));
+    emit("pst " + std::to_string(e.pst));
+    emit("mobility " + std::to_string(e.mobility));
+    emit("pawns " + std::to_string(e.pawns));
+    emit("passed_pawns " + std::to_string(e.passed_pawns));
+    emit("bishop_pair " + std::to_string(e.bishop_pair));
+    emit("rook_activity " + std::to_string(e.rook_activity));
+    emit("king_safety " + std::to_string(e.king_safety));
+    emit("king_attack " + std::to_string(e.king_attack));
+    emit("space " + std::to_string(e.space));
+    emit("threats " + std::to_string(e.threats));
+    emit("chaos_tension " + std::to_string(
+        eval_mode_ == EvalMode::CHAOS
+            ? evaluate_chaos_tension(board_, board_.side_to_move()) : 0));
+    emit("initiative " + std::to_string(e.initiative));
+    emit("chaos_preparation " + std::to_string(
+        eval_mode_ == EvalMode::CHAOS
+            ? evaluate_chaos_preparation(board_, board_.side_to_move()) : 0));
+    emit("total " + std::to_string(
+        e.total + (eval_mode_ == EvalMode::CHAOS
+            ? evaluate_chaos_tension(board_, board_.side_to_move()) +
+              evaluate_chaos_preparation(board_, board_.side_to_move()) : 0)));
+#ifdef HEBICHESS_STRENGTH_RUNNER
+  } else if (command == "fen") {
+    emit("fen " + board_.to_fen());
+  } else if (command == "legalmoves") {
+    std::ostringstream moves;
+    moves << "legalmoves";
+    for (const Move& move : generate_legal_moves(board_)) moves << ' ' << move_to_uci(move);
+    emit(moves.str());
+#endif
+  } else if (command == "features" || command == "nnueeval") {
+    if (command == "features") {
+      for (Color perspective : {Color::White, Color::Black}) {
+        const NnueFeatures features = extract_nnue_features(board_, perspective);
+        std::ostringstream features_line;
+        features_line << (perspective == Color::White ? "white" : "black");
+        for (std::size_t i = 0; i < features.size; ++i) features_line << ' ' << features.indices[i];
+        emit(features_line.str());
+      }
+    } else {
+      const auto score = evaluate_nnue(board_);
+      const auto raw_score = evaluate_nnue_network_raw(board_);
+      if (score && raw_score) {
+        std::ostringstream evaluation;
+        evaluation << "nnue " << *score << " raw " << std::setprecision(9) << *raw_score;
+        emit(evaluation.str());
+      } else emit("info string error NNUE unavailable");
+    }
+  } else if (command == "go") {
+    SearchLimits limits;
+    limits.max_depth = 64;
+    limits.eval_mode = eval_mode_;
+    limits.position_history_keys = position_history_keys_;
+    limits.reuse_hit = reuse_hit_;
+    limits.has_prepared_root_move = reuse_hit_;
+    limits.prepared_root_move = prepared_response_;
+    limits.reuse_previous_depth = prepared_depth_;
+    bool has_movetime = false;
+    int movetime = 0, wtime = 0, btime = 0, winc = 0, binc = 0;
+    std::string option;
+    while (input >> option) {
+      if (option == "depth") limits.max_depth = std::max(1, integer_after(input));
+      else if (option == "movetime") { movetime = integer_after(input); has_movetime = true; }
+      else if (option == "wtime") wtime = integer_after(input);
+      else if (option == "btime") btime = integer_after(input);
+      else if (option == "winc") winc = integer_after(input);
+      else if (option == "binc") binc = integer_after(input);
+    }
+    if (has_movetime || wtime > 0 || btime > 0) {
+      TimeBudget time_budget;
+      if (has_movetime) {
+        const int hard = max_move_time_ms_ > 0
+            ? std::min(movetime, max_move_time_ms_) : movetime;
+        time_budget = {std::min(5000, hard), std::min(20000, std::max(1, hard))};
+      } else {
+        const int remaining = board_.side_to_move() == Color::White ? wtime : btime;
+        const int increment = board_.side_to_move() == Color::White ? winc : binc;
+        time_budget = allocate_time_budget(remaining, increment, false,
+                                           board_.fullmove_number());
+      }
+      if (max_move_time_ms_ > 0) {
+        time_budget.soft_ms = std::min(time_budget.soft_ms, max_move_time_ms_);
+        time_budget.hard_ms = std::min(time_budget.hard_ms, max_move_time_ms_);
+      }
+      limits.reuse_verification_ms = std::max(350, std::min(1200, time_budget.soft_ms * 35 / 100));
+      limits.has_deadline = true;
+      const auto now = std::chrono::steady_clock::now();
+      limits.deadline = now + std::chrono::milliseconds(time_budget.hard_ms);
+      limits.has_soft_deadline = true;
+      limits.soft_deadline = now + std::chrono::milliseconds(time_budget.soft_ms);
+    }
+    const std::uint32_t fullmove = board_.fullmove_number();
+    const std::uint32_t book_ply =
+        (fullmove > 0 ? 2 * (fullmove - 1) : 0) +
+        (board_.side_to_move() == Color::Black ? 1 : 0);
+    if (own_book_ && opening_book_.available() &&
+        book_ply < opening_book_.max_book_ply()) {
+      if (const auto book_move = opening_book_.choose_move(board_, next_book_random())) {
+        Board post_move = board_;
+        post_move.make_move(*book_move);
+        if (const auto post_move_score = evaluate(post_move, eval_mode_)) {
+          std::ostringstream info;
+          info << "info score cp " << -*post_move_score << " nodes 0 string book_eval";
+          emit(info.str());
+        }
+        emit("info string book hit");
+        emit("info string tm reason book");
+        emit("bestmove " + move_to_uci(*book_move));
+        return;
+      }
+    }
+    const SearchResult result = search(board_, limits, [this](int depth, int score, std::uint64_t nodes, std::uint64_t qnodes) {
+      std::ostringstream info;
+      if (score > MATE_SCORE - 1000 || score < -MATE_SCORE + 1000) {
+        const int distance = std::max(1, (MATE_SCORE - std::abs(score) + 1) / 2);
+        info << "info depth " << depth << " score mate " << (score >= 0 ? distance : -distance);
+      } else info << "info depth " << depth << " score cp " << score;
+      info << " nodes " << nodes << " qnodes " << qnodes;
+      output_(info.str());
+    });
+#if defined(HEBICHESS_EVALCACHE_EXACT_TELEMETRY)
+    {
+      std::ostringstream cache;
+      cache << "info string evalcache_exact lookups " << result.eval_cache_lookups
+            << " hits " << result.eval_cache_hits
+            << " misses " << result.eval_cache_misses
+            << " collisions " << result.eval_cache_key_collisions
+            << " inserts " << result.eval_cache_inserts
+            << " replacements " << result.eval_cache_replacements
+            << " same_key_accumulator_mismatches "
+            << result.eval_cache_accumulator_mismatches
+            << " board_key_comparisons " << result.eval_cache_board_key_comparisons
+            << " board_key_matches " << result.eval_cache_board_key_matches
+            << " memcmp_calls " << result.eval_cache_memcmp_calls
+            << " memcmp_bytes " << result.eval_cache_memcmp_bytes
+            << " ways_examined " << result.eval_cache_ways_examined
+            << " entry_bytes " << result.eval_cache_entry_bytes
+            << " accumulator_bytes " << result.eval_cache_accumulator_bytes
+            << " storage_bytes " << result.eval_cache_storage_bytes
+            << " capacity " << result.eval_cache_capacity
+            << " ways " << result.eval_cache_ways
+            << " hit_lookup_ns " << result.eval_cache_hit_lookup_ns
+            << " miss_lookup_ns " << result.eval_cache_miss_lookup_ns
+            << " insert_ns " << result.eval_cache_insert_ns
+            << " replacement_ns " << result.eval_cache_replacement_ns
+            << " clear_ns " << result.eval_cache_clear_ns
+            << " hit_lookup_samples " << result.eval_cache_timed_hit_samples
+            << " miss_lookup_samples " << result.eval_cache_timed_miss_samples
+            << " insert_samples " << result.eval_cache_timed_insert_samples
+            << " replacement_samples " << result.eval_cache_timed_replacement_samples;
+      emit(cache.str());
+    }
+#endif
+    std::ostringstream pv_line;
+    pv_line << "info string reuse pv";
+    for (const Move& move : result.principal_variation) pv_line << ' ' << move_to_uci(move);
+    pv_line << " expected_reply "
+            << (result.principal_variation.size() >= 2 ? move_to_uci(result.principal_variation[1]) : "none")
+            << " prepared_response "
+            << (result.principal_variation.size() >= 3 ? move_to_uci(result.principal_variation[2]) : "none")
+            << " prepared_depth " << result.completed_depth;
+    emit(pv_line.str());
+    // Strength runners deliberately receive only identity and result data.
+    // The normal detailed search record remains available to normal UCI
+    // clients, while timed strength binaries compile all QTT profiling out.
+#ifndef HEBICHESS_STRENGTH_RUNNER
+    std::ostringstream tm;
+    tm << "info string tm soft " << result.time_soft_ms
+       << " hard " << result.time_hard_ms
+       << " early_budget " << (result.early_budget ? 1 : 0)
+       << " reuse_hit " << (result.reuse_hit ? 1 : 0)
+       << " reuse_verified " << (result.reuse_verified ? 1 : 0)
+       << " reuse_fast_stop " << (result.reuse_fast_stop ? 1 : 0)
+       << " target " << result.time_target_ms
+       << " elapsed " << result.time_elapsed_ms
+       << " objective_ms " << result.objective_time_ms
+       << " style_metadata_ms " << result.style_metadata_time_ms
+       << " style_verification_ms " << result.style_verification_time_ms
+       << " depth " << result.completed_depth
+       << " attempted_depth " << result.attempted_depth
+       << " nodes " << result.nodes
+       << " qnodes " << result.qnodes
+       << " qnode_percent " << (result.nodes > 0
+           ? result.qnodes * 100 / result.nodes : 0)
+       << " nps " << (result.time_elapsed_ms > 0
+           ? result.nodes * 1000 / static_cast<std::uint64_t>(result.time_elapsed_ms) : 0)
+       << " latest_iteration_ms " << result.latest_iteration_ms
+       << " confidence " << result.time_confidence
+       << " stability " << result.time_stability
+       << " swing " << result.time_score_swing
+       << " margin_known " << (result.time_margin_known ? 1 : 0)
+       << " margin " << result.time_margin
+       << " stop " << result.time_stop_reason;
+    emit(tm.str());
+    std::ostringstream stats;
+    stats << "info string nodes " << result.nodes
+          << " main_nodes " << result.main_nodes
+          << " qnodes " << result.qnodes
+          << " qdelta_prunes " << result.qdelta_prunes
+          << " tt_probes " << result.tt_probes
+          << " tt_hits " << result.tt_hits << " tt_cutoffs " << result.tt_cutoffs
+          << " see_calls " << result.see_calls
+          << " see_prunes " << result.see_prunes
+          << " killer_cutoffs " << result.killer_cutoffs
+          << " killer_uses " << result.killer_uses
+          << " history_cutoffs " << result.history_cutoffs
+          << " null_attempts " << result.null_attempts
+          << " null_cutoffs " << result.null_cutoffs
+          << " lmr_attempts " << result.lmr_attempts
+          << " lmr_researches " << result.lmr_researches
+          << " lmr_reduced_nodes " << result.lmr_reduced_search_nodes
+          << " lmr_research_nodes " << result.lmr_research_nodes
+          << " pvs_zero_window_searches " << result.pvs_zero_window_searches
+          << " pvs_researches " << result.pvs_researches
+          << " pvs_research_nodes " << result.pvs_research_nodes
+          << " root_style_candidates " << result.root_style_candidates
+          << " root_style_prefilter_skips " << result.root_style_prefilter_skips
+          << " root_style_verifications " << result.root_style_verification_searches
+          << " root_style_nodes " << result.root_style_verification_nodes
+          << " root_style_verified " << result.root_style_verified
+          << " root_style_rejected " << result.root_style_rejected
+          << " style_evaluations " << result.style_evaluations
+          << " aspiration_retries " << result.aspiration_retries
+          << " aspiration_fail_highs " << result.aspiration_fail_highs
+          << " aspiration_fail_lows " << result.aspiration_fail_lows;
+    emit(stats.str());
+    std::ostringstream qprofile;
+    qprofile << "info string qprofile"
+             << " qnodes " << result.qnodes
+             << " qnode_percent " << (result.nodes > 0 ? result.qnodes * 100 / result.nodes : 0)
+             << " stand_pat_cutoffs " << result.q_stand_pat_beta_cutoffs
+             << " in_check_nodes " << result.q_in_check_nodes
+             << " non_check_nodes " << result.q_non_check_nodes
+             << " tactical_generated " << result.q_tactical_generated
+             << " tactical_searched " << result.q_tactical_searched
+             << " see_pruned " << result.q_see_pruned
+             << " delta_pruned " << result.q_delta_pruned
+             << " stalemate_full_movegen " << result.q_stalemate_full_movegen_calls
+             << " max_qply " << result.q_max_ply
+             << " qtt_probes " << result.qtt_probes
+             << " qtt_hits " << result.qtt_hits
+             << " qtt_cutoffs " << result.qtt_cutoffs
+             << " nnue_evals " << result.q_nnue_evals
+             << " nnue_updates " << result.q_nnue_incremental_updates
+             << " check_evasion_generated " << result.q_check_evasion_generated
+             << " check_evasion_searched " << result.q_check_evasion_searched
+             << " see_calls " << result.q_see_calls
+             << " gives_check_calls " << result.q_gives_check_calls
+             << " gives_check_skipped " << result.q_gives_check_skipped
+             << " gives_check_for_see_exception " << result.q_gives_check_for_see_exception
+             << " gives_check_for_delta_exception " << result.q_gives_check_for_delta_exception
+             << " gives_check_for_ordering " << result.q_gives_check_for_ordering
+             << " evasion_check_ordering_calls " << result.q_evasion_check_ordering_calls
+             << " full_legal_movegen_calls " << result.q_full_legal_movegen_calls
+             << " tactical_movegen_calls " << result.q_tactical_movegen_calls;
+    emit(qprofile.str());
+#if HEBICHESS_SEARCH_PROFILE
+    constexpr const char* profile_names[] = {
+        "main_search", "qsearch", "evaluation", "move_generation",
+        "legal_filtering", "board_make", "board_unmake", "tt", "see",
+        "stalemate_legality", "nnue_wrapper", "accumulator_update",
+        "accumulator_refresh", "perspective_refresh", "feature_enumeration",
+        "accumulator_copy", "input_clipping", "hidden1_dense",
+        "hidden1_activation", "hidden2_dense_activation", "output_layer",
+        "output_conversion", "forward_buffer_allocation"};
+    for (std::size_t index = 0; index < std::size(profile_names); ++index) {
+      std::ostringstream profile_line;
+      profile_line << "info string profile " << profile_names[index]
+                   << " calls " << result.profile.calls[index]
+                   << " samples " << result.profile.samples[index]
+                   << " inclusive_estimated_ms " << std::fixed << std::setprecision(3)
+                   << (static_cast<double>(result.profile.estimated_ns[index]) / 1'000'000.0);
+      emit(profile_line.str());
+    }
+    constexpr const char* counter_names[] = {
+        "evaluate_api_calls", "search_eval_requests", "main_eval_requests",
+        "qsearch_eval_requests", "nnue_evaluations", "main_nnue_eval_requests",
+        "qsearch_nnue_eval_requests", "hce_evaluations", "incremental_updates",
+        "full_accumulator_rebuilds", "perspective_rebuilds", "accumulator_copies",
+        "accumulator_copy_bytes", "feature_extractions", "active_features",
+        "hidden1_invocations", "hidden2_invocations", "output_layer_invocations"};
+    std::ostringstream nnue_profile;
+    nnue_profile << "info string nnue_profile";
+    for (std::size_t index = 0; index < std::size(counter_names); ++index) {
+      nnue_profile << ' ' << counter_names[index] << ' '
+                   << result.profile.counters[index];
+    }
+    emit(nnue_profile.str());
+#endif
+#else
+    std::ostringstream strength;
+    strength << "info string strength_stats"
+             << " score_cp " << result.score
+             << " completed_depth " << result.completed_depth;
+    emit(strength.str());
+#endif
+    // v4.9.5: lightweight root-choice telemetry for actual Lichess PGN review.
+    // Reporting only: never changes the selected move or objective score.
+    if (eval_mode_ == EvalMode::CHAOS && !result.root_moves.empty()) {
+      const auto chosen = std::find_if(result.root_moves.begin(), result.root_moves.end(),
+          [&](const RootMoveInfo& info) { return info.move == result.best_move; });
+      if (chosen != result.root_moves.end()) {
+        const Piece mover = board_.piece_at(chosen->move.from);
+        const Piece victim = board_.piece_at(chosen->move.to);
+        const bool queen_trade = mover.type == PieceType::Queen &&
+            victim.type == PieceType::Queen;
+        const char* bound = chosen->bound == ScoreBound::Exact ? "exact" :
+            chosen->bound == ScoreBound::Lower ? "lower" : "upper";
+        std::ostringstream decision;
+        decision << "info string v495_choice objective_cp " << result.score
+                 << " chosen " << move_to_uci(result.best_move)
+                 << " chosen_score_cp " << chosen->search_score
+                 << " chosen_bound " << bound
+                 << " style_score " << chosen->style_score
+                 << " queen_trade " << (queen_trade ? 1 : 0)
+                 << " depth " << result.completed_depth;
+        emit(decision.str());
+      }
+    }
+    if (result.v496_fighting_spirit)
+      emit("info string v496_fighting_spirit 1 loss_cap_cp " +
+           std::to_string(result.v496_loss_cap_cp));
+    if (result.v497_desperation_defense)
+      emit("info string v497_desperation_defense 1 reason " +
+           result.v497_defense_reason + " root_static_cp " +
+           std::to_string(evaluate_chaos(board_)) + " objective_cp " +
+           std::to_string(result.score));
+    if (result.v48_queen_preserved)
+      emit("info string v48 queen_preserved exact_loss_cp_or_minus1 " +
+           std::to_string(result.v48_queen_preservation_loss_cp));
+    if (eval_mode_ == EvalMode::CHAOS) {
+      emit("info string v49 history_positions " +
+           std::to_string(position_history_keys_.size()) +
+           " repetition_avoided " +
+           std::string(result.v49_repetition_avoided ? "1" : "0") +
+           " tactical_cashout " +
+           std::string(result.v49_tactical_cashout ? "1" : "0"));
+    }
+    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && result.principal_variation.size() >= 2)
+      emit("bestmove " + move_to_uci(result.best_move) +
+           " ponder " + move_to_uci(result.principal_variation[1]));
+    else emit("bestmove " + move_to_uci(result.best_move));
+    reuse_cache_valid_ = false;
+    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && result.principal_variation.size() >= 3) {
+      Board expected = board_;
+      const UndoState chosen_undo = expected.make_move(result.principal_variation[0]);
+      (void)chosen_undo;
+      expected.make_move(result.principal_variation[1]);
+      expected_position_key_ = expected.zobrist_key();
+      expected_reply_ = result.principal_variation[1];
+      prepared_response_ = result.principal_variation[2];
+      prepared_depth_ = result.completed_depth;
+      reuse_cache_valid_ = true;
+    }
+    reuse_hit_ = false;
+  } else if (!command.empty() && command != "quit") {
+    emit("info string error unsupported command");
+  }
+}
+
+}  // namespace hebichess

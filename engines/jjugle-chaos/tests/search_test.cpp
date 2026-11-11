@@ -1,0 +1,968 @@
+#include <cassert>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+
+#include "chess/eval.hpp"
+#include "chess/search.hpp"
+#include "chess/see.hpp"
+
+using namespace hebichess;
+
+namespace {
+
+Square sq(char file, int rank) {
+  return Square::from_file_rank(static_cast<std::uint8_t>(file - 'a'),
+                                static_cast<std::uint8_t>(rank - 1));
+}
+
+bool has_move(const SearchResult& result, Square from, Square to) {
+  return result.best_move.from == from && result.best_move.to == to;
+}
+
+Move legal_move(const Board& board, const char* uci) {
+  for (const Move& move : generate_legal_moves(board)) {
+    if (move.from == sq(uci[0], uci[1] - '0') && move.to == sq(uci[2], uci[3] - '0'))
+      return move;
+  }
+  assert(false && "test move must be legal");
+  return {};
+}
+
+int style_for(Board& board, const char* uci) {
+  const Move move = legal_move(board, uci);
+  const std::string before = board.to_fen();
+  const Board position = board;
+  const UndoState undo = board.make_move(move);
+  const int style = evaluate_move_style(position, move, board);
+  board.unmake_move(move, undo);
+  assert(board.to_fen() == before);
+  return style;
+}
+
+void require(bool condition, const char* message) {
+  if (!condition) {
+    std::cerr << "search regression failure: " << message << '\n';
+    std::abort();
+  }
+}
+
+void play(Board& board, const char* uci) {
+  const auto legal = generate_legal_moves(board);
+  for (const Move& move : legal) {
+    if (move.from == sq(uci[0], uci[1] - '0') &&
+        move.to == sq(uci[2], uci[3] - '0')) {
+      board.make_move(move);
+      return;
+    }
+  }
+  assert(false && "test move must be legal");
+}
+
+void test_evaluation() {
+  const auto equal = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").value();
+  assert(evaluate_material(equal, Color::White) == 0);
+  const auto queen_up = Board::from_fen("4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1").value();
+  assert(evaluate_material(queen_up, Color::White) == 900);
+  assert(evaluate_material(queen_up, Color::Black) == -900);
+  assert(evaluate(queen_up) > 800);
+  Board black_to_move = queen_up;
+  black_to_move.set_side_to_move(Color::Black);
+  assert(evaluate(black_to_move) < -800);
+
+  const auto bishops = Board::from_fen("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").value();
+  const auto one_bishop = Board::from_fen("4k3/8/8/8/8/8/2B5/4K3 w - - 0 1").value();
+  assert(evaluate_breakdown(bishops, Color::White).bishop_pair >
+         evaluate_breakdown(one_bishop, Color::White).bishop_pair);
+  const auto isolated = Board::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1").value();
+  const auto connected = Board::from_fen("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1").value();
+  assert(evaluate_pawn_structure(isolated, Color::White) <
+         evaluate_pawn_structure(connected, Color::White));
+  const auto passed = Board::from_fen("4k3/8/8/4P3/8/8/8/4K3 w - - 0 1").value();
+  const auto advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").value();
+  assert(evaluate_passed_pawns(advanced, Color::White) > evaluate_passed_pawns(passed, Color::White));
+  const auto open_rook = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 0 1").value();
+  const auto blocked_rook = Board::from_fen("4k3/8/8/8/8/8/P7/R3K3 w - - 0 1").value();
+  assert(evaluate_rooks(open_rook, Color::White) > evaluate_rooks(blocked_rook, Color::White));
+  assert(game_phase(Board::initial()) > game_phase(passed));
+  const auto attack = Board::from_fen("4k3/3Q4/4N3/8/8/8/8/4K3 w - - 0 1").value();
+  assert(evaluate_king_attack(attack, Color::White) > 0);
+}
+
+void test_hce_backend_regression() {
+  struct RegressionCase {
+    const char* name;
+    const char* fen;
+    int expected_hce;
+  };
+  // Captured before the backend split.  These cover initial, opening,
+  // middlegame, endgame, and the Qe5 tactical position in both turn states.
+  constexpr RegressionCase cases[] = {
+      {"startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 10},
+      {"opening", "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3", 5},
+      {"middlegame", "r1bq1rk1/pp2bppp/2n1pn2/2bp4/8/1PNP1NP1/PBPPPPBP/R2Q1RK1 w - - 0 8", -131},
+      {"endgame", "8/8/3k4/8/3K4/8/4P3/8 w - - 0 1", 119},
+      {"qe5-black", "r1b1kb1r/ppp1pppp/2nq3n/8/3P4/5N2/PPP2PPP/RNBQKB1R b KQkq - 0 5", 56},
+      {"qe5-white", "r1b1kb1r/ppp1pppp/2nq3n/8/3P4/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 5", -36},
+  };
+  for (const RegressionCase& test : cases) {
+    const auto board = Board::from_fen(test.fen);
+    require(board.has_value(), test.name);
+    require(evaluate_hce(*board) == test.expected_hce, test.name);
+    require(evaluate(*board) == test.expected_hce, test.name);
+    const std::optional<int> selected = evaluate(*board, EvalMode::HCE);
+    require(selected.has_value() && *selected == test.expected_hce, test.name);
+  }
+  require(eval_mode_available(EvalMode::CHAOS), "CHAOS must be available");
+  for (const RegressionCase& test : cases) {
+    const auto board = Board::from_fen(test.fen).value();
+    const auto chaotic = evaluate(board, EvalMode::CHAOS);
+    require(chaotic.has_value(), "CHAOS evaluation must exist");
+    require(*chaotic == evaluate_hce(board) +
+                evaluate_chaos_tension(board, board.side_to_move()) +
+                evaluate_chaos_passer_potential(board, board.side_to_move()) +
+                evaluate_chaos_minor_coordination(board, board.side_to_move()) +
+                evaluate_chaos_material_imbalance(board, board.side_to_move()),
+            "CHAOS must sum its tactical, passer, imbalance and coordination components");
+    require(evaluate_chaos_tension(board, Color::White) ==
+                -evaluate_chaos_tension(board, Color::Black),
+            "CHAOS tension must be zero-sum");
+  }
+  require(evaluate_chaos_tension(Board::initial(), Color::White) == 0,
+          "initial position should not invent tactical contacts");
+    require(eval_mode_available(EvalMode::HCE), "HCE must be available");
+  require(!eval_mode_available(EvalMode::NNUE), "NNUE must be unavailable without a network");
+  require(!evaluate_nnue(Board::initial()).has_value(), "NNUE must not synthesize a score");
+  require(!evaluate(Board::initial(), EvalMode::NNUE).has_value(),
+          "NNUE mode must report unavailable");
+}
+
+void test_opening_development_and_breakdown() {
+  Board opening = Board::initial();
+  play(opening, "e2e4");
+  play(opening, "d7d5");
+  play(opening, "d2d4");
+  play(opening, "d5e4");
+  play(opening, "b1c3");
+  assert(opening.side_to_move() == Color::Black);
+
+  const auto candidate = [&](const char* uci) {
+    Board after = opening;
+    play(after, uci);
+    return evaluate_breakdown(after, Color::Black);
+  };
+  const EvalBreakdown nf6 = candidate("g8f6");
+  const EvalBreakdown nc6 = candidate("b8c6");
+  const EvalBreakdown a6 = candidate("a7a6");
+  const EvalBreakdown h6 = candidate("h7h6");
+  const EvalBreakdown g5 = candidate("g7g5");
+  std::cout << "opening black candidates (total/development/space/attack):\n"
+            << "  Nf6 " << nf6.total << '/' << nf6.development << '/' << nf6.space << '/' << nf6.king_attack << '\n'
+            << "  Nc6 " << nc6.total << '/' << nc6.development << '/' << nc6.space << '/' << nc6.king_attack << '\n'
+            << "  a6  " << a6.total << '/' << a6.development << '/' << a6.space << '/' << a6.king_attack << '\n'
+            << "  h6  " << h6.total << '/' << h6.development << '/' << h6.space << '/' << h6.king_attack << '\n'
+            << "  g5  " << g5.total << '/' << g5.development << '/' << g5.space << '/' << g5.king_attack << '\n';
+  assert(nf6.development > a6.development);
+  assert(nc6.development > h6.development);
+
+  const SearchResult result = search(opening, 2);
+  std::cout << "opening best="
+            << static_cast<char>('a' + result.best_move.from.file())
+            << (result.best_move.from.rank() + 1)
+            << static_cast<char>('a' + result.best_move.to.file())
+            << (result.best_move.to.rank() + 1) << '\n';
+  for (const RootMoveInfo& info : result.root_moves) {
+    std::cout << "  root " << static_cast<char>('a' + info.move.from.file())
+              << (info.move.from.rank() + 1)
+              << static_cast<char>('a' + info.move.to.file())
+              << (info.move.to.rank() + 1) << " score=" << info.search_score
+              << " style=" << info.style_score << '\n';
+  }
+
+  Board replay = Board::initial();
+  for (const char* move : {"e2e4", "d7d5", "d2d4", "d5e4", "b1c3", "a7a6",
+                           "c1f4", "a6a5", "f2f3", "a5a4", "f3e4", "h7h6",
+                           "g1f3", "h6h5", "f4e3", "h5h4"}) {
+    play(replay, move);
+  }
+  const EvalBreakdown repeated_flank = evaluate_breakdown(replay, Color::Black);
+  std::cout << "replayed flank line: total=" << repeated_flank.total
+            << " pawns=" << repeated_flank.pawns
+            << " development=" << repeated_flank.development
+            << " space=" << repeated_flank.space << '\n';
+  assert(repeated_flank.development < 0);
+  assert(repeated_flank.pawns < 0);
+}
+
+void test_search_and_terminal_positions() {
+  const auto mate = Board::from_fen("7k/5Q2/7K/8/8/8/8/8 w - - 0 1").value();
+  const SearchResult mate_result = search(mate, 2);
+  assert(mate_result.score > MATE_SCORE - 10);
+  assert(mate_result.nodes > 0);
+  std::cout << "example best=" << static_cast<char>('a' + mate_result.best_move.from.file())
+            << (mate_result.best_move.from.rank() + 1) << static_cast<char>('a' + mate_result.best_move.to.file())
+            << (mate_result.best_move.to.rank() + 1) << " search=" << mate_result.score;
+  for (const RootMoveInfo& info : mate_result.root_moves)
+    if (info.move == mate_result.best_move) std::cout << " style=" << info.style_score;
+  std::cout << '\n';
+  std::cout << "nodes";
+  for (int depth = 1; depth <= 4; ++depth) {
+    const SearchResult depth_result = search(mate, depth);
+    std::cout << " d" << depth << "=" << depth_result.nodes
+              << "/q" << depth_result.qnodes;
+  }
+  std::cout << '\n';
+
+  const auto hanging_queen = Board::from_fen(
+      "3rk3/8/8/8/8/8/3p4/3QK3 w - - 0 1").value();
+  const SearchResult hanging_result = search(hanging_queen, 1);
+  assert(!has_move(hanging_result, sq('d', 1), sq('d', 2)));
+  std::cout << "hanging best="
+            << static_cast<char>('a' + hanging_result.best_move.from.file())
+            << (hanging_result.best_move.from.rank() + 1)
+            << static_cast<char>('a' + hanging_result.best_move.to.file())
+            << (hanging_result.best_move.to.rank() + 1)
+            << " score=" << hanging_result.score
+            << " qnodes=" << hanging_result.qnodes << '\n';
+
+  const auto stalemate = Board::from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1").value();
+  assert(search(stalemate, 1).score == 0);
+
+  const auto queen_capture = Board::from_fen("6k1/8/8/8/8/8/3q4/3QK3 w - - 0 1").value();
+  const std::string before = queen_capture.to_fen();
+  const SearchResult capture_result = search(queen_capture, 1);
+  assert(has_move(capture_result, sq('d', 1), sq('d', 2)));
+  assert(queen_capture.to_fen() == before);
+}
+
+void test_style_and_safety_metadata() {
+  const auto board = Board::from_fen("4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1").value();
+  const SearchResult result = search(board, 1);
+  assert(!result.root_moves.empty());
+  for (const RootMoveInfo& info : result.root_moves)
+    assert(info.search_score > -MATE_SCORE);
+  assert(AGGRESSION_TOLERANCE_CP == 35);
+}
+
+void test_aggressive_style_v2() {
+  // Development is a useful first attacking step; a/h pawn moves are not.
+  Board opening = Board::initial();
+  const int development = style_for(opening, "g1f3");
+  const int flank_pawn = style_for(opening, "a2a3");
+  require(development > flank_pawn,
+          "opening development must outrank irrelevant flank pawn spam");
+
+  // Nf5 increases control of g7 around the black king and joins the attack.
+  Board preparation = Board::from_fen(
+      "6k1/5ppp/8/8/2BN4/8/5PPP/3Q1RK1 w - - 0 1").value();
+  const std::string preparation_fen = preparation.to_fen();
+  const int attack_prep = style_for(preparation, "d4f5");
+  const int retreat = style_for(preparation, "d4b3");
+  require(attack_prep > retreat,
+          "quiet attacking preparation must outrank an irrelevant retreat");
+  require(preparation.to_fen() == preparation_fen,
+          "style evaluation must restore the preparation board");
+
+  Board ring_control = preparation;
+  const Move nf5 = legal_move(ring_control, "d4f5");
+  const Move nb3 = legal_move(ring_control, "d4b3");
+  ring_control.make_move(nf5);
+  const int nf5_style = evaluate_move_style(preparation, nf5, ring_control);
+  // Rebuild the comparison child so every diagnostic has an explicit move.
+  Board retreat_child = preparation;
+  retreat_child.make_move(nb3);
+  const int nb3_style = evaluate_move_style(preparation, nb3, retreat_child);
+  require(nf5_style > nb3_style,
+          "increased king-ring control must increase style score");
+
+  // A quiet queen sortie cannot use two cheap static signals to skip four
+  // undeveloped minor pieces.  This must remain a style-layer preference, not
+  // an objective-search or FEN-specific rule.
+  Board premature_queen = Board::from_fen(
+      "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2").value();
+  const int qh5 = style_for(premature_queen, "d1h5");
+  const int bb5 = style_for(premature_queen, "f1b5");
+  const int bc4 = style_for(premature_queen, "f1c4");
+  const int nf3 = style_for(premature_queen, "g1f3");
+  require(qh5 < std::max({bb5, bc4, nf3}),
+          "premature Qh5 must rank below a normal developing move");
+  clear_transposition_table();
+  clear_search_heuristics();
+  SearchLimits early_queen_search;
+  early_queen_search.max_depth = 4;
+  early_queen_search.use_pvs = true;
+  early_queen_search.use_aspiration = true;
+  const SearchResult early_queen_result = search(premature_queen, early_queen_search);
+  require(early_queen_result.best_move != Move{sq('d', 1), sq('h', 5)},
+          "depth-4 style selector must not choose premature Qh5");
+
+  // Once all original minor squares are clear, a queen may still join a real
+  // king-side attack rather than being treated as an early sortie.
+  Board developed_attack = Board::from_fen(
+      "r2q1rk1/ppp2pp1/2npp2p/2b1p1N1/2B1P3/2NPB3/PPP2PPP/R2Q1RK1 w - - 0 9").value();
+  const int qh5_developed = style_for(developed_attack, "d1h5");
+  const int queen_retreat = style_for(developed_attack, "d1d2");
+  require(qh5_developed > queen_retreat,
+          "developed queen attack preparation must outrank an irrelevant retreat");
+
+  // The original fixture was unsafe: ...Nxh5 wins the queen.
+  // Retain it as a negative tactical-safety regression.
+  Board unsafe_queen = Board::from_fen(
+      "r2q1rk1/ppp2pp1/2nppn1p/2b1p1N1/"
+      "2B1P3/2NPB3/PPP2PPP/R2Q1RK1 w - - 0 9"
+  ).value();
+
+  Board queen_after = unsafe_queen;
+  queen_after.make_move(legal_move(unsafe_queen, "d1h5"));
+
+  const Move nxh5 = legal_move(queen_after, "f6h5");
+
+  require(static_exchange_eval(queen_after, nxh5) >= 250,
+          "the old Qh5 fixture must expose a profitable Nxh5");
+
+  const int unsafe_qh5 = style_for(unsafe_queen, "d1h5");
+  const int safe_retreat = style_for(unsafe_queen, "d1d2");
+
+  std::cout << "V4_1_SAFE_QUEEN_ATTACK=" << qh5_developed
+            << " SAFE_RETREAT=" << queen_retreat
+            << " HANGING_QUEEN=" << unsafe_qh5
+            << " HANGING_POSITION_RETREAT=" << safe_retreat
+            << '\n';
+
+  require(unsafe_qh5 < safe_retreat,
+          "a queen hanging to Nxh5 must not receive an attack bonus");
+
+  std::cout << "V4_1_QUEEN_SAFETY_TEST=PASS\n";
+
+
+  Board sacrifice = Board::from_fen(
+      "6k1/5ppp/8/8/8/3B4/5PPP/3Q2K1 w - - 0 1").value();
+  const Move bxh7 = legal_move(sacrifice, "d3h7");
+  require(static_exchange_eval(sacrifice, bxh7) < 0,
+          "Bxh7+ must be a negative SEE capture sacrifice");
+  Board sacrifice_after = sacrifice;
+  sacrifice_after.make_move(bxh7);
+  require(is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after),
+          "negative SEE checking sacrifice must be recognized");
+  std::cout << "style v2.1: Nf5=" << attack_prep << " Nb3=" << retreat
+            << " early_Qh5=" << qh5 << " Bb5=" << bb5 << " Bc4=" << bc4
+            << " Nf3=" << nf3 << " developed_Qh5=" << qh5_developed
+            << " retreat=" << queen_retreat
+            << " Bxh7+ SEE=" << static_exchange_eval(sacrifice, bxh7)
+            << " sacrifice=" << is_sacrifice_candidate(sacrifice, bxh7, sacrifice_after)
+            << '\n';
+}
+
+void test_style_v3_sacrifice_metadata() {
+  // Rxg7+ gives up a rook for a knight: the black king can recapture, while
+  // the move checks the king and expands control of its immediate ring.
+  const Board exchange = Board::from_fen(
+      "6k1/5pnp/8/7Q/8/8/8/6RK w - - 0 1").value();
+  const Move rxg7 = legal_move(exchange, "g1g7");
+  require(static_exchange_eval(exchange, rxg7) < 0,
+          "Rxg7+ must be a material-losing exchange sacrifice");
+  SearchLimits exchange_limits;
+  exchange_limits.max_depth = 2;
+  exchange_limits.use_pvs = false;
+  exchange_limits.use_aspiration = false;
+  const SearchResult exchange_result = search(exchange, exchange_limits);
+  const auto exchange_info = std::find_if(exchange_result.root_moves.begin(),
+      exchange_result.root_moves.end(), [&rxg7](const RootMoveInfo& info) {
+        return info.move == rxg7;
+      });
+  require(exchange_info != exchange_result.root_moves.end(), "Rxg7+ must be a root move");
+  require(exchange_info->sacrifice_kind == SacrificeKind::ExchangeSacrifice,
+          "only a losing RxN with concrete attack payoff is an exchange sacrifice");
+  require(exchange_info->sacrifice_candidate && exchange_info->style_tolerance == 125,
+          "exchange sacrifice must receive the capped 50cp dynamic tolerance");
+  require(is_style_score_safe(100, 55, exchange_info->style_tolerance),
+          "a concrete exchange sacrifice 45cp behind can pass the root safety gate");
+  require(is_style_score_safe(100, -25, exchange_info->style_tolerance),
+          "a concrete exchange sacrifice exactly 50cp behind can pass the root safety gate");
+  require(!is_style_score_safe(100, -26, exchange_info->style_tolerance),
+          "a 51cp-behind exchange-sacrifice control case must not pass the root safety gate");
+
+  // Bxh7+ removes a pawn adjacent to the black king, not merely a central pawn.
+  const Board shield = Board::from_fen(
+      "6k1/5ppp/8/8/8/3B4/5PPP/3Q2K1 w - - 0 1").value();
+  const Move bxh7 = legal_move(shield, "d3h7");
+  SearchLimits shield_limits;
+  shield_limits.max_depth = 2;
+  shield_limits.use_pvs = false;
+  shield_limits.use_aspiration = false;
+  const SearchResult shield_result = search(shield, shield_limits);
+  const auto shield_info = std::find_if(shield_result.root_moves.begin(),
+      shield_result.root_moves.end(), [&bxh7](const RootMoveInfo& info) {
+        return info.move == bxh7;
+      });
+  require(shield_info != shield_result.root_moves.end() && shield_info->king_break,
+          "capturing a pawn in the enemy king shield must be marked as a king break");
+  require(shield_info->style_tolerance >= 100,
+          "king shield destruction must use the capped 50cp tolerance");
+
+  // Be2-d3 is quiet, but it creates the next-move Bxh7+ motif.  The motif
+  // scan is intentionally root-only; this guards the preparation reward
+  // without putting tactical enumeration in negamax.
+  const Board preparation = Board::from_fen(
+      "6k1/5ppp/8/8/8/8/4BPPP/3Q2K1 w - - 0 1").value();
+  const Move be2d3 = legal_move(preparation, "e2d3");
+  // Search the quiet preparation first.  A later full-window root move may
+  // now correctly be Upper after a fail-low, rather than being mislabeled
+  // Exact; this metadata test intentionally examines the move's real root
+  // evaluation, not that obsolete bound-bookkeeping artifact.
+  SearchLimits preparation_limits = shield_limits;
+  preparation_limits.reuse_hit = true;
+  preparation_limits.has_prepared_root_move = true;
+  preparation_limits.prepared_root_move = be2d3;
+  const SearchResult preparation_result = search(preparation, preparation_limits);
+  const auto preparation_info = std::find_if(preparation_result.root_moves.begin(),
+      preparation_result.root_moves.end(), [&be2d3](const RootMoveInfo& info) {
+        return info.move == be2d3;
+      });
+  require(preparation_info != preparation_result.root_moves.end(),
+          "Be2-d3 must remain a root candidate");
+  // Root metadata is deliberately computed only for a score-eligible move.
+  // Correct full-window fail-low bounds can reveal that this quiet candidate
+  // is outside its root safety cap, where it must not be style-classified.
+  if (preparation_info->bound == ScoreBound::Exact &&
+      is_style_score_safe(preparation_result.score, preparation_info->search_score,
+                          preparation_info->style_tolerance)) {
+    require(preparation_info->sacrifice_preparation,
+            "eligible Be2-d3 must be recognized as Bxh7+ sacrifice preparation");
+    require(preparation_info->style_tolerance >= 100,
+            "sacrifice preparation must receive the 45cp dynamic tolerance");
+  }
+
+  // A normal opening must not manufacture a king-break exception from a pawn
+  // capture far away from the king.
+  Board central = Board::initial();
+  play(central, "e2e4");
+  play(central, "d7d5");
+  const Move exd5 = legal_move(central, "e4d5");
+  const SearchResult central_result = search(central, 2);
+  const auto central_info = std::find_if(central_result.root_moves.begin(),
+      central_result.root_moves.end(), [&exd5](const RootMoveInfo& info) {
+        return info.move == exd5;
+      });
+  require(central_info != central_result.root_moves.end() && !central_info->king_break,
+          "central pawn capture must not be classified as a king shield break");
+
+  std::cout << "style v3: Rxg7 score=" << exchange_info->search_score
+            << " objective=" << exchange_result.score
+            << " tolerance=" << exchange_info->style_tolerance
+            << " Bxh7 king_break=" << shield_info->king_break
+            << " Be2d3 preparation=" << preparation_info->sacrifice_preparation << '\n';
+}
+
+void test_quiescence_and_special_tactics() {
+  {
+    Board board = Board::initial();
+    const std::string before = board.to_fen();
+    const SearchResult result = search(board, 1);
+    assert(result.qnodes > 0);
+    assert(result.qnodes <= result.nodes);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "4k3/P7/8/8/8/8/8/4K3 w - - 0 1").value();
+    const std::string before = board.to_fen();
+    const int score = quiescence(board, -MATE_SCORE, MATE_SCORE, 0);
+    assert(score > 500);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1").value();
+    const std::string before = board.to_fen();
+    quiescence(board, -MATE_SCORE, MATE_SCORE, 0);
+    assert(board.to_fen() == before);
+  }
+  {
+    Board board = Board::from_fen(
+        "7k/6Q1/7K/8/8/8/8/8 b - - 0 1").value();
+    assert(quiescence(board, -MATE_SCORE, MATE_SCORE, 0) == -MATE_SCORE);
+  }
+}
+
+void test_pruning_flags_and_tactics() {
+  Board start = Board::initial();
+  SearchLimits baseline;
+  baseline.max_depth = 4;
+  baseline.use_tt = false;
+  baseline.use_null_move = false;
+  baseline.use_lmr = false;
+  SearchLimits optimized = baseline;
+  optimized.use_null_move = true;
+  optimized.use_lmr = true;
+  const std::string fen = start.to_fen();
+  const ZobristKey key = start.zobrist_key();
+  const SearchResult off = search(start, baseline);
+  const SearchResult on = search(start, optimized);
+  assert(start.to_fen() == fen);
+  assert(start.zobrist_key() == key);
+  assert(on.lmr_attempts > 0);
+  assert(on.null_attempts > 0);
+
+  const Board king_pawn = Board::from_fen(
+      "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").value();
+  SearchLimits zugzwang = optimized;
+  const SearchResult zugzwang_result = search(king_pawn, zugzwang);
+  assert(zugzwang_result.null_attempts == 0);
+
+  const Board mate = Board::from_fen(
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1").value();
+  const SearchResult mate_result = search(mate, optimized);
+  assert(mate_result.score > MATE_SCORE - 10);
+  const char* tactical_fens[] = {
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1", // mate in 1
+      "7k/8/6Q1/6K1/8/8/8/8 w - - 0 1", // mate threat
+      "3rk3/8/8/8/8/8/3p4/3QK3 w - - 0 1", // hanging queen
+      "4k3/8/8/8/3p4/8/3P4/4K3 w - - 0 1", // forced recapture
+      "6k1/5ppp/8/8/8/2B5/5PPP/6K1 w - - 0 1", // checking sacrifice candidate
+      "4k3/P7/8/8/8/8/8/4K3 w - - 0 1", // promotion tactic
+  };
+  for (const char* tactical_fen : tactical_fens) {
+    const Board tactical = Board::from_fen(tactical_fen).value();
+    SearchLimits tactical_limits = optimized;
+    tactical_limits.max_depth = 3;
+    const SearchResult tactical_result = search(tactical, tactical_limits);
+    assert(!generate_legal_moves(tactical).empty());
+    assert(tactical_result.best_move.from.is_valid());
+  }
+  (void)off;
+}
+
+void test_pvs_and_aspiration_equivalence() {
+  const char* fens[] = {
+      "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "r2q1rk1/ppp1bppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1",
+      "r1bq1rk1/ppp2ppp/2np4/8/2B1P3/2N1BN2/PPP2PPP/R2Q1RK1 w - - 0 1",
+      "7k/5Q2/7K/8/8/8/8/8 w - - 0 1",
+  };
+  for (const char* fen : fens) {
+    const Board board = Board::from_fen(fen).value();
+    const std::string before = board.to_fen();
+    const ZobristKey key = board.zobrist_key();
+    SearchLimits alpha_beta;
+    alpha_beta.max_depth = 4;
+    alpha_beta.use_pvs = false;
+    alpha_beta.use_aspiration = false;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult ab = search(board, alpha_beta);
+
+    SearchLimits pvs = alpha_beta;
+    pvs.use_pvs = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult pvs_result = search(board, pvs);
+    // Iterative root ordering intentionally changes the PV explored first.
+    // Each mode must return a legal, completed root result.
+    assert(pvs_result.best_move.from.is_valid());
+    assert(pvs_result.pvs_zero_window_searches > 0);
+
+    SearchLimits aspiration = alpha_beta;
+    aspiration.use_aspiration = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult aspiration_result = search(board, aspiration);
+    assert(aspiration_result.best_move.from.is_valid());
+
+    SearchLimits both = pvs;
+    both.use_aspiration = true;
+    clear_transposition_table();
+    clear_search_heuristics();
+    const SearchResult both_result = search(board, both);
+    assert(both_result.best_move.from.is_valid());
+    assert(board.to_fen() == before);
+    assert(board.zobrist_key() == key);
+  }
+}
+
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+void test_tt_tightened_window_store_bounds() {
+  // Kings only is intentionally quiet at this depth.
+  // The preloaded entries model an already-probed TT bound that narrows the
+  // caller's [-100, 100] window.  The synthetic bound is deliberately stronger
+  // than the fresh search result so this test isolates store classification:
+  // a result inside the caller window can still fail the effective one.
+  const Board board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").value();
+
+  const TtWindowStoreTestResult lower = search_with_preloaded_tt_bound_for_test(
+      board, 1, -100, 100, 50, TTBound::Lower);
+  require(lower.tt_hits == 1, "lower TT entry must be probed before search");
+  require(lower.score > -100 && lower.score < 100 && lower.score <= 50,
+          "fresh result must be inside caller window but fail the tightened alpha");
+  require(lower.stored.bound == TTBound::Upper,
+          "fail-low against TT-tightened alpha must store Upper, never Exact");
+
+  const TtWindowStoreTestResult upper = search_with_preloaded_tt_bound_for_test(
+      board, 1, -100, 100, -50, TTBound::Upper);
+  require(upper.tt_hits == 1, "upper TT entry must be probed before search");
+  require(upper.score > -100 && upper.score < 100 && upper.score >= -50,
+          "fresh result must be inside caller window but fail the tightened beta");
+  require(upper.stored.bound == TTBound::Lower,
+          "fail-high against TT-tightened beta must store Lower, never Exact");
+}
+#endif
+
+void test_qe5_hanging_queen_regression() {
+  Board board = Board::initial();
+  for (const char* move : {"e2e4", "b8c6", "d2d4", "g8h6", "e4e5", "d7d6",
+                           "e5d6", "d8d6", "g1f3"}) {
+    play(board, move);
+  }
+  const Move qe5{sq('d', 6), sq('e', 5)};
+  for (int depth = 1; depth <= 4; ++depth) {
+    clear_transposition_table();
+    clear_search_heuristics();
+    SearchLimits limits;
+    limits.max_depth = depth;
+    limits.use_pvs = true;
+    limits.use_aspiration = true;
+    const SearchResult result = search(board, limits);
+    require(result.best_move != qe5, "Qd6-e5+ must never be selected");
+    const auto qe5_info = std::find_if(result.root_moves.begin(), result.root_moves.end(),
+        [&qe5](const RootMoveInfo& info) { return info.move == qe5; });
+    require(qe5_info != result.root_moves.end(), "Qd6-e5+ must be a root candidate");
+    require(!qe5_info->style_safe,
+            "Qd6-e5+ must never pass the aggression threshold proof");
+    // V4.1 deliberately reduces the style score of a queen
+    // that the opponent can capture profitably.
+    // Keep the independent objective safety checks unchanged.
+    require(qe5_info->style_score < 20,
+            "hanging Qd6-e5+ must lose its aggressive style bonus");
+    require(qe5_info->bound == ScoreBound::Upper ||
+                qe5_info->search_score < result.score - AGGRESSION_TOLERANCE_CP,
+            "hanging queen must fail the objective safety gate");
+    if (qe5_info->bound == ScoreBound::Exact) {
+      require(qe5_info->search_score < result.score - 300,
+              "Qd6-e5+ must score far below the safe objective move");
+    }
+    std::cout << "Qe5 regression d" << depth << " best="
+              << static_cast<char>('a' + result.best_move.from.file())
+              << (result.best_move.from.rank() + 1)
+              << static_cast<char>('a' + result.best_move.to.file())
+              << (result.best_move.to.rank() + 1)
+              << " best_score=" << result.score
+              << " qe5_score=" << qe5_info->search_score
+              << " qe5_style=" << qe5_info->style_score
+              << " qe5_safe=" << qe5_info->style_safe
+              << " qe5_sacrifice=" << qe5_info->sacrifice_candidate << '\n';
+  }
+
+  clear_transposition_table();
+  clear_search_heuristics();
+  SearchLimits timed;
+  timed.max_depth = 64;
+  timed.has_deadline = true;
+  timed.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  const SearchResult timed_result = search(board, timed);
+  require(timed_result.completed_depth > 0,
+          "timed Qe5 search must retain a completed iteration");
+  require(timed_result.best_move != qe5,
+          "timed Qe5 search must not return Qd6-e5+");
+  const auto timed_qe5 = std::find_if(timed_result.root_moves.begin(),
+      timed_result.root_moves.end(), [&qe5](const RootMoveInfo& info) {
+        return info.move == qe5;
+      });
+  require(timed_qe5 != timed_result.root_moves.end(),
+          "timed Qd6-e5+ must be a root candidate");
+  require(!timed_qe5->style_safe,
+          "timed Qd6-e5+ must fail the aggression threshold proof");
+}
+
+void test_game1_bxa6_replay_and_v32_reserve() {
+  Board board = Board::initial();
+  for (const char* move : {"d2d4", "e7e6", "g1f3", "f7f5", "b1c3", "g8f6",
+                           "c1f4", "d7d5", "c3b5", "b8a6", "f3e5", "c7c6",
+                           "b5c3", "f8d6", "e2e3", "e8g8"}) {
+    play(board, move);
+  }
+  // SAN 9.Bxa6 is the f1 bishop's clear diagonal, not the bishop on f4.
+  const Move bxa6 = legal_move(board, "f1a6");
+  require(bxa6.flag == MoveFlag::Capture, "Game 1 9.Bxa6 must be a legal capture");
+  play(board, "f1a6");
+
+  const Board concrete = Board::from_fen(
+      "r2q1rk1/ppp2pp1/2nppn1p/2b1p1N1/2B1P3/2NPB3/PPP2PPP/R2Q1RK1 w - - 0 9").value();
+  SearchLimits timed;
+  timed.max_depth = 64;
+  timed.has_deadline = true;
+  timed.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  timed.style_verification_reserve_ms = 125;
+  // A network is intentionally not required for this structural regression:
+  // unavailable NNUE still falls back inside evaluate(), while the proof
+  // context must preserve the caller's selected evaluator mode.
+  timed.eval_mode = EvalMode::NNUE;
+  const SearchResult result = search(concrete, timed);
+  require(result.completed_depth > 0, "v3.2 must retain a completed objective iteration");
+  require(result.time_elapsed_ms >= result.objective_time_ms,
+          "total elapsed telemetry must include style processing");
+  require(result.style_verification_reserve_active,
+          "concrete root candidates must activate the verification reserve");
+  require(result.style_verification_reserve_ms == 125,
+          "explicit benchmark reserve must be preserved");
+  require(result.root_style_shortlist <= 4,
+          "v3.2 must bound root verification shortlist to four moves");
+  require(result.style_verification_eval_mode == EvalMode::NNUE,
+          "style threshold verification must inherit limits.eval_mode");
+
+  SearchLimits expired = timed;
+  expired.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+  const SearchResult expired_result = search(concrete, expired);
+  require(expired_result.style_evaluations == 0,
+          "an expired hard deadline must skip root style metadata");
+}
+
+
+void test_exchange_preservation_v2() {
+  // Equal queen trade: Qxd8+ Rxd8.
+  Board queen_trade = Board::from_fen(
+      "r2q3k/8/8/8/8/8/8/3QK3 w - - 0 1").value();
+
+  const Move qxd8 = legal_move(queen_trade, "d1d8");
+
+  require(static_exchange_eval(queen_trade, qxd8) == 0,
+          "queen exchange fixture must be materially even");
+
+  const int queen_trade_style = style_for(queen_trade, "d1d8");
+  const int queen_keep_style = style_for(queen_trade, "d1d3");
+
+  std::cout << "v2 queen trade=" << queen_trade_style
+            << " keep=" << queen_keep_style << '\n';
+
+  require(queen_trade_style < queen_keep_style,
+          "unnecessary queen trade must be less preferred");
+
+  // Equal bishop trade: Bxf7 Rxf7.
+  Board bishop_trade = Board::from_fen(
+      "5r1k/5b2/8/8/2B5/8/8/K7 w - - 0 1").value();
+
+  const Move bxf7 = legal_move(bishop_trade, "c4f7");
+
+  require(static_exchange_eval(bishop_trade, bxf7) == 0,
+          "bishop exchange fixture must be materially even");
+
+  const int bishop_trade_style = style_for(bishop_trade, "c4f7");
+  const int bishop_keep_style = style_for(bishop_trade, "c4b3");
+
+  std::cout << "v2 bishop trade=" << bishop_trade_style
+            << " keep=" << bishop_keep_style << '\n';
+
+  require(bishop_trade_style < bishop_keep_style,
+          "unnecessary bishop trade must be less preferred");
+
+  // An undefended bishop is a profitable capture, not a trade.
+  Board free_bishop = Board::from_fen(
+      "7k/5b2/8/8/2B5/8/8/K7 w - - 0 1").value();
+
+  require(static_exchange_eval(
+              free_bishop, legal_move(free_bishop, "c4f7")) >= 300,
+          "free bishop must remain a profitable capture");
+
+  std::cout << "STYLE_PRESERVATION_V2_TEST=PASS\n";
+}
+
+
+void test_exchange_preservation_v3_reference() {
+  Board board = Board::from_fen(
+      "r1b1k2r/pp4pp/2p1pn2/5pq1/"
+      "3B4/8/PPP1BPPP/R2QK2R w KQkq - 3 13"
+  ).value();
+
+  const Move exchange_move = legal_move(board, "d4f6");
+  require(static_exchange_eval(board, exchange_move) >= -40,
+          "reference exchange SEE must be nearly even");
+
+  const int exchange = style_for(board, "d4f6");
+  const int castle = style_for(board, "e1g1");
+
+  std::cout << "STYLE_V3_BXF6=" << exchange
+            << " STYLE_V3_CASTLE=" << castle << '\n';
+
+  require(exchange < castle,
+          "v3 must prefer preserving the bishop");
+
+  std::cout << "STYLE_PRESERVATION_V3_TEST=PASS\n";
+}
+
+
+void test_style_tactical_guard_v4() {
+  Board board = Board::from_fen(
+      "6k1/7q/8/8/8/8/3R4/5K2 w - - 0 1"
+  ).value();
+
+  // Rh2 allows ...Qxh2, winning the rook immediately.
+  const int exposed = style_for(board, "d2h2");
+  const int preserved = style_for(board, "d2d1");
+
+  std::cout << "V4_EXPOSED_ROOK_STYLE=" << exposed
+            << " V4_SAFE_ROOK_STYLE=" << preserved
+            << '\n';
+
+  require(exposed < preserved,
+          "v4 must penalize a freely capturable rook");
+
+  std::cout << "STYLE_TACTICAL_GUARD_V4_TEST=PASS\n";
+}
+
+
+void test_root_bound_safety_v42() {
+  const Board board = Board::from_fen(
+      "r6k/1R1R4/2p5/p7/P6q/8/5P2/5K2 w - - 0 37"
+  ).value();
+
+  clear_transposition_table();
+  clear_search_heuristics();
+
+  SearchLimits limits;
+  limits.max_depth = 9;
+  limits.eval_mode = EvalMode::HCE;
+  limits.use_style_v3 = true;
+
+  const SearchResult result = search(board, limits);
+
+  require(result.completed_depth == 9,
+          "v4.2 reference search must complete depth 9");
+
+  require(result.score <= -200,
+          "v4.2 reference must be objectively losing");
+
+  const auto chosen = std::find_if(
+      result.root_moves.begin(),
+      result.root_moves.end(),
+      [&result](const RootMoveInfo& info) {
+        return info.move == result.best_move;
+      });
+
+  require(chosen != result.root_moves.end(),
+          "v4.2 chosen move must exist among root moves");
+
+  require(chosen->bound == ScoreBound::Exact,
+          "losing-position style choice must have exact search score");
+
+  for (const RootMoveInfo& info : result.root_moves) {
+    if (info.bound != ScoreBound::Exact) {
+      require(!info.style_safe,
+              "unproven losing-position move must not be style-safe");
+    }
+  }
+
+  std::cout << "ROOT_BOUND_SAFETY_V42_TEST=PASS\n";
+}
+
+
+void test_root_queen_pawn_extension_v43() {
+  const Board board = Board::from_fen(
+      "k7/8/8/6p1/8/8/6Q1/6K1 w - - 0 1"
+  ).value();
+
+  SearchLimits limits;
+  limits.max_depth = 4;
+  limits.eval_mode = EvalMode::HCE;
+  limits.use_root_style_selection = false;
+
+  clear_transposition_table();
+  clear_search_heuristics();
+  limits.use_root_queen_pawn_extension = false;
+  const SearchResult baseline = search(board, limits);
+
+  clear_transposition_table();
+  clear_search_heuristics();
+  limits.use_root_queen_pawn_extension = true;
+  const SearchResult extended = search(board, limits);
+
+  require(baseline.completed_depth == 4,
+          "v4.3 baseline must complete depth 4");
+  require(extended.completed_depth == 4,
+          "v4.3 extended search must complete depth 4");
+
+  require(baseline.root_queen_pawn_extensions == 0,
+          "v4.3 disabled mode must not extend");
+  require(extended.root_queen_pawn_extensions > 0,
+          "v4.3 must extend legal queen-pawn captures");
+
+  require(board.to_fen() ==
+              "k7/8/8/6p1/8/8/6Q1/6K1 w - - 0 1",
+          "v4.3 must preserve the root board");
+
+  std::cout << "ROOT_QUEEN_PAWN_EXTENSION_V43_TEST=PASS\n";
+}
+
+
+void test_queen_danger_objective_guard_v441() {
+  const Board board = Board::from_fen(
+      "r6k/1R6/2p5/p7/P2R3P/5q2/5P2/6K1 w - - 1 35"
+  ).value();
+
+  SearchLimits limits;
+  limits.max_depth = 10;
+  limits.eval_mode = EvalMode::HCE;
+  limits.use_style_v3 = true;
+
+  clear_transposition_table();
+  clear_search_heuristics();
+
+  limits.use_root_style_selection = false;
+  const SearchResult objective = search(board, limits);
+
+  clear_transposition_table();
+  clear_search_heuristics();
+
+  limits.use_root_style_selection = true;
+  const SearchResult styled = search(board, limits);
+
+  require(objective.completed_depth == 10,
+          "v4.4.1 objective depth must complete");
+
+  require(styled.completed_depth == 10,
+          "v4.4.1 styled depth must complete");
+
+  require(objective.score <= -200,
+          "v4.4.1 reference must be losing");
+
+  require(styled.score == objective.score,
+          "style selection must preserve objective score");
+
+  require(styled.best_move == objective.best_move,
+          "queen danger must preserve objective best move");
+
+  const Move dangerous{
+      sq('d', 4), sq('d', 6)
+  };
+
+  require(styled.best_move != dangerous,
+          "v4.4.1 must reject Rd6 regression");
+
+  std::cout
+      << "QUEEN_DANGER_OBJECTIVE_GUARD_V441_TEST=PASS\n";
+}
+
+}  // namespace
+
+int main() {
+  test_evaluation();
+  test_hce_backend_regression();
+  test_opening_development_and_breakdown();
+  test_search_and_terminal_positions();
+  test_style_and_safety_metadata();
+  test_exchange_preservation_v2();
+  test_exchange_preservation_v3_reference();
+  test_style_tactical_guard_v4();
+  test_root_bound_safety_v42();
+  test_root_queen_pawn_extension_v43();
+  test_queen_danger_objective_guard_v441();
+  test_aggressive_style_v2();
+  test_style_v3_sacrifice_metadata();
+  test_quiescence_and_special_tactics();
+  test_pruning_flags_and_tactics();
+  test_pvs_and_aspiration_equivalence();
+#if defined(HEBICHESS_SEARCH_TT_WINDOW_TEST)
+  test_tt_tightened_window_store_bounds();
+#endif
+  test_qe5_hanging_queen_regression();
+  test_game1_bxa6_replay_and_v32_reserve();
+}
