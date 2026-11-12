@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -71,6 +72,13 @@ void require_bounded_search(const std::vector<std::string>& output) {
   }
   require(searched, "bounded fallback did not search");
   require(bestmove, "bounded fallback did not emit bestmove");
+}
+
+const std::string* line_starting_with(const std::vector<std::string>& output,
+                                      const std::string& prefix) {
+  for (const auto& line : output)
+    if (line.rfind(prefix, 0) == 0) return &line;
+  return nullptr;
 }
 
 std::string book_bestmove(const Board& board, const std::vector<std::uint8_t>& bytes,
@@ -302,6 +310,33 @@ void test_uci_max_move_time_option() {
   assert(has_line(output, "info string error invalid MaxMoveTime"));
 }
 
+void test_uci_clock_limits_reach_adaptive_time_management() {
+  std::vector<std::string> output;
+  UciEngine engine([&output](const std::string& line) { output.push_back(line); });
+  // Keep this regression quick while still exercising the clock path.  If the
+  // Worker regresses to `movetime 1`, this command would not produce the
+  // 100-ms bounded budget reported below.
+  engine.send_command("setoption name MaxMoveTime value 100");
+  engine.send_command("position startpos");
+  engine.send_command("go wtime 60000 btime 30000 winc 1000 binc 2000");
+  const std::string* tm = line_starting_with(output, "info string tm ");
+  require(tm != nullptr, "clock search did not emit time-management telemetry");
+  const std::regex soft_pattern("\\bsoft ([0-9]+) hard ([0-9]+)");
+  std::smatch soft_match;
+  require(std::regex_search(*tm, soft_match, soft_pattern),
+          "clock telemetry did not contain soft/hard budget");
+  const int soft = std::stoi(soft_match[1]);
+  const int hard = std::stoi(soft_match[2]);
+  require(soft >= 50 && soft <= 100 && hard >= soft && hard <= 100,
+          "clock limits were not applied before MaxMoveTime");
+  require(tm->find("elapsed ") != std::string::npos,
+          "clock search did not report actual response elapsed time");
+  require(tm->find("target ") != std::string::npos,
+          "clock search did not report adaptive target");
+  require(line_starting_with(output, "bestmove ") != nullptr,
+          "clock search did not emit bestmove");
+}
+
 void test_pv_ponder_and_expected_reply_reuse() {
   std::vector<std::string> output;
   UciEngine engine([&output](const std::string& line) { output.push_back(line); });
@@ -323,6 +358,11 @@ void test_pv_ponder_and_expected_reply_reuse() {
   require(std::any_of(output.begin(), output.end(), [](const std::string& line) {
     return line.find("reuse_hit 1") != std::string::npos;
   }), "expected reply did not produce reuse_hit");
+  require(std::any_of(output.begin(), output.end(), [](const std::string& line) {
+    return line.rfind("info string reuse pv ", 0) == 0 &&
+           line.find("prepared_response ") != std::string::npos &&
+           line.find("prepared_depth ") != std::string::npos;
+  }), "reuse search did not report prepared response telemetry");
 
   Board after_best = Board::initial();
   const Move first = *parse_uci_move(after_best, bestmove);
@@ -345,6 +385,7 @@ int main() {
   test_serialization_and_timeout_integrity();
   test_eval_breakdown_uci_output();
   test_uci_max_move_time_option();
+  test_uci_clock_limits_reach_adaptive_time_management();
   test_pv_ponder_and_expected_reply_reuse();
   test_uci_opening_book_path();
 }

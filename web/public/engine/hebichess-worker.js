@@ -20,14 +20,41 @@ function parseInfo(line) {
   return {scoreType:score?.[1]||null, cp:score?.[1]==='cp'?Number(score[2]):null, mate:score?.[1]==='mate'?Number(score[2]):null, depth:depth?Number(depth[1]):null, nodes:nodes?Number(nodes[1]):null};
 }
 
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : null;
+}
+
+// Keep the browser bridge faithful to the UCI clock contract.  In particular,
+// zero is a valid clock value and must not be replaced with the old one-ms
+// fallback.  This is deliberately a small pure helper so the command contract
+// can be regression-tested without loading the WASM module.
+function buildGoCommand(message = {}) {
+  const depth = nonNegativeInteger(message.depth);
+  if (depth !== null) return `go depth ${Math.max(1, depth)}`;
+  const movetime = nonNegativeInteger(message.movetime);
+  if (movetime !== null) return `go movetime ${Math.max(1, movetime)}`;
+  const clockFields = ['wtime', 'btime', 'winc', 'binc'];
+  const clock = clockFields
+    .map(field => [field, nonNegativeInteger(message[field])])
+    .filter(([, value]) => value !== null)
+    .flatMap(([field, value]) => [field, String(value)]);
+  if (clock.length) return `go ${clock.join(' ')}`;
+  return 'go movetime 1';
+}
+
+self.hebichessBuildGoCommand = buildGoCommand;
+
 self.hebichessOutputLine = line => {
   const context = liveContext;
   if (line.startsWith('info ')) {
     diagnostic('info received', {line, parsed:parseInfo(line), ...context});
     self.postMessage({type:'info', line, live:true, ...context});
   } else if (line.startsWith('bestmove ')) {
-    diagnostic('bestmove received by worker', {line, ...context});
-    self.postMessage({type:'bestmove', move:line.split(/\s+/)[1], live:true, ...context});
+    const responseLatencyMs = context.searchStartedAt == null
+      ? null : Math.max(0, performance.now() - context.searchStartedAt);
+    diagnostic('bestmove received by worker', {line, responseLatencyMs, ...context});
+    self.postMessage({type:'bestmove', move:line.split(/\s+/)[1], live:true, responseLatencyMs, ...context});
   } else self.postMessage({type:'output', line, live:true, ...context});
 };
 
@@ -225,8 +252,8 @@ self.onmessage = async ({data:message = {}}) => {
       self.postMessage({type:'game-state', action:'apply', ...result, legalMoves:result.ok?JSON.parse(module.ccall('hebichess_game_legal_moves','string',[],[])):[]});
     } else if (message.type === 'go') {
       if (evalMode === 'NNUE' && nnueState !== 'nnue-ready') throw Error('NNUE search blocked: model is not ready');
-      const limits = Number.isFinite(Number(message.depth)) ? `depth ${Math.max(1, Number(message.depth))}` : `movetime ${Math.max(1, Number(message.movetime) || 1)}`;
-      command(`go ${limits}`, {gameId:message.gameId, searchId:message.searchId});
+      const searchStartedAt = performance.now();
+      command(buildGoCommand(message), {gameId:message.gameId, searchId:message.searchId, searchStartedAt});
     } else if (message.type === 'command') {
       const text = String(message.command || '');
       if (/^setoption name EvalMode value (HCE|NNUE)$/i.test(text)) setEvalMode(text.slice(text.lastIndexOf(' ') + 1).toUpperCase());
