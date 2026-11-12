@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV498 LANGUAGES CXX)
+project(HebiChessChaosV499 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -90,3 +90,8 @@ add_test(NAME chaos_v497_strategy COMMAND V497StrategyTest)
 add_executable(V498ConversionTest tests/v498_conversion_test.cpp $<TARGET_OBJECTS:ChessCoreDefault>)
 target_include_directories(V498ConversionTest PRIVATE src)
 add_test(NAME chaos_v498_conversion_lock COMMAND V498ConversionTest)
+
+# V499: real-game history, repeated queen/knight tempo guard, UCI propagation.
+add_executable(V499DevelopmentTest tests/v499_development_test.cpp $<TARGET_OBJECTS:ChessCoreDefault>)
+target_include_directories(V499DevelopmentTest PRIVATE src)
+add_test(NAME chaos_v499_development_first COMMAND V499DevelopmentTest)

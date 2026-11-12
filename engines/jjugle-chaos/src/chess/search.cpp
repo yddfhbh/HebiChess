@@ -1695,6 +1695,31 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
                             check, escape_delta) != SacrificeKind::None;
 }
 
+// V499 DEVELOPMENT-FIRST: prevent a style bonus from overriding an already
+// completed, objectively better move with an avoidable second queen/knight
+// move during development. An attacked piece must be allowed to escape;
+// checks, captures and forced tactical continuations are left to objective
+// search. This examines only ACTUAL moves played, never hypothetical PVs.
+bool chaos_opening_repeated_piece_move(const Board& before, const Move& move,
+                                       const std::vector<Move>& recent_game_moves) {
+  if (recent_game_moves.size() < 2 || before.fullmove_number() > 16 ||
+      game_phase(before) < 18 || !is_quiet_move(move)) return false;
+  const Color side = before.side_to_move();
+  const Piece moving = before.piece_at(move.from);
+  if (moving.is_empty() || moving.color != side ||
+      (moving.type != PieceType::Queen && moving.type != PieceType::Knight))
+    return false;
+  const Move previous_own = recent_game_moves[recent_game_moves.size() - 2];
+  if (previous_own.to != move.from) return false;
+  if (undeveloped_minor_count(before, side) < 2) return false;
+  // The opponent may have attacked the just-developed piece. A retreat is
+  // then often a necessary defense, NOT pointless tempo loss.
+  if (before.is_square_attacked(move.from, opposite(side))) return false;
+  Board probe = before;
+  if (gives_check(probe, move)) return false;
+  return true;
+}
+
 // V498: bounded room for style without converting a real advantage into a draw.
 // These are search-score thresholds, not static-evaluation replacements.
 int chaos_conversion_style_cap_cp(int objective_best) noexcept {
@@ -4722,6 +4747,25 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       chosen = &*objective_move;
       result.v498_minor_gift_guard = true;
     }
+  }
+
+  // V499 DEVELOPMENT-FIRST: the ordinary root search already identified a
+  // stronger move in these opening positions. Reject only the STYLE layer's
+  // attempt to replace it by another non-forced move by the same queen/knight.
+  // When objective search itself selects that move, it remains legal and is
+  // never overridden. This retains check/sacrifice tactics and all later
+  // winning-conversion/draw protections, without any new score or TT bias.
+  if (limits.eval_mode == EvalMode::CHAOS && !mate_found && !root_in_check &&
+      !desperation_context && chosen != &*objective_move &&
+      chaos_opening_repeated_piece_move(position, chosen->move,
+                                         limits.recent_game_moves) &&
+      !chaos_opening_repeated_piece_move(position, objective_move->move,
+                                          limits.recent_game_moves)) {
+    result.v499_opening_tempo_guard = true;
+    const Piece punished = position.piece_at(chosen->move.from);
+    result.v499_tempo_reason = punished.type == PieceType::Queen
+        ? "repeated_queen" : "repeated_knight";
+    chosen = &*objective_move;
   }
 
   // V491+V494: no unverified capture override and no unconditional

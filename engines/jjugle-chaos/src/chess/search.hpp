@@ -329,6 +329,8 @@ struct SearchResult {
   int v498_style_loss_cap_cp{125};
   bool v498_rook_trade_guard{false};
   bool v498_minor_gift_guard{false};
+  bool v499_opening_tempo_guard{false};
+  std::string v499_tempo_reason{"none"};
   bool v497_desperation_defense{false};
   std::string v497_defense_reason{"none"};
   bool v49_repetition_avoided{false};
@@ -417,6 +419,9 @@ struct SearchLimits {
   int max_depth{1};
   // V49: history supplied by UCI; empty in standalone search tests.
   std::vector<ZobristKey> position_history_keys{};
+  // V499: last actual UCI game moves, distinct from the search's hypothetical PV.
+  // Needed to detect non-forced consecutive moves by the SAME queen/knight.
+  std::vector<Move> recent_game_moves{};
   bool has_deadline{false};
   std::chrono::steady_clock::time_point deadline{};
   bool has_soft_deadline{false};
@@ -488,6 +493,10 @@ bool is_sacrifice_candidate(const Board& before, const Move& move,
 int chaos_conversion_style_cap_cp(int objective_best) noexcept;
 bool chaos_voluntary_endgame_rook_trade(const Board& before, const Move& move);
 bool chaos_minor_pawn_king_gift(const Board& before, const Move& move);
+// V499: early-game avoidable second move by an already-developed queen/knight.
+// This is a root/book style guard, not a ban on the objective best move.
+bool chaos_opening_repeated_piece_move(const Board& before, const Move& move,
+                                       const std::vector<Move>& recent_game_moves);
 
 bool is_style_score_safe(int objective_score, int candidate_score,
                          int tolerance) noexcept;

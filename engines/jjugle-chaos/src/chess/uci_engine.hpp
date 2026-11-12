@@ -31,6 +31,7 @@ class UciEngine {
 
   Board board_{Board::initial()};
   std::vector<ZobristKey> position_history_keys_{};
+  std::vector<Move> recent_game_moves_{};
   EvalMode eval_mode_{EvalMode::CHAOS};
   int max_move_time_ms_{0};
   OpeningBook opening_book_;

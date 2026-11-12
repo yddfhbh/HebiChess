@@ -83,7 +83,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.8 Conversion Lock");
+    emit("id name JJUGLE Chaos v4.9.9 Development First");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -106,6 +106,7 @@ void UciEngine::send_command(const std::string& line) {
   } else if (command == "ucinewgame") {
     board_ = Board::initial();
     position_history_keys_.assign(1, board_.zobrist_key());
+    recent_game_moves_.clear();
     ++book_game_counter_;
     reset_book_random_state();
     clear_transposition_table();
@@ -238,6 +239,7 @@ void UciEngine::send_command(const std::string& line) {
     }
     // V49: preserve the actual game path, not just the final FEN.
     std::vector<ZobristKey> next_history;
+    std::vector<Move> next_moves;
     if (valid) next_history.push_back(next.zobrist_key());
     std::string token;
     input >> token;
@@ -247,6 +249,7 @@ void UciEngine::send_command(const std::string& line) {
         if (!move) { valid = false; break; }
         next.make_move(*move);
         next_history.push_back(next.zobrist_key());
+        next_moves.push_back(*move);
       }
     }
     if (valid) {
@@ -257,6 +260,9 @@ void UciEngine::send_command(const std::string& line) {
       if (next_history.size() > 150)
         next_history.erase(next_history.begin(), next_history.end() - 150);
       position_history_keys_ = std::move(next_history);
+      if (next_moves.size() > 16)
+        next_moves.erase(next_moves.begin(), next_moves.end() - 16);
+      recent_game_moves_ = std::move(next_moves);
       reuse_hit_ = reuse_cache_valid_ && board_.zobrist_key() == expected_position_key_;
     }
     else emit("info string error invalid position");
@@ -316,6 +322,7 @@ void UciEngine::send_command(const std::string& line) {
     limits.max_depth = 64;
     limits.eval_mode = eval_mode_;
     limits.position_history_keys = position_history_keys_;
+    limits.recent_game_moves = recent_game_moves_;
     limits.reuse_hit = reuse_hit_;
     limits.has_prepared_root_move = reuse_hit_;
     limits.prepared_root_move = prepared_response_;
@@ -360,7 +367,9 @@ void UciEngine::send_command(const std::string& line) {
         (board_.side_to_move() == Color::Black ? 1 : 0);
     if (own_book_ && opening_book_.available() &&
         book_ply < opening_book_.max_book_ply()) {
-      if (const auto book_move = opening_book_.choose_move(board_, next_book_random())) {
+      if (const auto book_move = opening_book_.choose_move(board_, next_book_random());
+          book_move && !(eval_mode_ == EvalMode::CHAOS &&
+              chaos_opening_repeated_piece_move(board_, *book_move, recent_game_moves_))) {
         Board post_move = board_;
         post_move.make_move(*book_move);
         if (const auto post_move_score = evaluate(post_move, eval_mode_)) {
@@ -585,6 +594,8 @@ void UciEngine::send_command(const std::string& line) {
     if (result.v496_fighting_spirit)
       emit("info string v496_fighting_spirit 1 loss_cap_cp " +
            std::to_string(result.v496_loss_cap_cp));
+    if (result.v499_opening_tempo_guard)
+      emit("info string v499_opening_tempo_guard " + result.v499_tempo_reason);
     if (result.v498_rook_trade_guard)
       emit("info string v498_conversion_guard rook_trade");
     if (result.v498_minor_gift_guard)
@@ -608,12 +619,12 @@ void UciEngine::send_command(const std::string& line) {
            " tactical_cashout " +
            std::string(result.v49_tactical_cashout ? "1" : "0"));
     }
-    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && result.principal_variation.size() >= 2)
+    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && !result.v499_opening_tempo_guard && result.principal_variation.size() >= 2)
       emit("bestmove " + move_to_uci(result.best_move) +
            " ponder " + move_to_uci(result.principal_variation[1]));
     else emit("bestmove " + move_to_uci(result.best_move));
     reuse_cache_valid_ = false;
-    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && result.principal_variation.size() >= 3) {
+    if (!result.v48_queen_preserved && !result.v49_repetition_avoided && !result.v496_fighting_spirit && !result.v497_desperation_defense && !result.v499_opening_tempo_guard && result.principal_variation.size() >= 3) {
       Board expected = board_;
       const UndoState chosen_undo = expected.make_move(result.principal_variation[0]);
       (void)chosen_undo;
