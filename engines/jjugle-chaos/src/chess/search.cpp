@@ -1720,6 +1720,80 @@ bool chaos_opening_repeated_piece_move(const Board& before, const Move& move,
   return true;
 }
 
+// V4910 KING-THREAT TRIAGE: evaluate a *real*, immediate mate-in-one
+// threat after a quiet queen move. Threats are not forced mates: the opponent
+// gets its full legal reply set. A move is admitted only if most replies allow
+// a mate in one, few genuine defenses exist, and the queen isn't freely lost.
+// This is a root-only CHAOS resource in objectively lost positions; it never
+// injects artificial scores into minimax, QSearch, evaluation, or TT bounds.
+struct ChaosKingThreat {
+  int legal_replies{0};
+  int mate_allowed_replies{0};
+  int defenses{0};
+};
+
+bool chaos_mate_in_one(Board& position, Color attacker,
+                       StyleCancellation& cancellation) {
+  if (cancellation.should_cancel()) return false;
+  for (const Move& move : generate_legal_moves(position)) {
+    if (cancellation.should_cancel()) return false;
+    const UndoState undo = position.make_move(move);
+    const Square king = position.find_king(opposite(attacker));
+    const bool mate = king.is_valid() &&
+        position.is_square_attacked(king, attacker) &&
+        generate_legal_moves(position).empty();
+    position.unmake_move(move, undo);
+    if (mate) return true;
+  }
+  return false;
+}
+
+std::optional<ChaosKingThreat> chaos_forcing_queen_mate_threat(
+    const Board& before, const Move& move, StyleCancellation& cancellation) {
+  if (cancellation.should_cancel()) return std::nullopt;
+  const Piece mover = before.piece_at(move.from);
+  if (mover.type != PieceType::Queen ||
+      mover.color != before.side_to_move() || !is_quiet_move(move))
+    return std::nullopt;
+  const Color attacker = before.side_to_move();
+  const Color defender = opposite(attacker);
+  const Square king = before.find_king(defender);
+  if (!king.is_valid() || chebyshev_distance(king, move.to) > 3)
+    return std::nullopt;
+  Board after = before;
+  after.make_move(move);
+  if (after.is_square_attacked(king, attacker)) return std::nullopt;
+  const std::vector<Move> replies = generate_legal_moves(after);
+  if (replies.size() < 12 || replies.size() > 90) return std::nullopt;
+  // In particular, reject Qf6? Rxf6 from the real game. Threat proximity
+  // is not sufficient compensation for giving up a queen to a simple capture.
+  for (const Move& reply : replies) {
+    if (cancellation.should_cancel()) return std::nullopt;
+    if (is_capture(reply) && reply.to == move.to &&
+        static_exchange_eval(after, reply) >= 250)
+      return std::nullopt;
+  }
+  Board null_probe = after;
+  null_probe.make_null_move();
+  if (!chaos_mate_in_one(null_probe, attacker, cancellation)) return std::nullopt;
+  if (cancellation.should_cancel()) return std::nullopt;
+  ChaosKingThreat signal;
+  signal.legal_replies = static_cast<int>(replies.size());
+  for (const Move& reply : replies) {
+    if (cancellation.should_cancel()) return std::nullopt;
+    const UndoState undo = after.make_move(reply);
+    const bool allows_mate = chaos_mate_in_one(after, attacker, cancellation);
+    after.unmake_move(reply, undo);
+    if (allows_mate) ++signal.mate_allowed_replies;
+    else if (++signal.defenses > 5) return std::nullopt;
+  }
+  // Many legal opponent responses must fail immediately. This is not proof
+  // of forced mate, only a tactical pressure signal for further triage.
+  if (signal.mate_allowed_replies * 4 < signal.legal_replies * 3)
+    return std::nullopt;
+  return signal;
+}
+
 // V498: bounded room for style without converting a real advantage into a draw.
 // These are search-score thresholds, not static-evaluation replacements.
 int chaos_conversion_style_cap_cp(int objective_best) noexcept {
@@ -4766,6 +4840,81 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     result.v499_tempo_reason = punished.type == PieceType::Queen
         ? "repeated_queen" : "repeated_knight";
     chosen = &*objective_move;
+  }
+
+  // V4910: An immediate Qg7#-type threat that nearly every legal opponent
+  // reply loses to is a tangible counterattack, even when it does not give
+  // check now. Don't assume a forced mate: prefer it only after a completed
+  // score-floor proof, or, while already heavily lost, to replace a simple
+  // pawn-grab that hangs a rook. A verified immediate draw is never replaced.
+  if (limits.eval_mode == EvalMode::CHAOS && objective_best <= -200 &&
+      !mate_found && !root_in_check &&
+      (!result.v497_desperation_defense ||
+       result.v497_defense_reason == "best_defense") &&
+      !style_cancellation.should_cancel()) {
+    struct Candidate {
+      RootMoveInfo* info;
+      ChaosKingThreat threat;
+    };
+    std::vector<Candidate> threats;
+    for (RootMoveInfo& info : current) {
+      if (style_cancellation.should_cancel()) break;
+      if (info.move == objective_move->move) continue;
+      // Cheap piece and distance gates avoid computing a defensive response
+      // tree for every harmless root move.
+      const Piece piece = position.piece_at(info.move.from);
+      if (piece.type != PieceType::Queen || !is_quiet_move(info.move) ||
+          chebyshev_distance(enemy_king, info.move.to) > 3) continue;
+      if (const auto finding = chaos_forcing_queen_mate_threat(position, info.move,
+                                                         style_cancellation))
+        threats.push_back({&info, *finding});
+    }
+    std::sort(threats.begin(), threats.end(),
+        [](const Candidate& a, const Candidate& b) {
+          return a.threat.defenses != b.threat.defenses
+                     ? a.threat.defenses < b.threat.defenses
+                     : (a.info->style_score != b.info->style_score
+                          ? a.info->style_score > b.info->style_score
+                          : move_order_less(a.info->move, b.info->move));
+        });
+    if (threats.size() > 2) threats.resize(2);
+    const Move& objective = objective_move->move;
+    const Piece objective_mover = position.piece_at(objective.from);
+    const Piece objective_victim = position.piece_at(objective.to);
+    const bool objective_unsafe_pawn_grab = objective_victim.type == PieceType::Pawn &&
+        (objective_mover.type == PieceType::Rook ||
+         objective_mover.type == PieceType::Queen) &&
+        is_capture(objective) && static_exchange_eval(position, objective) <= -250;
+    for (const Candidate& candidate : threats) {
+      if (style_cancellation.should_cancel()) break;
+      ++result.v4910_mate_threat_candidates;
+      const std::uint64_t nodes_before = result.nodes;
+      const int threshold = objective_best - 100;
+      const UndoState undo = root.make_move(candidate.info->move);
+      const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                      -threshold + 1, 1, verification);
+      root.unmake_move(candidate.info->move, undo);
+      result.v4910_mate_threat_nodes += result.nodes - nodes_before;
+      if (verification.stopped || style_cancellation.should_cancel()) {
+        ++result.v4910_mate_threat_timeouts;
+        break; // preserve the completed objective choice
+      }
+      if (proof >= threshold) {
+        chosen = candidate.info;
+        result.v4910_mate_threat_selected = true;
+        result.v4910_mate_threat_reason = "score_floor_proven";
+        break;
+      }
+      if (objective_best <= -350 && objective_unsafe_pawn_grab &&
+          candidate.threat.defenses <= 5) {
+        // Practical resource in a heavily losing game, NOT an established
+        // mating proof. This never touches a winning or drawn result.
+        chosen = candidate.info;
+        result.v4910_mate_threat_selected = true;
+        result.v4910_mate_threat_reason = "hanging_rook_pawn_grab";
+        break;
+      }
+    }
   }
 
   // V491+V494: no unverified capture override and no unconditional

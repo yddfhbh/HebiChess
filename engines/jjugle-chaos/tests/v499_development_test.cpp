@@ -141,7 +141,7 @@ void test_uci_history_propagation() {
   uci.send_command("uci");
   bool version_ok = false;
   for (const auto& x : messages)
-    if (x == "id name JJUGLE Chaos v4.9.9 Development First") version_ok = true;
+    if (x == "id name JJUGLE Chaos v4.9.10 King Threat Triage") version_ok = true;
   require(version_ok, "V499 UCI ID");
   uci.send_command("position startpos moves e3e4"); // illegal must not corrupt state
   messages.clear();

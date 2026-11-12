@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV499 LANGUAGES CXX)
+project(HebiChessChaosV4910 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -95,3 +95,9 @@ add_test(NAME chaos_v498_conversion_lock COMMAND V498ConversionTest)
 add_executable(V499DevelopmentTest tests/v499_development_test.cpp $<TARGET_OBJECTS:ChessCoreDefault>)
 target_include_directories(V499DevelopmentTest PRIVATE src)
 add_test(NAME chaos_v499_development_first COMMAND V499DevelopmentTest)
+
+# V4910: real 0GcfVZbE game positions, forcing-mate-on-pass threat triage,
+# negative-SEE rook greed and the queen safety exception (production macros).
+add_executable(V4910KingThreatTest tests/v4910_king_threat_test.cpp $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4910KingThreatTest PRIVATE src)
+add_test(NAME chaos_v4910_king_threat_triage COMMAND V4910KingThreatTest)

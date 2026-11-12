@@ -83,7 +83,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.9 Development First");
+    emit("id name JJUGLE Chaos v4.9.10 King Threat Triage");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -594,6 +594,13 @@ void UciEngine::send_command(const std::string& line) {
     if (result.v496_fighting_spirit)
       emit("info string v496_fighting_spirit 1 loss_cap_cp " +
            std::to_string(result.v496_loss_cap_cp));
+    if (result.v4910_mate_threat_candidates > 0)
+      emit("info string v4910_mate_threat_candidates " +
+           std::to_string(result.v4910_mate_threat_candidates) +
+           " nodes " + std::to_string(result.v4910_mate_threat_nodes) +
+           " selected " + (result.v4910_mate_threat_selected ? "1" : "0") +
+           " timeouts " + std::to_string(result.v4910_mate_threat_timeouts) +
+           " reason " + result.v4910_mate_threat_reason);
     if (result.v499_opening_tempo_guard)
       emit("info string v499_opening_tempo_guard " + result.v499_tempo_reason);
     if (result.v498_rook_trade_guard)

@@ -326,6 +326,12 @@ struct SearchResult {
   int reuse_prepared_depth{0};
   bool v496_fighting_spirit{false};
   int v496_loss_cap_cp{0};
+  // V4910: root-only mate-threat probes never feed scores back into the TT.
+  std::uint64_t v4910_mate_threat_candidates{0};
+  std::uint64_t v4910_mate_threat_nodes{0};
+  std::uint64_t v4910_mate_threat_timeouts{0};
+  bool v4910_mate_threat_selected{false};
+  std::string v4910_mate_threat_reason{};
   int v498_style_loss_cap_cp{125};
   bool v498_rook_trade_guard{false};
   bool v498_minor_gift_guard{false};
