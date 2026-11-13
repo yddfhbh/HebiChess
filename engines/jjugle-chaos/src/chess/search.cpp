@@ -4917,6 +4917,103 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     }
   }
 
+  // V4911 DEFENSIVE PRESSURE TRIAGE: when the enemy queen is already
+  // near our exposed king, don't win a remote pawn with a rook while missing
+  // a safe, forcing rook attack against that queen. This is a bounded root
+  // alternative: a completed threshold proof is required, no positional
+  // scores, TT bounds, or underlying objective search are rewritten.
+  if (limits.eval_mode == EvalMode::CHAOS && !mate_found && !root_in_check &&
+      objective_best <= 100 && !style_cancellation.should_cancel() &&
+      (!result.v497_desperation_defense ||
+       result.v497_defense_reason == "best_defense") &&
+      root_king.is_valid()) {
+    const Piece greed_piece = position.piece_at(chosen->move.from);
+    const Piece greed_victim = position.piece_at(chosen->move.to);
+    if (greed_piece.type == PieceType::Rook &&
+        greed_victim.type == PieceType::Pawn &&
+        is_capture(chosen->move)) {
+      const Color us = position.side_to_move();
+      for (std::uint8_t index = 0; index < Square::kSquareCount; ++index) {
+        const Square queen_square = Square::from_index(index);
+        const Piece target = position.piece_at(queen_square);
+        if (target.type != PieceType::Queen || target.color == us ||
+            chebyshev_distance(root_king, queen_square) > 3) continue;
+        // Only test actual rook-ray attacks newly opened by the alternative.
+        // A geometrically blocked attack is not a queen challenge.
+        for (RootMoveInfo& candidate : current) {
+          if (style_cancellation.should_cancel()) break;
+          if (candidate.move == chosen->move ||
+              position.piece_at(candidate.move.from).type != PieceType::Rook ||
+              !is_quiet_move(candidate.move)) continue;
+          const Square destination = candidate.move.to;
+          const int file_step = (int(queen_square.file()) > int(destination.file())) -
+                                (int(queen_square.file()) < int(destination.file()));
+          const int rank_step = (int(queen_square.rank()) > int(destination.rank())) -
+                                (int(queen_square.rank()) < int(destination.rank()));
+          if (file_step != 0 && rank_step != 0) continue;
+          if (file_step == 0 && rank_step == 0) continue;
+          Board after = position;
+          after.make_move(candidate.move);
+          bool clear_ray = true;
+          for (int f = int(destination.file()) + file_step,
+                   r = int(destination.rank()) + rank_step;
+               f != int(queen_square.file()) || r != int(queen_square.rank());
+               f += file_step, r += rank_step) {
+            const Square between = Square::from_file_rank(
+                static_cast<std::uint8_t>(f), static_cast<std::uint8_t>(r));
+            if (!after.piece_at(between).is_empty()) {clear_ray = false; break;}
+          }
+          if (!clear_ray) continue;
+          // Reject the same rook attack if a rook already challenged the queen
+          // before this move. We need a newly created forcing defensive tempo.
+          bool already_challenged = false;
+          for (std::uint8_t other = 0; other < Square::kSquareCount; ++other) {
+            const Square rook = Square::from_index(other);
+            if (position.piece_at(rook) != Piece{PieceType::Rook, us}) continue;
+            if (rook.file() != queen_square.file() && rook.rank() != queen_square.rank())
+              continue;
+            const int df = (int(queen_square.file()) > int(rook.file())) -
+                           (int(queen_square.file()) < int(rook.file()));
+            const int dr = (int(queen_square.rank()) > int(rook.rank())) -
+                           (int(queen_square.rank()) < int(rook.rank()));
+            bool empty = true;
+            for (int f = int(rook.file()) + df, r = int(rook.rank()) + dr;
+                 f != int(queen_square.file()) || r != int(queen_square.rank());
+                 f += df, r += dr) {
+              if (!position.piece_at(Square::from_file_rank(
+                      static_cast<std::uint8_t>(f), static_cast<std::uint8_t>(r))).is_empty()) {
+                empty = false; break;
+              }
+            }
+            if (empty) {already_challenged = true;break;}
+          }
+          if (already_challenged) continue;
+          // Bounded verification: an exact full-window value is not required,
+          // but the defensive resource must meet a real lower-bound floor.
+          constexpr int kDefenseLossCapCp = 90;
+          const int threshold = objective_best - kDefenseLossCapCp;
+          ++result.root_style_verification_searches;
+          ++result.v4911_queen_defense_candidates;
+          const std::uint64_t nodes_before = result.nodes;
+          const UndoState undo = root.make_move(candidate.move);
+          const int proof = -negamax_impl(root, depth - 1,
+                                          -threshold, -threshold + 1,
+                                          1, verification);
+          root.unmake_move(candidate.move, undo);
+          result.root_style_verification_nodes += result.nodes - nodes_before;
+          result.v4911_queen_defense_nodes += result.nodes - nodes_before;
+          if (verification.stopped || style_cancellation.should_cancel()) break;
+          if (proof >= threshold) {
+            result.v4911_queen_defense_selected = true;
+            chosen = &candidate;
+            break;
+          }
+        }
+        break; // at most one nearby hostile queen
+      }
+    }
+  }
+
   // V491+V494: no unverified capture override and no unconditional
   // position-specific repetition rewrite.
   result.best_move = chosen->move;

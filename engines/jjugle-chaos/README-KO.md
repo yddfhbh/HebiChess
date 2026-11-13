@@ -1,41 +1,51 @@
-# JJUGLE Chaos v4.9.10 — King Threat Triage
+# JJUGLE Chaos v4.9.11 — Defensive Pressure Triage
 
-**기준 버전:** v4.9.9 Development First (`yddfhbh/HebiChess` main `0e3ad38cccf828c936cf7b198ab2e3fcafefeca4`). 기존 v4.9.9 운영 바이너리의 SHA-256: `a27187b25a29bfca11e499f5ed6ffe4ff6300978362e515db2e251298549c38b`.
+이 패키지는 정상 운영 중인 v4.9.10을 기준으로 만든 **독립 실험/배포용 전체 소스 스냅샷**입니다.
 
-## 무엇을 고쳤나
+## 실전 기보 재현 (2026-11-12, JJUGLE vs sseh-c, FnEBrkoY)
 
-- 실제 5+3 실전 [`0GcfVZbE`](https://lichess.org/game/0GcfVZbE)에서 37...Kh7 이후 **38.Rxa2??** 대신 **38.Qf8**, 38...Qxa2?? 이후 **39.g4??** 대신 **39.Qf8**을 선택하도록 탐색 후 최종 후보 판단을 개선.
-- Qf8은 곧바로 체크가 아니지만 상대가 대응하지 않으면 Qg7#를 위협. 따라서 방어 측의 **실제 모든 합법 응수**를 조사해, 대다수가 즉시 메이트를 허용하고 유효한 방어가 5개 이하인 경우에만 '강한 공격 위협'으로 인정.
-- 단순 위협만 보고 퀸을 버리지 않도록, 상대가 퀸을 즉시 잡았을 때 정적 교환 평가(SEE)가 250cp 이상 유리하면 후보에서 제외(예: **Qf6? Rxf6**).
-- 이미 패배가 큰 상황(객관 점수 -200cp 이하)에서만 작동. 검증된 100cp 이내의 객관 수가 있으면 정상 탐색 검증으로 선택.
-- 예외적으로 현재 객관 수가 -350cp 이하이며 **단순 폰을 잡으려다 룩/퀸을 250cp 이상 손해 보는 수**이면, 일반 탐색이 수읽기를 못한 강한 메이트 위협으로 대체하는 실전형 방어 선택을 허용. 강제 메이트 증명은 아니며, 얕은 객관 점수보다 나쁠 수도 있으므로 실전 테스트가 필요.
-- 이미 확인된 메이트 / 확정 즉시 무승부 / 이기고 있는 포지션을 변경하지 않으며, v4.9.9의 전개 강화, v4.9.8의 승세 보존, v4.9.7의 불균형 교환·기물 협력·방어를 모두 유지.
-- UCI 진단: `info string v4910_mate_threat_candidates ... selected ... reason ...`. 기본 탐색, NNUE/HCE 평가 함수와 TT 점수 자체에는 인위적 가산점 없음.
+- 31수, FEN: `3rq1k1/p2r4/1pQp4/1P1P1p2/R3p1p1/6R1/1PP2PP1/6K1 w - - 0 31`
+  - v4.9.10 objective depth 9: `Rc3??` (g3c3)
+  - v4.9.11 objective depth 9: `Qc3` (c6c3)
+- 35수, FEN: `3r2k1/p6r/1pQp4/1P1P1p2/R3p1p1/R7/1PP1KPq1/8 w - - 0 35`
+  - v4.9.10 objective depth 9: `Rxa7??` (a4a7)
+  - v4.9.11 objective depth 9 remains `Rxa7`; but final CHAOS choice is `Rg3` (a3g3) after a bounded search proof.
+- Local Linux 3+2 time-budget tests: 31 `c6c3` depth 9; 35 `a3g3` depth 10, defense candidates 1 / selected 1.
+- 14/14 CTest regression tests passed on Linux x86_64 (Release, production macros). **ARM64 production has not yet been verified.**
 
-## 재현 검증 (Linux x86-64 Release)
+## 변경 범위
 
-- 문제 38수 FEN: `2bQ4/2p2p1k/1p2p3/5rpN/8/8/p1PP1PPK/Rq6 w - - 0 38`
-- 문제 39수 FEN: `2bQ4/2p2p1k/1p2p3/5rpN/8/8/q1PP1PPK/8 w - - 0 39`
-- 고정 Depth 10/11 재현에서 두 위치 모두 `d8f8`, 오류 `a1a2/g2g4` 회피.
-- 같은 5+3 시계 조건 x86-64 비교: v4.9.9 38수 `a1a2`, v4.9.10 `d8f8`; 새 버전은 Depth 12, 소요 시간 약 +0.1초(하드웨어·상황에 따라 달라짐).
-- 전체 기존 12개 + 신규 1개 = **CTest 13/13 통과**. 다만 **12수 메이트를 엔진이 완전히 수읽기한 것은 아닙니다.** Stockfish 깊은 분석의 결과와, 얕은 엔진이 올바른 공격 후보를 선택했다는 결과를 혼동하지 마세요.
-- UCI ID: `JJUGLE Chaos v4.9.10 King Threat Triage`.
+1. CHAOS 전용 퀸+룩의 킹 침투 위험 평가. 중반 이후(`fullmove > 16`), 주요 기물이 충분히 남은 포지션(`phase >= 14`)에서만 적용하며 HCE와 NNUE는 불변.
+2. 상대 퀸이 킹에서 3칸 이내이고, 룩이 원거리 폰 획득을 선택할 때: 직접 퀸을 공격하는 안전한 룩 수의 점수를 *별도 탐색으로 검증*하고 최대 90cp 범위에서 선택 가능.
+3. 즉시 무승부 방어를 덮어쓰지 않으며, 최선 수의 객관적 탐색 점수와 TT는 변경하지 않음.
+4. v4.9.10 메이트 위협·v4.9.9 초반 전개 등 기존 테스트 보존.
 
-## 운영 배포 절차 (Windows PowerShell 5.1)
+수정된 위치: `src/chess/eval.cpp`, `src/chess/search.cpp`, `src/chess/search.hpp`, `src/chess/uci_engine.cpp`, `tests/v4911_defensive_pressure_test.cpp`, `CMakeLists.txt`, 이전 버전명 검사 테스트.
 
-1. 바깥 ZIP을 `Downloads`에 넣고 압축 풀기 → `jjugle-v4910-work/deploy-v4910.ps1` 실행.
-2. 스크립트는 서버의 새 `labs/chaos-v4910-*` 에만 소스를 업로드하고 백그라운드 ARM64 빌드/13개 테스트/UCI 검사 수행.
-3. v4.9.9 바이너리 체크섬을 확인하며 `/api/account/playing` 을 **배포 전과 교체 직전 두 번** 조회. 진행 중인 대국이 있거나 검증이 안 되면 엔진을 교체하지 않음.
-4. 정상일 때만 기존 실행파일을 백업하고 PM2 ID 36의 JJUGLE 봇만 재시작. 실패하면 기존 바이너리로 롤백 시도. 한국어 인사, 기존 북, 다른 PM2 서비스, 설정은 그대로 둠.
-5. 백그라운드 시작 출력만으로 성공이 아님. `verify-v4910.ps1`로 로그 확인. 성공 기준 세 줄:
+## 파일 사용법
 
-```
-ARM64_FULL_REGRESSION=13/13_PASS
-V4910_DEPLOYED=YES
-JJUGLE_PM2=ONLINE
-DEPLOY_EXIT=0
-```
+`source-v4911.zip`: `V4911/` 안에 전체 C++ 소스 및 테스트.
 
-## GitHub
+`deploy-v4911.ps1`: Windows PowerShell 5.1/7에서 실행. 먼저 소스 ZIP 및 두 셸 스크립트를 SSH/SCP로 업로드하고, 서버 `labs/chaos-v4911-YYYYMMDD-HHMMSS/`에서 백그라운드 빌드/전체 ARM64 테스트를 실행.
+업로드 체크섬 확인 및 3회 재시도가 들어 있습니다.
 
-**운영 서버 적용 확인 후에만** `push-v4910-github.ps1` 실행. GitHub main이 정확히 `0e3ad38cccf828c936cf7b198ab2e3fcafefeca4`인지 검사하고 `engines/jjugle-chaos/`만 갱신, 기존 웹 체스·다른 프로젝트 변경 금지. 사용자 PC에 Git 로그인 설정이 필요. Windows PowerShell 5.1을 위해 `.ps1` 파일은 **UTF-8 BOM**으로 제공.
+서버의 `remote-deploy-v4911.sh`는 다음을 *배포 전* 확인합니다:
+- Lichess 계정 JJUGLE 및 활동 중 대국 0개 (실패시 배포 중단)
+- 운영 바이너리 v4.9.10 SHA256 (기준 불일치 시 중단)
+- 유일한 온라인 `jjugle-lichess` PM2 프로세스, CHAOS 설정
+- ARM64 빌드, UCI smoke, **14/14** 테스트
+- 교체 직전 두 번째 활동 대국 확인
+- 백업 후 바이너리만 원자 교체, 프로세스 재시작, 실패시 백업 복구 시도
+
+성공 표식: `ARM64_FULL_REGRESSION=14/14_PASS`, `V4911_DEPLOYED=YES`, `JJUGLE_PM2=ONLINE`, `DEPLOY_EXIT=0`.
+
+`verify-v4911.ps1`: 읽기 전용 검증. 실패/중간 상태의 로그만으로 성공을 단정하지 말 것.
+
+`push-v4911-github.ps1`: **운영 검증 후에만** 실행. `yddfhbh/HebiChess` main 이 `1dbaa4430367709ee72d173c4ee9a2ea6e726ec6`인 경우에만 `engines/jjugle-chaos/` 디렉터리를 교체하여 커밋/푸시. 그 외 경로는 보존. 변경 시 자동 중단.
+
+## 제한 및 주의사항
+
+- 이 수정은 제한된 기보에 대한 전술적 방어 개선이며 일반적인 Elo 향상을 증명하지 않습니다.
+- 루트 방어 대안은 메이트 증명이나 정확한 점수가 아닌, 안전성 **하한값**의 완결된 검색으로 검증됩니다.
+- 일반적인 31/35수 결정에서 추가 시간/노드를 요구할 수 있으므로 새 실전 로그에서 Depth/Nodes/Time을 비교하십시오.
+- 현재 운영 v4.9.10을 바로 지우지 말고, 배포 로그에서 모든 성공 표식을 확인하십시오.

@@ -452,6 +452,50 @@ struct EvalContext {
     return signed_score(values[0], values[1], perspective);
   }
 
+  // V4911 EXPERIMENT: threat-sensitive queen/rook pressure on an exposed king.
+  // Only a concrete queen ray into the king's surrounding squares qualifies.
+  // An enemy rook and a weakened shield increase the practical risk, while
+  // directly attacking that queen reduces it. Zero-sum and CHAOS-only.
+  int chaos_king_infiltration_pressure(Color perspective) const noexcept {
+    // Queen-and-rook middlegame attacks only; avoid disturbing technical
+    // queen vs rook endings and the v4.9.10 mate-threat line.
+    // Preserve v4.9.9 development choices while book/opening play is active.
+    if (phase < 14 || board.fullmove_number() <= 16) return 0;
+    int pressure[kColors]{};
+    for (int attacker = 0; attacker < kColors; ++attacker) {
+      const int defender = 1 - attacker;
+      if (type_count[attacker][static_cast<int>(PieceType::Queen)] == 0 ||
+          type_count[attacker][static_cast<int>(PieceType::Rook)] == 0 ||
+          !kings[defender].is_valid()) continue;
+      for (int i = 0; i < piece_count[attacker]; ++i) {
+        const Square queen = pieces[attacker][i];
+        if (board.piece_at(queen).type != PieceType::Queen) continue;
+        const int zone_contact = static_cast<int>(std::popcount(
+            attack_mask_for(queen, attacker) & king_zone[defender]));
+        if (zone_contact == 0) continue;
+        const Square king = kings[defender];
+        const int distance = std::max(std::abs(int(queen.file()) - int(king.file())),
+                                      std::abs(int(queen.rank()) - int(king.rank())));
+        int value = 30 + 17 * std::min(3, zone_contact);
+        if (shield(defender == 0 ? Color::White : Color::Black) < 0) value += 22;
+        if (distance <= 2) value += 30;
+        if (type_count[attacker][static_cast<int>(PieceType::Rook)] >= 2)
+          value += 10;
+        for (int j = 0; j < piece_count[attacker]; ++j) {
+          const Square rook = pieces[attacker][j];
+          if (board.piece_at(rook).type == PieceType::Rook &&
+              (attack_mask_for(rook, attacker) & (Bitboard{1} << queen.index()))) {
+            value += 25;
+            break;
+          }
+        }
+        if (attacks[defender] & (Bitboard{1} << queen.index())) value /= 4;
+        pressure[attacker] += std::min(165, value);
+      }
+    }
+    return signed_score(pressure[0], pressure[1], perspective);
+  }
+
   int space(Color perspective) const noexcept {
     int score[kColors]{};
     for (int square = 0; square < 64; ++square) {
@@ -871,6 +915,7 @@ int evaluate_chaos(const Board& board) noexcept {
   const int imbalance = signed_score(context.material_imbalance(0),
                                      context.material_imbalance(1), perspective);
   return context.breakdown(perspective).total +
+         context.chaos_king_infiltration_pressure(perspective) +
          context.tactical_complications(perspective) +
          context.endgame_passer_potential(perspective) +
          coordination + imbalance;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4910 LANGUAGES CXX)
+project(HebiChessChaosV4911 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -101,3 +101,9 @@ add_test(NAME chaos_v499_development_first COMMAND V499DevelopmentTest)
 add_executable(V4910KingThreatTest tests/v4910_king_threat_test.cpp $<TARGET_OBJECTS:ChessCoreProduction>)
 target_include_directories(V4910KingThreatTest PRIVATE src)
 add_test(NAME chaos_v4910_king_threat_triage COMMAND V4910KingThreatTest)
+
+# V4911: 31.Rc3 / 35.Rxa7 king-exposure and queen-challenge regressions.
+add_executable(V4911DefensivePressureTest tests/v4911_defensive_pressure_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4911DefensivePressureTest PRIVATE src)
+add_test(NAME chaos_v4911_defensive_pressure COMMAND V4911DefensivePressureTest)

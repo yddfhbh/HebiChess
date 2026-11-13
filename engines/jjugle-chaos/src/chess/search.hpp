@@ -326,6 +326,10 @@ struct SearchResult {
   int reuse_prepared_depth{0};
   bool v496_fighting_spirit{false};
   int v496_loss_cap_cp{0};
+  // V4911: bounded quiet-rook counter-queen defensive root verification.
+  std::uint64_t v4911_queen_defense_candidates{0};
+  std::uint64_t v4911_queen_defense_nodes{0};
+  bool v4911_queen_defense_selected{false};
   // V4910: root-only mate-threat probes never feed scores back into the TT.
   std::uint64_t v4910_mate_threat_candidates{0};
   std::uint64_t v4910_mate_threat_nodes{0};
