@@ -347,6 +347,14 @@ struct SearchResult {
   bool v49_tactical_cashout{false};
   bool v48_queen_preserved{false};
   int v48_queen_preservation_loss_cp{0};
+  // V4912 bounded development rescue, reporting only.
+  std::uint64_t v4912_conversion_candidates{0};
+  std::uint64_t v4912_conversion_nodes{0};
+  bool v4912_conversion_selected{false};
+  std::uint64_t v4912_development_candidates{0};
+  std::uint64_t v4912_development_nodes{0};
+  std::uint64_t v4912_development_timeouts{0};
+  bool v4912_development_selected{false};
   std::vector<RootMoveInfo> root_moves{};
 #if defined(HEBICHESS_BLUNDER_DIAGNOSTIC)
   std::vector<DiagnosticIterationSummary> diagnostic_iterations{};

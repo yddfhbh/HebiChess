@@ -83,7 +83,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.11 Defensive Pressure Triage");
+    emit("id name JJUGLE Chaos v4.9.12 Development Continuation");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -599,6 +599,17 @@ void UciEngine::send_command(const std::string& line) {
            std::to_string(result.v4911_queen_defense_candidates) +
            " nodes " + std::to_string(result.v4911_queen_defense_nodes) +
            " selected " + (result.v4911_queen_defense_selected ? "1" : "0"));
+    if (result.v4912_conversion_candidates > 0)
+      emit("info string v4912_conversion candidates " +
+           std::to_string(result.v4912_conversion_candidates) +
+           " nodes " + std::to_string(result.v4912_conversion_nodes) +
+           " selected " + (result.v4912_conversion_selected ? "1" : "0"));
+    if (result.v4912_development_candidates > 0)
+      emit("info string v4912_development candidates " +
+           std::to_string(result.v4912_development_candidates) +
+           " nodes " + std::to_string(result.v4912_development_nodes) +
+           " selected " + (result.v4912_development_selected ? "1" : "0") +
+           " timeouts " + std::to_string(result.v4912_development_timeouts));
     if (result.v4910_mate_threat_candidates > 0)
       emit("info string v4910_mate_threat_candidates " +
            std::to_string(result.v4910_mate_threat_candidates) +

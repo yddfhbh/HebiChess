@@ -5014,6 +5014,128 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     }
   }
 
+  // V4912 DEVELOPMENT CONTINUATION: the v4.9.9 guard only filtered a
+  // style-chosen second queen move; an objectively chosen quiet queen move
+  // could still repeat for several turns while castling and minors waited.
+  // Evaluate promising legal development resources at the same completed
+  // depth. A complete threshold proof is mandatory, so this is not a blanket
+  // queen-move ban, nor a direct adjustment to negamax/TT scores.
+  if (limits.eval_mode == EvalMode::CHAOS && !mate_found && !root_in_check &&
+      chosen == &*objective_move && position.fullmove_number() <= 15 &&
+      limits.recent_game_moves.size() >= 2 &&
+      objective_best >= -420 && !style_cancellation.should_cancel()) {
+    const Move prior = limits.recent_game_moves[limits.recent_game_moves.size() - 2];
+    const Piece mover = position.piece_at(chosen->move.from);
+    const Piece prior_mover = position.piece_at(prior.to);
+    const bool queen_chain = mover.type == PieceType::Queen &&
+        prior_mover.type == PieceType::Queen && prior.to == chosen->move.from &&
+        is_quiet_move(chosen->move) &&
+        !position.is_square_attacked(chosen->move.from,
+                                     opposite(position.side_to_move()));
+    Board check_board = position;
+    if (queen_chain && !gives_check(check_board, chosen->move)) {
+      struct DevelopmentCandidate {RootMoveInfo* info; int priority;};
+      std::vector<DevelopmentCandidate> alternatives;
+      const Color side = position.side_to_move();
+      const int home = side == Color::White ? 0 : 7;
+      for (RootMoveInfo& info : current) {
+        if (info.move == chosen->move || !is_quiet_move(info.move)) continue;
+        const Piece piece = position.piece_at(info.move.from);
+        const int from_rank = side == Color::White ? info.move.from.rank()
+                                                 : 7 - info.move.from.rank();
+        const int to_rank = side == Color::White ? info.move.to.rank()
+                                               : 7 - info.move.to.rank();
+        const bool central_file = info.move.to.file() >= 2 && info.move.to.file() <= 5;
+        int priority = 0;
+        if (info.move.flag == MoveFlag::CastleKingSide ||
+            info.move.flag == MoveFlag::CastleQueenSide) priority = 60;
+        if (piece.type == PieceType::Bishop && from_rank == 0 &&
+            to_rank >= 2 && central_file) priority = 65;
+        if (piece.type == PieceType::Knight && central_file && to_rank >= 2 &&
+            to_rank <= 5 && to_rank > from_rank) priority = 70;
+        if (piece.type == PieceType::Pawn && from_rank >= 2 &&
+            to_rank >= 4 && central_file) priority = 35;
+        if (!priority) continue;
+        if (info.bound == ScoreBound::Exact &&
+            info.search_score < objective_best - 55) continue;
+        alternatives.push_back({&info, priority});
+      }
+      std::stable_sort(alternatives.begin(), alternatives.end(),
+          [](const DevelopmentCandidate& a, const DevelopmentCandidate& b) {
+            if (a.priority != b.priority) return a.priority > b.priority;
+            return move_order_less(a.info->move, b.info->move);
+          });
+      if (alternatives.size() > 3) alternatives.resize(3);
+      for (const auto& alternative : alternatives) {
+        if (style_cancellation.should_cancel()) break;
+        ++result.v4912_development_candidates;
+        const int threshold = objective_best - 45;
+        const std::uint64_t nodes_before = result.nodes;
+        const UndoState undo = root.make_move(alternative.info->move);
+        const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                       -threshold + 1, 1, verification);
+        root.unmake_move(alternative.info->move, undo);
+        result.v4912_development_nodes += result.nodes - nodes_before;
+        if (verification.stopped || style_cancellation.should_cancel()) {
+          ++result.v4912_development_timeouts;
+          break;
+        }
+        if (proof >= threshold) {
+          chosen = alternative.info;
+          result.v4912_development_selected = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // V4912: When already ahead, be wary of advancing a pawn from the
+  // castled king shield onto a square attacked by a pawn. In particular,
+  // first consider safe equal-minor captures that neutralize active attackers.
+  // Require a completed score-floor proof: no blind positional override.
+  if (limits.eval_mode == EvalMode::CHAOS && !mate_found && !root_in_check &&
+      chosen == &*objective_move && objective_best >= 80 &&
+      position.fullmove_number() >= 18 && root_king.is_valid() &&
+      (root_king.file() == 2 || root_king.file() == 6) &&
+      !style_cancellation.should_cancel()) {
+    const Move pawn_move = chosen->move;
+    const Piece pawn = position.piece_at(pawn_move.from);
+    const int advance = position.side_to_move() == Color::White
+        ? int(pawn_move.to.rank()) - int(pawn_move.from.rank())
+        : int(pawn_move.from.rank()) - int(pawn_move.to.rank());
+    const int shield_file = std::abs(int(pawn_move.from.file()) - int(root_king.file()));
+    if (pawn.type == PieceType::Pawn && is_quiet_move(pawn_move) &&
+        advance > 0 && advance <= 2 && shield_file <= 1 &&
+        position.is_square_attacked(pawn_move.to,
+                                    opposite(position.side_to_move()))) {
+      for (RootMoveInfo& info : current) {
+        if (style_cancellation.should_cancel()) break;
+        const Piece our_piece = position.piece_at(info.move.from);
+        const Piece captured = position.piece_at(info.move.to);
+        if (!is_capture(info.move) ||
+            !(our_piece.type == PieceType::Knight ||
+              our_piece.type == PieceType::Bishop) ||
+            !(captured.type == PieceType::Knight ||
+              captured.type == PieceType::Bishop) ||
+            static_exchange_eval(position, info.move) < -50) continue;
+        ++result.v4912_conversion_candidates;
+        const int threshold = objective_best - 50;
+        const std::uint64_t nodes_before = result.nodes;
+        const UndoState undo = root.make_move(info.move);
+        const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                        -threshold + 1, 1, verification);
+        root.unmake_move(info.move, undo);
+        result.v4912_conversion_nodes += result.nodes - nodes_before;
+        if (verification.stopped || style_cancellation.should_cancel()) break;
+        if (proof >= threshold) {
+          chosen = &info;
+          result.v4912_conversion_selected = true;
+          break;
+        }
+      }
+    }
+  }
+
   // V491+V494: no unverified capture override and no unconditional
   // position-specific repetition rewrite.
   result.best_move = chosen->move;

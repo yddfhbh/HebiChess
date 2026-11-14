@@ -529,6 +529,63 @@ struct EvalContext {
     return signed_score(score[0] * phase / 24, score[1] * phase / 24, perspective);
   }
 
+  // V4912: In a genuine opening material gambit, activity is the compensation.
+  // Do not add a generic "always push" bias: only reward safe piece activity
+  // and king completion while down meaningful material, with both queens still
+  // on the board. This is CHAOS-only and never affects the opening book.
+  int chaos_gambit_development(Color perspective) const noexcept {
+    if (board.fullmove_number() > 16 || phase < 18 ||
+        type_count[0][static_cast<int>(PieceType::Queen)] == 0 ||
+        type_count[1][static_cast<int>(PieceType::Queen)] == 0) return 0;
+    int activity[kColors]{};
+    for (int color = 0; color < kColors; ++color) {
+      if (material[1 - color] - material[color] < 150) continue;
+      const int home_rank = color == 0 ? 0 : 7;
+      const Piece own_king = {PieceType::King, static_cast<Color>(color)};
+      const Square home_king = at(4, home_rank);
+      const bool uncastled = board.piece_at(home_king) == own_king;
+      int undeveloped = 0;
+      for (const auto [file, type] : std::array<std::pair<int,PieceType>,4>{{
+               {1, PieceType::Knight}, {6, PieceType::Knight},
+               {2, PieceType::Bishop}, {5, PieceType::Bishop}}}) {
+        if (board.piece_at(at(file,home_rank)) ==
+            Piece{type,static_cast<Color>(color)}) ++undeveloped;
+      }
+      if (uncastled) {
+        // A second queen sortie without completing development is rarely
+        // the best compensation for a sacrificed knight. Checks and forced
+        // evacuations remain evaluated by the tactical search itself.
+        if (undeveloped > 0 &&
+            board.piece_at(at(3,home_rank)) !=
+                Piece{PieceType::Queen,static_cast<Color>(color)}) {
+          activity[color] -= 20 + (undeveloped > 1 ? 8 : 0);
+        }
+        activity[color] -= 12;
+      } else if (kings[color].is_valid() &&
+          kings[color].rank() == home_rank &&
+          (kings[color].file() == 2 || kings[color].file() == 6)) {
+        activity[color] += 20;
+      }
+      // Reward a developed surviving minor participating near the center,
+      // not a passive retreat or a piece dangling en prise.
+      for (int i=0; i<piece_count[color]; ++i) {
+        const Square square = pieces[color][i];
+        const Piece piece = board.piece_at(square);
+        if (piece.type != PieceType::Knight && piece.type != PieceType::Bishop)
+          continue;
+        if (square.rank() == home_rank) continue;
+        const int relative_rank = color == 0 ? square.rank() : 7-square.rank();
+        if (relative_rank < 2 || relative_rank > 5 || square.file() < 2 ||
+            square.file() > 5) continue;
+        const bool attacked = (attacks[1-color] & (Bitboard{1} << square.index())) != 0;
+        const bool defended = (attacks[color] & (Bitboard{1} << square.index())) != 0;
+        if (!attacked || defended) activity[color] += 14;
+      }
+      activity[color] = std::clamp(activity[color], -56, 56);
+    }
+    return signed_score(activity[0], activity[1], perspective) * phase / 24;
+  }
+
   int threats(Color perspective) const noexcept {
     int score[kColors]{};
     for (int color = 0; color < kColors; ++color) {
@@ -918,6 +975,7 @@ int evaluate_chaos(const Board& board) noexcept {
          context.chaos_king_infiltration_pressure(perspective) +
          context.tactical_complications(perspective) +
          context.endgame_passer_potential(perspective) +
+         context.chaos_gambit_development(perspective) +
          coordination + imbalance;
 }
 

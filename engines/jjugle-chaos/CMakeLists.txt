@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4911 LANGUAGES CXX)
+project(HebiChessChaosV4912 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -107,3 +107,10 @@ add_executable(V4911DefensivePressureTest tests/v4911_defensive_pressure_test.cp
   $<TARGET_OBJECTS:ChessCoreProduction>)
 target_include_directories(V4911DefensivePressureTest PRIVATE src)
 add_test(NAME chaos_v4911_defensive_pressure COMMAND V4911DefensivePressureTest)
+
+# V4912: the Halloween book sacrifice remains legal, while a repeated queen
+# sortie gets bounded development alternatives. Protect the 27...f6 conversion.
+add_executable(V4912DevelopmentConversionTest tests/v4912_development_conversion_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4912DevelopmentConversionTest PRIVATE src)
+add_test(NAME chaos_v4912_development_conversion COMMAND V4912DevelopmentConversionTest)
