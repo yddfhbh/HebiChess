@@ -1,37 +1,36 @@
-# JJUGLE Chaos v4.9.13 — Search Efficiency
+# JJUGLE Chaos v4.9.14 — Verified Choice / Time Budget
 
-**배포되지 않은 실험 패키지. 운영 기준 v4.9.12 / GitHub 기준 c8a286fe567baa4a9fd0168074aa7fc5a171c5aa.**
+기준: GitHub HebiChess `main` d098464cbfc1c67266bc8d5bd3d46d4830818cf0, 운영 ARM64 v4.9.13 SHA256 `d10157abc91f259a4dd5f0847b2455640fbd05904d6ed4a27025b5b5913e2567`.
 
-## 이번 버전 목표
+## 수정 내용
 
-Stockfish와 Depth를 직접 비교하는 것은 공정하지 않습니다(엔진별 탐색 단위와 최적화 수준이 다름). 이번 실험은 기존 JJUGLE v4.9.12 대비 **같은 포지션/Depth/하드웨어에서 생각 시간 및 동일 시간 내 성능**을 비교합니다.
+1. 오프닝 북 **원본 파일·가중치·설정은 그대로 유지**. 단, 첫 수 `1.h3` 또는 `1.a3` 이후 흑의 첫 응수 `...h5`만 배제. 같은 포지션에 다른 북 후보가 있으면 기존 가중치대로 선택하고, `...h5`밖에 없다면 엔진 검색으로 전환. 그 외 수순과 할로윈 갬빗의 의도된 `4.Nxe5`는 유지. Witty_Alien의 정확한 북 출처는 검증하지 않았음.
+2. 실전 **시간 제한 탐색**의 초반 단계(16수까지): CHAOS가 객관적 최선 대신 다른 수를 고르면 45cp 이내라는 더 엄격한 하한 검증. 얕고 평가가 흔들리는 열세에서는 상한 점수에만 근거한 불확실한 변칙 수를 포기함. 객관적 최선 희생·체크, 퀸 보존, 불리할 때 무승부 확보, 이미 검증된 왕 공격 대응은 유지. 고정 깊이 분석 동작은 기존대로 둠.
+3. 초반 시간 관리: **3+2 / 180초 / 기본 ThinkTimePercent=75**에서 최대 생각 시간 계산치 약 9.05초 → **4.53초**. 중반·저시간 설정은 그대로. 네트워크·UCI 통신 오버헤드 등 실제 시간과 차이 가능.
+4. `info string v4914_decision`: 객관적 최선 착수, 실제 착수, 점수, 선택한 수의 경계값, 추가 검증 결과. 기존 `tm`·`qprofile`와 함께 `scripts/profile_v4914.py`로 라이브 엔진을 건드리지 않고 v4.9.13/14의 고정 시간·시계 기반 비교 및 CSV 출력.
 
-- **LTO:** 컴파일러 지원 시 운영 엔진과 프로덕션 테스트 대상으로만 Release 링크 타임 최적화를 활성화합니다. 지원하지 않으면 안전하게 비활성화합니다.
-- **SEE 최적화:** 교환 대상 칸에 상대 공격이 없으면 전체 교환 트리를 생략합니다. 상대가 실제로 공격할 수 있다면 대상 칸을 기준으로 가까운 공격자를 찾되, 핀으로 인해 불법적인 캡처는 기존처럼 제거합니다. 기존 참조 SEE와 다양한 합법 캡처를 대조합니다.
-- **Qsearch 체크 확인 최적화:** 안전한 캡처에서는 불필요한 체크 생성 연산을 건너뛰되 전술 가지치기 예외가 필요한 경우는 확인합니다. 기존 안전 검사 유지.
-- **기본 시간 사용량 75%:** 기존 시간 관리(Soft/Hard)를 75%로 축소. 최대 시간 제한, 긴급 저시간 모드는 유지. 새로운 UCI 옵션 `ThinkTimePercent` (35~125, 기본 75)로 조절 가능. **`go movetime`에는 적용하지 않음.** 운영 설정을 바꾸지 않아도 기본값 75%가 적용됩니다. 과도한 단축으로 초반 Depth 9를 놓치는 70% 설정은 기본으로 채택하지 않았습니다.
-- **기존 오프닝·스타일 유지:** 4.Nxe5 할로윈 갬빗 등 오프닝 북, 공격성 및 무승부 방어 알고리즘을 의도적으로 변경하지 않았습니다.
+## 포함 파일
 
-## 로컬 검증 (Linux x86-64 Release, 환경 의존)
+- `source-v4914.zip`: 전체 소스, 17개 회귀 테스트, `scripts/profile_v4914.py`
+- `deploy-v4914.ps1`: Windows PowerShell SSH/SCP 업로드 및 백그라운드 배포 시작
+- `remote-deploy-v4914.sh`: 바이너리 SHA 검증 → 진행 중 대국 0 확인 → ARM64 빌드·17개 테스트 → 대국 0 재확인 → 백업·원자적 교체·PM2 재시작·UCI 확인, 실패 시 자동 롤백
+- `verify-v4914.ps1`: 배포 로그와 운영 바이너리 SHA 조회
+- `profile-v4914.ps1`: 배포 이후 대국이 없을 때만 백업 v4.9.13 대비 별도 UCI 프로파일링, 봇 재시작 안 함
+- `push-v4914-github.ps1`: GitHub HEAD 확인 후 엔진 폴더만 커밋·푸시 (별도 수동 실행)
 
-- 전체 CTest: **16/16 PASS**, 기존 15개 + 신규 v4.9.13 SEE 동일성/시간제어 테스트
-- FEN `3b1rk1/1p1n1ppp/p3p1b1/1q1pP1B1/1P1P4/4NN1P/3Q1PP1/2R3K1 b - - 11 27`:
-  - 고정 Depth 8: v4.9.12 844~860ms, v4.9.13 589~663ms, 양쪽 모두 `Bxg5` 선택
-  - 실제 3+1 시계(99초+1초): v4.9.12 4774ms, v4.9.13 `ThinkTimePercent=75` 3528ms, 둘 다 Depth 10, `Bxg5`
-- 할로윈 갬빗 12수 FEN `r1b1kb1r/pp2nppp/2pq4/8/3P1P1n/2NBQ3/PPP3PP/R1B1K2R w KQkq - 4 12`:
-  - 고정 Depth 8: v4.9.12 2476~2527ms, v4.9.13 2011~2220ms
-  - 실제 3+1 시계: v4.9.12 5352ms, v4.9.13 75% 4430ms, 양쪽 모두 Depth 9 및 `O-O` 선택
-- **주의:** 빠른 테스트의 두드러진 사례는 개선을 확인하지만 전체 Elo 개선을 증명하지 않습니다. ARM64와 게임별 시계 차이에 따라 깊이/최종 수가 달라질 수 있습니다. 특히 20...d4 / 21...Qc5 / 38...Re7 악수 자체가 수정되었다고 주장하지 않습니다.
+## 실행
 
-## 서버 안전 배포
+PowerShell에서:
 
-1. ZIP을 다운로드 폴더에 저장하고 Windows PowerShell 5.1에서 `deploy-v4913.ps1` 실행
-2. 기존 운영 SHA-256 **`0c77a8d0dace67b4fcb7f7a4bdd53b8eab8502e133675f168c70a6e86ddf7419`** 일치, Lichess 계정 JJUGLE/대국 중 아님, PM2 단일 프로세스, CHAOS 설정 확인
-3. 독립 labs 디렉터리에서 ARM64 빌드 → 16/16 CTest → UCI 체크 → 진행 중 대국 재확인 후에만 기존 바이너리 백업 및 교체
-4. 실패 시 자동 롤백. 봇 설정, 오프닝 북, 다른 PM2 앱 수정 없음
-5. `verify-v4913.ps1`로 `ARM64_FULL_REGRESSION=16/16_PASS`, `V4913_DEPLOYED=YES`, `JJUGLE_PM2=ONLINE`, `DEPLOY_EXIT=0` 검증. ZIP 업로드/실행 시작만으로 배포 성공이라 보지 않음.
-6. ARM 배포 성공 후 `push-v4913-github.ps1`로 GitHub main에 엔진 폴더만 변경. 기존 main은 **`c8a286fe567baa4a9fd0168074aa7fc5a171c5aa`**여야 하며, 다른 경우 푸시를 중단.
+```
+$zip = "$env:USERPROFILE\Downloads\JJUGLE-Chaos-v4.9.14-verified-choice.zip"
+$dest = "$env:USERPROFILE\HebiChessLocal\deploy\v4914"
+Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dest\jjugle-v4914-work\deploy-v4914.ps1"
+```
 
-## 포함
+배포 성공 기준: `ARM64_FULL_REGRESSION=17/17_PASS`, `V4914_DEPLOYED=YES`, `JJUGLE_PM2=ONLINE`, `DEPLOY_EXIT=0`. GitHub 푸시는 별도 단계.
 
-`source-v4913.zip`, `deploy-v4913.ps1`, `start-v4913.sh`, `remote-deploy-v4913.sh`, `verify-v4913.ps1`, `push-v4913-github.ps1`, `SHA256SUMS.txt`.
+### 검증 범위와 한계
+
+동일 포지션 로컬 x86-64 Release에서 기존 `4...Qd4`, `9.Bb5+`, `10.exd6` 대신 `4...Qe6+`, `9.O-O`, `10.O-O` 선택 확인. **ARM64 운영 서버의 NPS, 전반적 승률, 다른 기보 모든 실수까지 해결됐다는 증거는 아님**. ARM64 17/17 테스트 실패 시 운영 엔진은 변경하지 않음.

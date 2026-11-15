@@ -51,6 +51,18 @@ std::uint64_t splitmix64(std::uint64_t& state) noexcept {
   return z ^ (z >> 31);
 }
 
+// V4.9.14: preserve the Witty Alien-derived repertoire except for one
+// observed first-move mismatch. A flank h/a-pawn nudge is not a reason to
+// play ...h5 on move one. Handle both 1.h3 (the actual PGN) and 1.a3
+// (the originally reported variant) without banning ...h5 elsewhere.
+bool avoid_first_reply_h5(const Board& board, const Move& move,
+                          const std::vector<Move>& moves) {
+  if (board.fullmove_number() != 1 || board.side_to_move() != Color::Black ||
+      moves.size() != 1 || move_to_uci(move) != "h7h5") return false;
+  const std::string first = move_to_uci(moves.front());
+  return first == "h2h3" || first == "a2a3";
+}
+
 }  // namespace
 
 UciEngine::UciEngine(Output output) : output_(std::move(output)) {
@@ -83,7 +95,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.13 Search Efficiency");
+    emit("id name JJUGLE Chaos v4.9.14 Verified Choice");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -380,9 +392,30 @@ void UciEngine::send_command(const std::string& line) {
         (board_.side_to_move() == Color::Black ? 1 : 0);
     if (own_book_ && opening_book_.available() &&
         book_ply < opening_book_.max_book_ply()) {
-      if (const auto book_move = opening_book_.choose_move(board_, next_book_random());
-          book_move && !(eval_mode_ == EvalMode::CHAOS &&
-              chaos_opening_repeated_piece_move(board_, *book_move, recent_game_moves_))) {
+      const std::uint64_t random = next_book_random();
+      auto book_move = opening_book_.choose_move(board_, random);
+      if (book_move && avoid_first_reply_h5(board_, *book_move, recent_game_moves_)) {
+        // Re-sample the original book's *other* legal candidates, if any.
+        // Never mutate the repertoire file or alter other book positions.
+        const auto candidates = opening_book_.lookup(board_);
+        std::uint64_t total = 0;
+        for (const auto& candidate : candidates)
+          if (!avoid_first_reply_h5(board_, candidate.move, recent_game_moves_))
+            total += candidate.weight;
+        book_move.reset();
+        if (total) {
+          std::uint64_t bucket = random % total;
+          for (const auto& candidate : candidates) {
+            if (avoid_first_reply_h5(board_, candidate.move, recent_game_moves_)) continue;
+            if (bucket < candidate.weight) { book_move = candidate.move; break; }
+            bucket -= candidate.weight;
+          }
+        }
+        emit("info string v4914_book_filter h5_flank_reply " +
+             std::string(book_move ? "alternate_book" : "engine_search"));
+      }
+      if (book_move && !(eval_mode_ == EvalMode::CHAOS &&
+          chaos_opening_repeated_piece_move(board_, *book_move, recent_game_moves_))) {
         Board post_move = board_;
         post_move.make_move(*book_move);
         if (const auto post_move_score = evaluate(post_move, eval_mode_)) {
@@ -603,6 +636,26 @@ void UciEngine::send_command(const std::string& line) {
                  << " depth " << result.completed_depth;
         emit(decision.str());
       }
+    }
+    if (!result.root_moves.empty()) {
+      const auto picked = std::find_if(result.root_moves.begin(), result.root_moves.end(),
+          [&](const RootMoveInfo& info) { return info.move == result.best_move; });
+      const char* bound = picked == result.root_moves.end() ? "missing" :
+          picked->bound == ScoreBound::Exact ? "exact" :
+          picked->bound == ScoreBound::Lower ? "lower" : "upper";
+      const char* proof = picked == result.root_moves.end() ? "missing" :
+          picked->style_proof == StyleProofResult::ExactScore ? "exact" :
+          picked->style_proof == StyleProofResult::ThresholdProven ? "threshold" :
+          picked->style_proof == StyleProofResult::ThresholdRejected ? "rejected" : "other";
+      emit("info string v4914_decision objective " + move_to_uci(result.objective_best_move) +
+           " chosen " + move_to_uci(result.best_move) +
+           " objective_cp " + std::to_string(result.score) +
+           " chosen_bound " + bound + " proof " + proof +
+           " final_check_attempted " + (result.v4914_final_check_attempted ? "1" : "0") +
+           " final_check_proven " + (result.v4914_final_check_proven ? "1" : "0") +
+           " final_check_rejected " + (result.v4914_final_check_rejected ? "1" : "0") +
+           " shallow_risk " + (result.v4914_shallow_risk_rejected ? "1" : "0") +
+           " final_check_floor_cp " + std::to_string(result.v4914_final_check_floor_cp));
     }
     if (result.v496_fighting_spirit)
       emit("info string v496_fighting_spirit 1 loss_cap_cp " +

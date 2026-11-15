@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4913 LANGUAGES CXX)
+project(HebiChessChaosV4914 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -136,4 +136,14 @@ if(JJUGLE_IPO_SUPPORTED)
   message(STATUS "JJUGLE production LTO: ENABLED")
 else()
   message(STATUS "JJUGLE production LTO: DISABLED (${JJUGLE_IPO_MESSAGE})")
+endif()
+
+# V4.9.14: book exception, bounded quiet-style proof, faster early clock,
+# and on-demand UCI profiling telemetry.
+add_executable(V4914DecisionTest tests/v4914_decision_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4914DecisionTest PRIVATE src)
+add_test(NAME chaos_v4914_verified_choice COMMAND V4914DecisionTest)
+if(JJUGLE_IPO_SUPPORTED)
+  set_property(TARGET V4914DecisionTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 endif()

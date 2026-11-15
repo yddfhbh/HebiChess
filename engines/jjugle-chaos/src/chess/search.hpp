@@ -157,6 +157,12 @@ struct SearchResult {
   SearchProfileStats profile{};
 #endif
   Move best_move{};
+  Move objective_best_move{};  // best exact completed root search, before style
+  bool v4914_final_check_attempted{false};
+  bool v4914_final_check_proven{false};
+  bool v4914_final_check_rejected{false};
+  bool v4914_shallow_risk_rejected{false};
+  int v4914_final_check_floor_cp{0};
   int score{0};
   // Updated only after all root moves (and any aspiration retry) finish.
   // A deadline can therefore never expose a partial root iteration as final.

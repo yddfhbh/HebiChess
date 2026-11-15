@@ -42,8 +42,13 @@ inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
 
   soft = std::min(std::clamp(soft, 35, 7000), safe);
 
-  int hard = std::max(soft * (early ? 4 : 3),
-                      soft + (early ? 2400 : 1200));
+  // V4.9.14: the former 4x early hard cap could spend ~9s at 180+2,
+  // even when the completed search was only depth 8. Keep the adaptive
+  // confidence target but limit expensive opening retries to about 4.5s
+  // at the default ThinkTimePercent=75 setting. Non-opening limits and
+  // low-clock emergency safety remain unchanged.
+  int hard = std::max(soft * (early ? 2 : 3),
+                      soft + (early ? 900 : 1200));
 
   if (remaining_ms < 60000)
     hard = std::min(hard, std::max(120,

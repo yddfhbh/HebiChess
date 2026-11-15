@@ -4045,6 +4045,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     last_completed = std::move(current);
     last_objective_best = objective_best;
     result.best_move = objective_best_move;
+    result.objective_best_move = objective_best_move;
     result.score = objective_best;
     result.completed_depth = depth;
     result.root_moves = last_completed;
@@ -5133,6 +5134,50 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
           break;
         }
       }
+    }
+  }
+
+  // V4.9.14 VERIFIED ROOT CHOICE: a PVS upper bound is not an
+  // exact move score. The old style proof at objective-125cp could permit
+  // a dubious check, capture or queen retreat. Before a *timed* opening
+  // root choice leaves the completed objective best, demand a stricter
+  // 45cp score-floor proof. A searched/objective tactical sacrifice stays
+  // intact. Do not alter losing-position draw defense, proven mate-threat
+  // counterattacks or established queen-preservation exceptions. Fixed-
+  // depth analysis and existing regression behavior remain unchanged.
+  if (limits.has_deadline && limits.eval_mode == EvalMode::CHAOS &&
+      chosen != &*objective_move && !result.v48_queen_preserved &&
+      !result.v4910_mate_threat_selected && !result.v497_desperation_defense &&
+      !result.v496_fighting_spirit && !mate_found && !root_in_check &&
+      !desperation_context && position.fullmove_number() <= 16 &&
+      objective_best >= -250) {
+    const int threshold = objective_best - 45;
+    result.v4914_final_check_floor_cp = threshold;
+    result.v4914_final_check_attempted = true;
+    bool passed = !style_cancellation.should_cancel() &&
+                  chosen->bound == ScoreBound::Exact &&
+                  chosen->search_score >= threshold;
+    if (!passed && chosen->bound != ScoreBound::Exact &&
+        !style_cancellation.should_cancel()) {
+      const UndoState undo = root.make_move(chosen->move);
+      const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                      -threshold + 1, 1, verification);
+      root.unmake_move(chosen->move, undo);
+      passed = !verification.stopped && !style_cancellation.should_cancel() &&
+               proof >= threshold;
+    }
+    // A shallow, volatile losing root is particularly vulnerable to an
+    // upper-bound checking "idea" that only passed a zero-window proof.
+    // Preserve exact-scored tactical resources; avoid speculative overrides
+    // when the last search iterations are still swinging heavily.
+    const bool shallow_unstable = chosen->bound != ScoreBound::Exact &&
+        depth <= 8 && objective_best <= -80 && result.time_score_swing >= 30;
+    result.v4914_shallow_risk_rejected = shallow_unstable;
+    passed = passed && !shallow_unstable;
+    result.v4914_final_check_proven = passed;
+    if (!passed) {
+      chosen = &*objective_move;
+      result.v4914_final_check_rejected = true;
     }
   }
 
