@@ -83,13 +83,14 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.12 Development Continuation");
+    emit("id name JJUGLE Chaos v4.9.13 Search Efficiency");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
     emit("option name BookSeed type string default 0");
     emit("option name EvalMode type combo default CHAOS var CHAOS var HCE var NNUE");
     emit("option name MaxMoveTime type spin default 0 min 0 max 600000");
+    emit("option name ThinkTimePercent type spin default 75 min 35 max 125");
 #ifndef HEBICHESS_WASM
     emit("option name EvalFile type string default ");
 #endif
@@ -207,6 +208,17 @@ void UciEngine::send_command(const std::string& line) {
         emit("info string error EvalMode NNUE unavailable: no network loaded; retaining " +
              std::string(eval_mode_ == EvalMode::HCE ? "HCE" :
                          eval_mode_ == EvalMode::CHAOS ? "CHAOS" : "NNUE"));
+      }
+    } else if (name == "ThinkTimePercent") {
+      std::istringstream value_input(value);
+      int pct = 0;
+      char trailing = 0;
+      if (!(value_input >> pct) || (value_input >> trailing) ||
+          pct < 35 || pct > 125) {
+        emit("info string error invalid ThinkTimePercent");
+      } else {
+        think_time_percent_ = pct;
+        emit("info string ThinkTimePercent " + std::to_string(think_time_percent_));
       }
     } else if (name == "MaxMoveTime") {
       int value_ms = 0;
@@ -349,6 +361,7 @@ void UciEngine::send_command(const std::string& line) {
         const int increment = board_.side_to_move() == Color::White ? winc : binc;
         time_budget = allocate_time_budget(remaining, increment, false,
                                            board_.fullmove_number());
+        time_budget = scale_time_budget(time_budget, think_time_percent_);
       }
       if (max_move_time_ms_ > 0) {
         time_budget.soft_ms = std::min(time_budget.soft_ms, max_move_time_ms_);

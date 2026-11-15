@@ -34,6 +34,7 @@ class UciEngine {
   std::vector<Move> recent_game_moves_{};
   EvalMode eval_mode_{EvalMode::CHAOS};
   int max_move_time_ms_{0};
+  int think_time_percent_{75};  // Clock-budget scaling, not an explicit movetime override.
   OpeningBook opening_book_;
   bool own_book_{false};
   std::uint64_t book_seed_{0};

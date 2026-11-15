@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4912 LANGUAGES CXX)
+project(HebiChessChaosV4913 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -25,7 +25,7 @@ target_compile_definitions(ChessCoreProduction PRIVATE
   HEBICHESS_QSEARCH_TT_CUTOFF_MASK=7
   HEBICHESS_QSEARCH_TT_PROFILE=0
   HEBICHESS_QSEARCH_TT_DIAGNOSTIC=0
-  HEBICHESS_QSEARCH_LAZY_CHECKS=0
+  HEBICHESS_QSEARCH_LAZY_CHECKS=1
   HEBICHESS_NNUE_HIDDEN1_VARIANT=8
   HEBICHESS_NMP_CANDIDATE_G=0
   HEBICHESS_EVALCACHE_EXACT=1
@@ -114,3 +114,26 @@ add_executable(V4912DevelopmentConversionTest tests/v4912_development_conversion
   $<TARGET_OBJECTS:ChessCoreProduction>)
 target_include_directories(V4912DevelopmentConversionTest PRIVATE src)
 add_test(NAME chaos_v4912_development_conversion COMMAND V4912DevelopmentConversionTest)
+
+# V4.9.13: optimized SEE must match the full legal-exchange reference;
+# clock policy can be selected by the UCI client without touching book moves.
+add_executable(V4913EfficiencyTest tests/v4913_efficiency_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4913EfficiencyTest PRIVATE src)
+add_test(NAME chaos_v4913_efficiency COMMAND V4913EfficiencyTest)
+
+# V4.9.13: enable link-time optimization only for the production search core
+# and its consumers when supported by the compiler/toolchain. Keep the
+# diagnostic/default builds unchanged to preserve test coverage and behavior.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT JJUGLE_IPO_SUPPORTED OUTPUT JJUGLE_IPO_MESSAGE LANGUAGES CXX)
+if(JJUGLE_IPO_SUPPORTED)
+  foreach(target ChessCoreProduction HebiChess QueenStyleTest
+          V4910KingThreatTest V4911DefensivePressureTest
+          V4912DevelopmentConversionTest V4913EfficiencyTest)
+    set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  endforeach()
+  message(STATUS "JJUGLE production LTO: ENABLED")
+else()
+  message(STATUS "JJUGLE production LTO: DISABLED (${JJUGLE_IPO_MESSAGE})")
+endif()

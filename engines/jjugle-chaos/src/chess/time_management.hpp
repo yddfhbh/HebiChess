@@ -62,6 +62,15 @@ inline TimeBudget allocate_time_budget(int remaining_ms, int increment_ms,
   return {soft, hard};
 }
 
+// Scale only clock-driven searches. Explicit `go movetime` remains exact.
+// Scaling both soft/hard budgets keeps the established safety reserve and
+// time-confidence logic while letting the UCI client tune perceived latency.
+inline TimeBudget scale_time_budget(TimeBudget budget, int percent) noexcept {
+  const int scale = std::clamp(percent, 35, 125);
+  return {std::max(1, budget.soft_ms * scale / 100),
+          std::max(1, budget.hard_ms * scale / 100)};
+}
+
 enum class TimeConfidence { High, Medium, Low, VeryLow };
 
 struct TimeEvidence {

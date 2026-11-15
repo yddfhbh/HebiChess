@@ -15,31 +15,6 @@ Square at(int file, int rank) noexcept {
                                 static_cast<std::uint8_t>(rank));
 }
 
-bool attacks_target(const Board& board, Square from, Square target) noexcept {
-  const Piece piece = board.piece_at(from);
-  const int df = static_cast<int>(target.file()) - from.file();
-  const int dr = static_cast<int>(target.rank()) - from.rank();
-  if (piece.type == PieceType::Pawn)
-    return dr == (piece.color == Color::White ? 1 : -1) && (df == 1 || df == -1);
-  if (piece.type == PieceType::Knight) return df * df + dr * dr == 5;
-  if (piece.type == PieceType::King)
-    return std::max(std::abs(df), std::abs(dr)) == 1;
-
-  const bool diagonal = df != 0 && dr != 0 && std::abs(df) == std::abs(dr);
-  const bool straight = (df == 0) != (dr == 0);
-  if ((piece.type == PieceType::Bishop && !diagonal) ||
-      (piece.type == PieceType::Rook && !straight) ||
-      (piece.type == PieceType::Queen && !diagonal && !straight)) return false;
-
-  const int sf = df == 0 ? 0 : (df > 0 ? 1 : -1);
-  const int sr = dr == 0 ? 0 : (dr > 0 ? 1 : -1);
-  for (int file = from.file() + sf, rank = from.rank() + sr;
-       file != target.file() || rank != target.rank(); file += sf, rank += sr) {
-    if (!board.piece_at(at(file, rank)).is_empty()) return false;
-  }
-  return true;
-}
-
 int promotion_gain(const Piece& piece, const Move& move) noexcept {
   return move.is_promotion() ? piece_value(move.promotion) - piece_value(piece.type) : 0;
 }
@@ -59,22 +34,58 @@ std::optional<Move> least_valuable_attacker(Board& board, Square target,
 
   std::optional<Move> best;
   int best_value = 100000;
-  for (std::uint8_t index = 0; index < Square::kSquareCount; ++index) {
-    const Square from = Square::from_index(index);
+  const auto consider = [&](Square from, PieceType expected_type = PieceType::None) {
+    if (!from.is_valid()) return;
     const Piece attacker = board.piece_at(from);
     if (attacker.is_empty() || attacker.color != side ||
-        !attacks_target(board, from, target)) continue;
+        (expected_type != PieceType::None && attacker.type != expected_type)) return;
+    const int value = piece_value(attacker.type);
+    if (value > best_value ||
+        (best.has_value() && value == best_value && from.index() >= best->from.index()))
+      return;
     const bool promotes = attacker.type == PieceType::Pawn &&
                           (target.rank() == 0 || target.rank() == 7);
     const Move move{from, target, promotes ? PieceType::Queen : PieceType::None,
                     promotes ? MoveFlag::PromotionCapture : MoveFlag::Capture};
-    if (!legal_capture(board, move, side)) continue;
-    const int value = piece_value(attacker.type);
-    if (!best.has_value() || value < best_value) {
-      best = move;
-      best_value = value;
+    if (!legal_capture(board, move, side)) return;
+    best = move;
+    best_value = value;
+  };
+
+  // Work outwards from the target rather than testing all 64 origin squares.
+  // This is equivalent to finding the first legal attacker of minimum value;
+  // ties keep the original lowest-square-index ordering.
+  const int file = target.file();
+  const int rank = target.rank();
+  const int pawn_rank = rank + (side == Color::White ? -1 : 1);
+  consider(at(file - 1, pawn_rank), PieceType::Pawn);
+  consider(at(file + 1, pawn_rank), PieceType::Pawn);
+  if (best_value == piece_value(PieceType::Pawn)) return best;
+
+  static constexpr int knight_steps[8][2] = {
+      {1, 2}, {2, 1}, {2, -1}, {1, -2}, {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2}};
+  for (const auto& step : knight_steps)
+    consider(at(file + step[0], rank + step[1]), PieceType::Knight);
+
+  static constexpr int directions[8][2] = {
+      {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+      {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+  for (int ray = 0; ray < 8; ++ray) {
+    for (int f = file + directions[ray][0], r = rank + directions[ray][1];
+         f >= 0 && f < 8 && r >= 0 && r < 8;
+         f += directions[ray][0], r += directions[ray][1]) {
+      const Square from = at(f, r);
+      const Piece piece = board.piece_at(from);
+      if (piece.is_empty()) continue;
+      if (piece.color == side &&
+          (piece.type == PieceType::Queen ||
+           piece.type == (ray < 4 ? PieceType::Rook : PieceType::Bishop)))
+        consider(from);
+      break;
     }
   }
+  for (const auto& step : directions)
+    consider(at(file + step[0], rank + step[1]), PieceType::King);
   return best;
 }
 
@@ -112,6 +123,11 @@ int static_exchange_eval(const Board& board, const Move& move) noexcept {
 
   Board after = board;
   after.make_move(move);
+  // Fast path: if the just-captured square has no geometric recapturer,
+  // even a pinned/illegal recapture is impossible. Avoid the SEE exchange
+  // tree and its repeated whole-board attacker scans in this common case.
+  // A positive attack check is only a hint: the legal SEE remains authoritative.
+  if (!after.is_square_attacked(move.to, opposite(moving.color))) return gain;
   gain -= reply_exchange(after, move.to);
   return gain;
 }
