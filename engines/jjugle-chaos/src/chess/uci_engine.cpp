@@ -95,7 +95,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.14 Verified Choice");
+    emit("id name JJUGLE Chaos v4.9.15 Attack Formation");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -647,6 +647,15 @@ void UciEngine::send_command(const std::string& line) {
           picked->style_proof == StyleProofResult::ExactScore ? "exact" :
           picked->style_proof == StyleProofResult::ThresholdProven ? "threshold" :
           picked->style_proof == StyleProofResult::ThresholdRejected ? "rejected" : "other";
+      const auto selected = std::find_if(result.root_moves.begin(), result.root_moves.end(),
+          [&](const RootMoveInfo& row) { return row.move == result.best_move; });
+      const int formation_bonus = selected != result.root_moves.end()
+          ? selected->v4915_formation_bonus : 0;
+      emit("info string v4915_attack_formation queen_veto " +
+           std::string(result.v4915_quiet_queen_veto ? "1" : "0") +
+           " queen_tempo_candidates " + std::to_string(result.v4915_queen_tempo_candidates) +
+           " queen_tempo_selected " + std::string(result.v4915_queen_tempo_selected ? "1" : "0") +
+           " chosen_formation_bonus " + std::to_string(formation_bonus));
       emit("info string v4914_decision objective " + move_to_uci(result.objective_best_move) +
            " chosen " + move_to_uci(result.best_move) +
            " objective_cp " + std::to_string(result.score) +

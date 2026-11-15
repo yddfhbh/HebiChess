@@ -47,7 +47,7 @@ void check_hce_consistency() {
 void check_uci() {
  std::vector<std::string> lines;UciEngine engine([&](const std::string& s){lines.push_back(s);});
  engine.send_command("uci");bool ok=false;
- for(const auto& s: lines)ok|=s=="id name JJUGLE Chaos v4.9.14 Verified Choice";
+ for(const auto& s: lines)ok|=s=="id name JJUGLE Chaos v4.9.15 Attack Formation";
  need(ok,"UCI identifies v4.9.11");
 }
 }

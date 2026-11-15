@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4914 LANGUAGES CXX)
+project(HebiChessChaosV4915 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -146,4 +146,13 @@ target_include_directories(V4914DecisionTest PRIVATE src)
 add_test(NAME chaos_v4914_verified_choice COMMAND V4914DecisionTest)
 if(JJUGLE_IPO_SUPPORTED)
   set_property(TARGET V4914DecisionTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
+# V4.9.15: verified queen-tempo attack and sacrificial combination retention.
+add_executable(V4915AttackFormationTest tests/v4915_attack_formation_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4915AttackFormationTest PRIVATE src)
+add_test(NAME chaos_v4915_attack_formation COMMAND V4915AttackFormationTest)
+if(JJUGLE_IPO_SUPPORTED)
+  set_property(TARGET V4915AttackFormationTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 endif()

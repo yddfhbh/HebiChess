@@ -73,6 +73,7 @@ struct RootMoveInfo {
   int shield_pawns_removed{0};
   int opened_king_lines{0};
   int sacrifice_motif_delta{0};
+  int v4915_formation_bonus{0};
   int see_score{0};
 };
 
@@ -163,6 +164,9 @@ struct SearchResult {
   bool v4914_final_check_rejected{false};
   bool v4914_shallow_risk_rejected{false};
   int v4914_final_check_floor_cp{0};
+  bool v4915_quiet_queen_veto{false};
+  int v4915_queen_tempo_candidates{0};
+  bool v4915_queen_tempo_selected{false};
   int score{0};
   // Updated only after all root moves (and any aspiration retry) finish.
   // A deadline can therefore never expose a partial root iteration as final.

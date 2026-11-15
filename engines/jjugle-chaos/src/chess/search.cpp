@@ -1034,6 +1034,9 @@ bool attacks_king_ring(const Board& board, Square from, Color attacker,
 struct StyleAttackState {
   int ring_control{0};
   int ring_participants{0};
+  // Distinguish coordinated major/minor pressure from a solo queen raid.
+  int heavy_ring_participants{0};
+  int minor_ring_participants{0};
   int congregation{0};
   int open_lines{0};
   int checking_motifs{0};
@@ -1083,7 +1086,12 @@ StyleAttackState style_attack_state(const Board& board, Color attacker, bool bef
     if (piece.color != attacker || piece.is_empty()) continue;
     if (piece.type == PieceType::Knight || piece.type == PieceType::Bishop ||
         piece.type == PieceType::Rook || piece.type == PieceType::Queen) {
-      if (attacks_king_ring(board, square, attacker, king)) ++state.ring_participants;
+      if (attacks_king_ring(board, square, attacker, king)) {
+        ++state.ring_participants;
+        if (piece.type == PieceType::Rook || piece.type == PieceType::Queen)
+          ++state.heavy_ring_participants;
+        else ++state.minor_ring_participants;
+      }
       // A compact, capped measure of piece concentration toward the enemy king.
       state.congregation += std::max(0, 5 - chebyshev_distance(square, king));
     }
@@ -1386,6 +1394,20 @@ RootStyleContext make_root_style_context(const Board& before) {
           undeveloped_minor_count(before, attacker), before.find_king(attacker)};
 }
 
+// Reward forming a genuine heavy/minor-piece battery near an exposed king.
+// It is intentionally tiny compared with the objective score and never
+// bypasses the bounded root proof. Report separately for live review.
+int coordinated_formation_bonus(const StyleAttackState& before,
+                                const StyleAttackState& after,
+                                const Move& move, Piece moving) noexcept {
+  if (!is_quiet_move(move) || moving.type == PieceType::King ||
+      after.ring_control < 2 || after.heavy_ring_participants < 1 ||
+      after.minor_ring_participants < 1 ||
+      after.ring_participants <= before.ring_participants) return 0;
+  const int fresh = std::clamp(after.ring_participants - before.ring_participants, 0, 2);
+  return 5 * fresh + (after.checking_motifs > before.checking_motifs ? 3 : 0);
+}
+
 int style_score_from_metadata(const RootStyleContext& context, const Move& move,
                               const Board& after, const StyleAttackState& after_attack,
                               bool check, int escape_delta, bool sacrifice_candidate) noexcept {
@@ -1424,6 +1446,7 @@ int style_score_from_metadata(const RootStyleContext& context, const Move& move,
     }
     style += bonus;
   }
+  style += coordinated_formation_bonus(before_attack, after_attack, move, moving);
   if (sacrifice_candidate) style += check ? 8 : 5;
   style += exchange_preservation_adjustment(
       before, move, after, before_attack, after_attack,
@@ -1483,6 +1506,8 @@ void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
   info.sacrifice_candidate = info.sacrifice_kind != SacrificeKind::None;
   info.style_score = style_score_from_metadata(context, info.move, after, after_attack,
                                                 check, escape_delta, info.sacrifice_candidate);
+  info.v4915_formation_bonus = coordinated_formation_bonus(
+      context.before_attack, after_attack, info.move, before.piece_at(info.move.from));
   info.king_break = after_attack.king_shield < context.before_attack.king_shield ||
                     after_attack.open_lines > context.before_attack.open_lines;
   info.style_tolerance = kStyleBaseCp;
@@ -5178,6 +5203,79 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     if (!passed) {
       chosen = &*objective_move;
       result.v4914_final_check_rejected = true;
+    }
+  }
+
+  // V4.9.15 — DECLINING AN UNSUPPORTED EARLY QUEEN EXCURSION.
+  // v4.9.14 can still accept an upper-bound quiet queen alternative after
+  // a 45cp zero-window proof (12...Qe5 in DE9Q4KMj).  A next-move
+  // *sacrifice motif* by itself is not enough evidence for another queen
+  // excursion: require real new contact with the king, an actual check,
+  // a capture, a king break, or an exact value.  Keep objective queen moves.
+  if (limits.has_deadline && limits.eval_mode == EvalMode::CHAOS &&
+      chosen != &*objective_move && !mate_found && !root_in_check &&
+      !result.v48_queen_preserved && !result.v497_desperation_defense &&
+      !result.v4910_mate_threat_selected &&
+      position.fullmove_number() <= 20 &&
+      chosen->bound != ScoreBound::Exact &&
+      position.piece_at(chosen->move.from).type == PieceType::Queen &&
+      is_quiet_move(chosen->move) && !chosen->king_break &&
+      !chosen->sacrifice_candidate &&
+      chosen->attack_check_reward == 0 &&
+      chosen->attack_ring_reward == 0 &&
+      chosen->attack_participant_reward == 0 &&
+      chosen->attack_line_reward == 0) {
+    result.v4915_quiet_queen_veto = true;
+    chosen = &*objective_move;
+  }
+
+  // V4.9.15 — FORCING TEMPO AGAINST A LOOSE ENEMY QUEEN.
+  // A safe pawn push directly attacking a queen can be an important
+  // initiative resource even in a difficult position (35.g4 in 6CGQ7z5B).
+  // Try a bounded *full-search threshold proof* before overriding the
+  // objective choice; do not inject a positional bonus into negamax/TT.
+  // Limit this to one pawn candidate and the remaining hard-clock budget.
+  if (limits.has_deadline && limits.eval_mode == EvalMode::CHAOS &&
+      chosen == &*objective_move && !mate_found && !root_in_check &&
+      !desperation_context && objective_best >= -500 && objective_best <= 180 &&
+      !style_cancellation.should_cancel()) {
+    const Color us = position.side_to_move();
+    const Square enemy_queen = [&]() {
+      for (std::uint8_t k = 0; k < Square::kSquareCount; ++k) {
+        const Square square = Square::from_index(k);
+        if (position.piece_at(square) == Piece{PieceType::Queen, opposite(us)})
+          return square;
+      }
+      return Square{};
+    }();
+    if (enemy_queen.is_valid() &&
+        !position.is_square_attacked(enemy_queen, us)) {
+      for (RootMoveInfo& alt : current) {
+        if (style_cancellation.should_cancel()) break;
+        if (alt.move == chosen->move || !is_quiet_move(alt.move) ||
+            position.piece_at(alt.move.from).type != PieceType::Pawn) continue;
+        Board after = position;
+        after.make_move(alt.move);
+        if (!piece_attacks_square(after, alt.move.to, enemy_queen, us)) continue;
+        ++result.v4915_queen_tempo_candidates;
+        constexpr int kFloorLossCp = 35;
+        const int threshold = objective_best - kFloorLossCp;
+        bool proven = alt.bound == ScoreBound::Exact &&
+                      alt.search_score >= threshold;
+        if (!proven && !style_cancellation.should_cancel()) {
+          const UndoState undo = root.make_move(alt.move);
+          const int proof = -negamax_impl(root, depth - 1, -threshold,
+                                          -threshold + 1, 1, verification);
+          root.unmake_move(alt.move, undo);
+          proven = !verification.stopped && !style_cancellation.should_cancel() &&
+                   proof >= threshold;
+        }
+        if (proven) {
+          chosen = &alt;
+          result.v4915_queen_tempo_selected = true;
+        }
+        break;
+      }
     }
   }
 
