@@ -95,7 +95,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.9.15 Attack Formation");
+    emit("id name JJUGLE Chaos v4.10.0 Verified Attack Planning");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -656,6 +656,11 @@ void UciEngine::send_command(const std::string& line) {
            " queen_tempo_candidates " + std::to_string(result.v4915_queen_tempo_candidates) +
            " queen_tempo_selected " + std::string(result.v4915_queen_tempo_selected ? "1" : "0") +
            " chosen_formation_bonus " + std::to_string(formation_bonus));
+      const int rook_lift_bonus = selected != result.root_moves.end()
+          ? selected->v4100_rook_lift_bonus : 0;
+      emit("info string v4100_attack_planning midgame_queen_veto " +
+           std::string(result.v4100_midgame_queen_veto ? "1" : "0") +
+           " selected_rook_lift_bonus " + std::to_string(rook_lift_bonus));
       emit("info string v4914_decision objective " + move_to_uci(result.objective_best_move) +
            " chosen " + move_to_uci(result.best_move) +
            " objective_cp " + std::to_string(result.score) +

@@ -1408,6 +1408,72 @@ int coordinated_formation_bonus(const StyleAttackState& before,
   return 5 * fresh + (after.checking_motifs > before.checking_motifs ? 3 : 0);
 }
 
+// V4.10.0 — ROOK LIFT PLANNING, ROOT STYLE ONLY.
+// A rook on the third rank is a preparation move, not an attack by itself.
+// Award a small bonus only when the queen is present, the enemy king is on
+// its castled side and the rook can actually swing across to the outside file
+// without passing through a piece. This intentionally does not affect HCE,
+// negamax, tactical sacrifice scores or transposition-table entries.
+int rook_lift_preparation_bonus(const Board& before, const Board& after,
+                                const Move& move) noexcept {
+  if (!is_quiet_move(move) ||
+      before.piece_at(move.from).type != PieceType::Rook) return 0;
+  const Color us = before.side_to_move();
+  const Color them = opposite(us);
+  const Square king = before.find_king(them);
+  if (!king.is_valid() ||
+      (them == Color::White ? king.rank() > 1 : king.rank() < 6) ||
+      (king.file() > 2 && king.file() < 5)) return 0;
+  const int from_relative = us == Color::White ? move.from.rank() : 7 - move.from.rank();
+  const int to_relative = us == Color::White ? move.to.rank() : 7 - move.to.rank();
+  if (from_relative > 1 || to_relative < 2 || to_relative > 3 ||
+      to_relative <= from_relative ||
+      after.is_square_attacked(move.to, them)) return 0;
+  bool queen_support = false;
+  for (std::uint8_t i = 0; i < Square::kSquareCount; ++i) {
+    const Square sq = Square::from_index(i);
+    if (before.piece_at(sq) != Piece{PieceType::Queen, us}) continue;
+    queen_support = chebyshev_distance(sq, king) <= 5;
+    break;
+  }
+  if (!queen_support) return 0;
+  // From the third rank, the rook may turn toward either the enemy-king
+  // file (Rf3/Rg3) or the outside file (Rh3/Ra3).  Count a pathway only if
+  // its horizontal squares are truly clear and the staging square is safe.
+  const int outside = king.file() >= 5 ? 7 : 0;
+  for (int file : {static_cast<int>(king.file()), outside}) {
+    if (file == move.to.file()) continue;
+    const int step = file > move.to.file() ? 1 : -1;
+    bool clear = true;
+    for (int f = static_cast<int>(move.to.file()) + step; f != file + step; f += step) {
+      if (!after.piece_at(Square::from_file_rank(
+             static_cast<std::uint8_t>(f), move.to.rank())).is_empty()) {
+        clear = false;
+        break;
+      }
+    }
+    const Square staging = Square::from_file_rank(
+        static_cast<std::uint8_t>(file), move.to.rank());
+    if (!clear || after.is_square_attacked(staging, them)) continue;
+    // An unobstructed rook-file approach is concrete. The outside-file
+    // swing is slightly less forcing, and receives a smaller bonus.
+    if (file == king.file()) {
+      const int vertical_step = king.rank() > move.to.rank() ? 1 : -1;
+      int blockers = 0;
+      for (int r = static_cast<int>(move.to.rank()) + vertical_step;
+           r != static_cast<int>(king.rank()); r += vertical_step) {
+        const Piece piece = after.piece_at(Square::from_file_rank(
+            static_cast<std::uint8_t>(file), static_cast<std::uint8_t>(r)));
+        if (piece.color == us && !piece.is_empty()) blockers = 2;
+        else if (!piece.is_empty()) ++blockers;
+      }
+      if (blockers <= 1) return 14;
+    }
+    else return 10;
+  }
+  return 0;
+}
+
 int style_score_from_metadata(const RootStyleContext& context, const Move& move,
                               const Board& after, const StyleAttackState& after_attack,
                               bool check, int escape_delta, bool sacrifice_candidate) noexcept {
@@ -1447,6 +1513,7 @@ int style_score_from_metadata(const RootStyleContext& context, const Move& move,
     style += bonus;
   }
   style += coordinated_formation_bonus(before_attack, after_attack, move, moving);
+  style += rook_lift_preparation_bonus(before, after, move);
   if (sacrifice_candidate) style += check ? 8 : 5;
   style += exchange_preservation_adjustment(
       before, move, after, before_attack, after_attack,
@@ -1508,6 +1575,7 @@ void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
                                                 check, escape_delta, info.sacrifice_candidate);
   info.v4915_formation_bonus = coordinated_formation_bonus(
       context.before_attack, after_attack, info.move, before.piece_at(info.move.from));
+  info.v4100_rook_lift_bonus = rook_lift_preparation_bonus(before, after, info.move);
   info.king_break = after_attack.king_shield < context.before_attack.king_shield ||
                     after_attack.open_lines > context.before_attack.open_lines;
   info.style_tolerance = kStyleBaseCp;
@@ -4257,10 +4325,23 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     const bool cheap_concrete_move = is_capture(info.move) || info.move.is_promotion() ||
         moving.type == PieceType::Queen ||
         (moving.type != PieceType::Pawn && moving.type != PieceType::King && proximity <= 3);
+    // V4.10.0: a rook lift is normally a quiet upper-bound move and was
+    // filtered before style metadata even saw it. Admit only the narrowly
+    // defined rook-swing pattern into metadata; it still needs the normal
+    // completed score-floor proof before it can replace an objective move.
+    bool verified_rook_lift_shape = false;
+    if (limits.eval_mode == EvalMode::CHAOS && limits.use_style_v3 &&
+        moving.type == PieceType::Rook && is_quiet_move(info.move)) {
+      Board rook_probe = root;
+      rook_probe.make_move(info.move);
+      verified_rook_lift_shape =
+          rook_lift_preparation_bonus(position, rook_probe, info.move) > 0;
+    }
     // Preserve diagnostics for obviously concrete captures even when an
     // objective loss makes them ineligible for selection.  Quiet motif work
-    // remains strictly capped by the 125cp selection bound.
+    // remains strictly capped by the root score-floor proof.
     if ((info.bound != ScoreBound::Exact || loss > maximum_loss) &&
+        !verified_rook_lift_shape &&
         !(limits.use_style_v3 && cheap_concrete_move &&
           winning_style_cap_cp == kStyleSacrificeCp)) continue;
     Board child = root;
@@ -4346,7 +4427,7 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     ++result.root_style_candidates;
     if (limits.use_style_v3 &&
         !(info.sacrifice_candidate || info.king_break || info.sacrifice_preparation ||
-          info.style_tolerance > kStyleBaseCp)) {
+          info.v4100_rook_lift_bonus > 0 || info.style_tolerance > kStyleBaseCp)) {
       info.style_proof = StyleProofResult::PrefilterSkipped;
       ++result.root_style_prefilter_skips;
       continue;
@@ -5227,6 +5308,28 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
       chosen->attack_line_reward == 0) {
     result.v4915_quiet_queen_veto = true;
     chosen = &*objective_move;
+  }
+
+  // V4.10.0 — MIDGAME QUEEN SORTIE GUARD.
+  // Extend the early queen veto to turns 21-45, without touching objective
+  // search, forced checks, captures, supported king breaks or sacrifices.
+  // An upper-bound queen move that creates no genuine king contact should
+  // not replace the completed objective best for style reasons alone.
+  if (limits.has_deadline && limits.eval_mode == EvalMode::CHAOS &&
+      chosen != &*objective_move && !mate_found && !root_in_check &&
+      !result.v48_queen_preserved && !result.v497_desperation_defense &&
+      !result.v4910_mate_threat_selected &&
+      position.fullmove_number() > 20 && position.fullmove_number() <= 45 &&
+      chosen->bound != ScoreBound::Exact &&
+      position.piece_at(chosen->move.from).type == PieceType::Queen &&
+      is_quiet_move(chosen->move) && !chosen->king_break &&
+      !chosen->sacrifice_candidate &&
+      chosen->attack_check_reward == 0 &&
+      chosen->attack_ring_reward == 0 &&
+      chosen->attack_participant_reward == 0 &&
+      chosen->attack_line_reward == 0) {
+    chosen = &*objective_move;
+    result.v4100_midgame_queen_veto = true;
   }
 
   // V4.9.15 — FORCING TEMPO AGAINST A LOOSE ENEMY QUEEN.

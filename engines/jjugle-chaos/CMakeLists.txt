@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4915 LANGUAGES CXX)
+project(HebiChessChaosV4100 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -126,7 +126,13 @@ add_test(NAME chaos_v4913_efficiency COMMAND V4913EfficiencyTest)
 # and its consumers when supported by the compiler/toolchain. Keep the
 # diagnostic/default builds unchanged to preserve test coverage and behavior.
 include(CheckIPOSupported)
-check_ipo_supported(RESULT JJUGLE_IPO_SUPPORTED OUTPUT JJUGLE_IPO_MESSAGE LANGUAGES CXX)
+option(JJUGLE_DISABLE_LTO "Disable LTO for rapid cross-platform regression builds" OFF)
+if(JJUGLE_DISABLE_LTO)
+  set(JJUGLE_IPO_SUPPORTED FALSE)
+  set(JJUGLE_IPO_MESSAGE "disabled by build option")
+else()
+  check_ipo_supported(RESULT JJUGLE_IPO_SUPPORTED OUTPUT JJUGLE_IPO_MESSAGE LANGUAGES CXX)
+endif()
 if(JJUGLE_IPO_SUPPORTED)
   foreach(target ChessCoreProduction HebiChess QueenStyleTest
           V4910KingThreatTest V4911DefensivePressureTest
@@ -155,4 +161,14 @@ target_include_directories(V4915AttackFormationTest PRIVATE src)
 add_test(NAME chaos_v4915_attack_formation COMMAND V4915AttackFormationTest)
 if(JJUGLE_IPO_SUPPORTED)
   set_property(TARGET V4915AttackFormationTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
+# V4.10.0: midgame queen sortie veto, verified rook-lift preparation and
+# real-game endgame passer/risk regression.
+add_executable(V4100AttackPlanningTest tests/v4100_attack_planning_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4100AttackPlanningTest PRIVATE src)
+add_test(NAME chaos_v4100_attack_planning COMMAND V4100AttackPlanningTest)
+if(JJUGLE_IPO_SUPPORTED)
+  set_property(TARGET V4100AttackPlanningTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 endif()

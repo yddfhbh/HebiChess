@@ -101,7 +101,7 @@ void test_uci_and_hce() {
     uci.send_command("uci");
     bool found=false;
     for(const auto& line:output)
-       if(line=="id name JJUGLE Chaos v4.9.15 Attack Formation")found=true;
+       if(line=="id name JJUGLE Chaos v4.10.0 Verified Attack Planning")found=true;
     require(found,"v4.9.12 UCI identity");
     auto b=Board::from_fen(kWinning27);require(b.has_value(),"HCE fixture");
     require(evaluate_hce(*b)==evaluate_breakdown(*b,b->side_to_move()).total,
