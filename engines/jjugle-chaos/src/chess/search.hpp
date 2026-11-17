@@ -75,6 +75,7 @@ struct RootMoveInfo {
   int sacrifice_motif_delta{0};
   int v4915_formation_bonus{0};
   int v4100_rook_lift_bonus{0};
+  bool v4101_queen_pawn_tempo{false};
   int see_score{0};
 };
 

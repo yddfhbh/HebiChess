@@ -69,7 +69,7 @@ void test_engine_uci_identity() {
   engine.send_command("uci");
   bool found = false;
   for (const auto& item : messages)
-    found |= item == "id name JJUGLE Chaos v4.10.0 Verified Attack Planning";
+    found |= item == "id name JJUGLE Chaos v4.10.1 Attack Continuation";
   require(found, "UCI v4.9.10 identity");
 }
 } // namespace

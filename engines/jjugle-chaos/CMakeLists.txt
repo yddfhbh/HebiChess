@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HebiChessChaosV4100 LANGUAGES CXX)
+project(HebiChessChaosV4101 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -171,4 +171,13 @@ target_include_directories(V4100AttackPlanningTest PRIVATE src)
 add_test(NAME chaos_v4100_attack_planning COMMAND V4100AttackPlanningTest)
 if(JJUGLE_IPO_SUPPORTED)
   set_property(TARGET V4100AttackPlanningTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
+# v4.10.1: preserve attacking sacrifice but reject pawn-parried checking queen tempos.
+add_executable(V4101AttackContinuationTest tests/v4101_attack_continuation_test.cpp
+  $<TARGET_OBJECTS:ChessCoreProduction>)
+target_include_directories(V4101AttackContinuationTest PRIVATE src)
+add_test(NAME chaos_v4101_attack_continuation COMMAND V4101AttackContinuationTest)
+if(JJUGLE_IPO_SUPPORTED)
+  set_property(TARGET V4101AttackContinuationTest PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
 endif()

@@ -58,7 +58,7 @@ void test_book_identity_and_real_case() {
   UciEngine engine([&](const std::string& s){lines.push_back(s);});
   engine.send_command("uci");
   require(std::find(lines.begin(),lines.end(),
-      "id name JJUGLE Chaos v4.10.0 Verified Attack Planning")!=lines.end(),
+      "id name JJUGLE Chaos v4.10.1 Attack Continuation")!=lines.end(),
       "new version identity");
   engine.send_command("setoption name OwnBook value false");
   engine.send_command("setoption name EvalMode value CHAOS");

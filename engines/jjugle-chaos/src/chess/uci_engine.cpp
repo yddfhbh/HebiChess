@@ -95,7 +95,7 @@ void UciEngine::send_command(const std::string& line) {
   input >> command;
   const auto emit = [this](const std::string& value) { output_(value); };
   if (command == "uci") {
-    emit("id name JJUGLE Chaos v4.10.0 Verified Attack Planning");
+    emit("id name JJUGLE Chaos v4.10.1 Attack Continuation");
     emit("id author Hebi");
     emit("option name OwnBook type check default false");
     emit("option name BookFile type string default ");
@@ -661,6 +661,20 @@ void UciEngine::send_command(const std::string& line) {
       emit("info string v4100_attack_planning midgame_queen_veto " +
            std::string(result.v4100_midgame_queen_veto ? "1" : "0") +
            " selected_rook_lift_bonus " + std::to_string(rook_lift_bonus));
+      const auto objective = std::find_if(result.root_moves.begin(), result.root_moves.end(),
+          [&](const RootMoveInfo& row) { return row.move == result.objective_best_move; });
+      const bool objective_parried = objective != result.root_moves.end() &&
+          objective->v4101_queen_pawn_tempo;
+      const bool chosen_parried = selected != result.root_moves.end() &&
+          selected->v4101_queen_pawn_tempo;
+      const bool safer_check_selected = objective_parried && !chosen_parried &&
+          result.best_move != result.objective_best_move &&
+          selected != result.root_moves.end() && selected->attack_check_reward > 0;
+      emit("info string v4101_attack_continuation objective_pawn_parry " +
+           std::string(objective_parried ? "1" : "0") +
+           " selected_pawn_parry " + std::string(chosen_parried ? "1" : "0") +
+           " safer_queen_check_selected " +
+           std::string(safer_check_selected ? "1" : "0"));
       emit("info string v4914_decision objective " + move_to_uci(result.objective_best_move) +
            " chosen " + move_to_uci(result.best_move) +
            " objective_cp " + std::to_string(result.score) +

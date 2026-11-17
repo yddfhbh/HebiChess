@@ -1474,6 +1474,31 @@ int rook_lift_preparation_bonus(const Board& before, const Board& after,
   return 0;
 }
 
+// V4.10.1: a checking queen sortie is not a free attacking tempo when the
+// defending side can answer the check with a legal pawn push that simultaneously
+// attacks the checking queen. This is root-style metadata only: the objective
+// search, score bounds and intentional bishop/knight sacrifices are unchanged.
+bool queen_check_parried_with_pawn_tempo(const Board& before,
+                                        const Move& move, const Board& after) {
+  if (before.piece_at(move.from).type != PieceType::Queen ||
+      !is_quiet_move(move)) return false;
+  const Color attacker = before.side_to_move();
+  const Color defender = after.side_to_move();
+  const Square king = after.find_king(defender);
+  if (!king.is_valid() || !after.is_square_attacked(king, attacker))
+    return false;
+  // Only legal check evasions: a pawn block that also attacks the queen.
+  for (const Move& reply : generate_legal_moves(after)) {
+    if (after.piece_at(reply.from).type != PieceType::Pawn ||
+        is_capture(reply)) continue;
+    Board answered = after;
+    answered.make_move(reply);
+    if (piece_attacks_square(answered, reply.to, move.to, defender))
+      return true;
+  }
+  return false;
+}
+
 int style_score_from_metadata(const RootStyleContext& context, const Move& move,
                               const Board& after, const StyleAttackState& after_attack,
                               bool check, int escape_delta, bool sacrifice_candidate) noexcept {
@@ -1519,6 +1544,9 @@ int style_score_from_metadata(const RootStyleContext& context, const Move& move,
       before, move, after, before_attack, after_attack,
       sacrifice_candidate);
   style += tactical_major_piece_risk(before, move, after);
+  // Avoid over-rewarding a check that is neutralized with a pawn tempo.
+  if (queen_check_parried_with_pawn_tempo(before, move, after))
+    style -= 55;
   return style;
 }
 
@@ -1576,6 +1604,8 @@ void populate_root_style_metadata(RootStyleContext& context, RootMoveInfo& info,
   info.v4915_formation_bonus = coordinated_formation_bonus(
       context.before_attack, after_attack, info.move, before.piece_at(info.move.from));
   info.v4100_rook_lift_bonus = rook_lift_preparation_bonus(before, after, info.move);
+  info.v4101_queen_pawn_tempo =
+      queen_check_parried_with_pawn_tempo(before, info.move, after);
   info.king_break = after_attack.king_shield < context.before_attack.king_shield ||
                     after_attack.open_lines > context.before_attack.open_lines;
   info.style_tolerance = kStyleBaseCp;
@@ -4425,9 +4455,19 @@ SearchResult search_impl(const Board& position, const SearchLimits& limits,
     }
 
     ++result.root_style_candidates;
+    // V4.10.1: a verified, sustainable queen check can be worth considering
+    // when the objectively selected check is met with a pawn *and* a tempo
+    // on our queen. Allow a small shortlist proof; never force this move.
+    const bool safe_queen_check_continuation =
+        objective_move->v4101_queen_pawn_tempo &&
+        !info.v4101_queen_pawn_tempo && info.attack_check_reward > 0 &&
+        position.piece_at(info.move.from).type == PieceType::Queen &&
+        is_quiet_move(info.move) &&
+        info.search_score >= objective_best - 65;
     if (limits.use_style_v3 &&
         !(info.sacrifice_candidate || info.king_break || info.sacrifice_preparation ||
-          info.v4100_rook_lift_bonus > 0 || info.style_tolerance > kStyleBaseCp)) {
+          info.v4100_rook_lift_bonus > 0 || info.style_tolerance > kStyleBaseCp ||
+          safe_queen_check_continuation)) {
       info.style_proof = StyleProofResult::PrefilterSkipped;
       ++result.root_style_prefilter_skips;
       continue;
